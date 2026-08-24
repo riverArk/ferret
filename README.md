@@ -1,55 +1,58 @@
 # Ferret
 
-Ferret is a mobile-first Svelte wallet for Lightning-fast ADA payments, backed by the [Konduit protocol](https://github.com/cardano-lightning/konduit). It is kept as a standalone frontend repository rather than nested inside the wider Konduit source tree.
+Ferret is an Android-first Kotlin Multiplatform wallet for Cardano and Lightning payments. Shared domain, state, navigation, and Compose UI live in `shared`; Android supplies biometric authentication, encrypted persistence, Cardano derivation, and QR scanning.
 
-The app targets a compact PWA-style experience: create or restore a wallet, top up the Cardano L1 wallet, open and manage one L2 channel, pay Lightning invoices through an adaptor, and inspect wallet/channel activity.
+Android wallet onboarding is implemented end to end:
 
-## Current Shape
+- biometric or device-credential unlock;
+- encrypted local wallet profiles and 32-byte seed entropy;
+- wallet creation or 24-word recovery-phrase restore;
+- Preprod and Mainnet selection;
+- mandatory, resumable recovery-phrase confirmation for newly created wallets;
+- a shared cream, charcoal, yellow, and coral Compose interface.
 
-- Svelte 5 + Vite app with PWA support.
-- Konduit runtime is consumed through generated WASM bindings imported from `src/wasm/konduit_wasm.js`.
-- `src/model/` owns the app state slices: wallet, channel, adaptor, connector, settings, FX, UI, and top-level runtime orchestration.
-- `src/routing.js` defines browser-history routes with Navigo.
-- Runtime config currently defaults to preprod Ferret services in `src/config.js`.
-- Local state is persisted under `ferret.*.v1` localStorage keys.
+The iOS shared target compiles and renders an explicit platform-availability gate. iOS wallet support remains disabled until the adapters and Xcode host in [`IOS_FOLLOW_UP.md`](IOS_FOLLOW_UP.md) are complete.
 
-## Setup
+## Prerequisites
 
-Install dependencies:
+- JDK 17
+- Android SDK with API 36
+- An API 36 Android device or emulator for installation and manual verification
 
-```sh
-npm install
-```
+Use the checked-in Gradle wrapper. Dependency locks are authoritative.
 
-## Development
+## Build and verify
 
-```sh
-npm run dev
-```
-
-Build for production:
+Run the Android aggregate check:
 
 ```sh
-npm run build
+./gradlew androidCheck
 ```
 
-Preview the production build:
+Build and install a debug application:
 
 ```sh
-npm run preview
+./gradlew :androidApp:assembleDebug
+./gradlew :androidApp:installDebug
 ```
 
-Deployable static assets are emitted to `dist/`. `wrangler.jsonc` is configured to serve that directory through Cloudflare Workers assets.
+Release verification requires the Google OAuth server client ID:
 
-## Repository Map
+```sh
+FERRET_GOOGLE_SERVER_CLIENT_ID='<client-id>' ./gradlew androidReleaseCheck
+```
 
-- `src/App.svelte`: app shell, route composition, header/toast/loading overlay wiring.
-- `src/main.js`: Svelte mount, WASM logging hook, service-worker update handling.
-- `src/kernel.js`: narrow import boundary for generated Konduit WASM bindings.
-- `src/model/index.js`: Konduit bootstrap, global ready/busy state, refresh loop, exported app actions.
-- `src/model/*.js`: focused persisted Svelte stores for domain slices.
-- `src/screens/`: route-level screens and their local controllers.
-- `src/components/`: reusable UI components.
-- `src/helpers/`: formatting, filtering, URL, currency, transaction, and channel helpers.
-- `src/config.js`: network, script address, connector, and adaptor defaults.
-- `CONTEXT.md`: session handoff notes. Useful, but verify it against live files before relying on older entries.
+## Repository map
+
+- `shared/src/commonMain`: shared domain models, repositories, state, typed navigation, and Compose screens.
+- `shared/src/androidMain`: Android secure vault, biometric authentication support, Cardano implementation, and camera scanner.
+- `shared/src/iosMain`: thin shared Compose entry point with the intentional wallet-availability gate.
+- `androidApp`: Android application host, dependency construction, system-bar configuration, and sensitive-screen protection.
+- `iosApp`: thin Swift host source; no Xcode project is checked in yet.
+- `native/cardano-ios-bridge`: reserved iOS Cardano bridge surface; implementation remains part of the iOS follow-up.
+
+## Security model
+
+`WalletManager` is the create, restore, selection, and recovery-confirmation boundary. `SecureVault` stores the encrypted wallet index separately from each encrypted seed file. New wallets remain marked as unconfirmed until the user verifies recovery words 4, 12, and 21; an interrupted flow resumes after the next unlock. Restored wallets are confirmed because the user supplied the complete phrase.
+
+Mnemonic routes set Android `FLAG_SECURE`. The UI never offers mnemonic copy actions. Do not log recovery phrases, seed entropy, credentials, signed payloads, or encrypted vault keys.

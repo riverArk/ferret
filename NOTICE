@@ -11,3 +11,12 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
+
+Material Symbols
+Copyright Google LLC
+Licensed under the Apache License, Version 2.0.
+https://github.com/google/material-design-icons
+
+Exo 2 and Ubuntu Mono fonts
+Copyright their respective authors.
+Bundled under the license texts in shared/src/commonMain/composeResources/font/.

@@ -6,9 +6,12 @@ import com.bloxbean.cardano.client.api.model.Result
 import com.bloxbean.cardano.client.api.model.Utxo
 import io.riverark.ferret.core.model.CardanoNetwork
 import io.riverark.ferret.core.model.Lovelace
+import io.riverark.ferret.core.model.InvalidRecoveryPhraseException
+import io.riverark.ferret.core.security.AndroidRecoveryPhraseCodec
 import java.util.Collections
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import kotlinx.coroutines.runBlocking
 
@@ -31,6 +34,21 @@ class AndroidCardanoTransactionEngineTest {
         assertTrue(first.paymentAddress.startsWith("addr_test1"))
         assertTrue(mainnet.paymentAddress.startsWith("addr1"))
         assertEquals(56, first.paymentCredentialHex.length)
+    }
+
+    @Test fun restoresGeneratedRecoveryPhrase() = runBlocking {
+        val words = "enemy mean dumb tail desert second lift barely minimum stove figure rack milk resource sand kiwi delay sand cupboard resource melt capable office card".split(" ")
+        val entropy = AndroidRecoveryPhraseCodec().entropy(words)
+        val wallet = deriveAndroidWallet(entropy, CardanoNetwork.PREPROD)
+
+        assertEquals(words, AndroidRecoveryPhraseCodec().words(entropy))
+        assertTrue(wallet.paymentAddress.startsWith("addr_test1"))
+        entropy.fill(0)
+    }
+
+    @Test fun rejectsChecksumInvalidRecoveryPhrase() {
+        val words = "abandon mean dumb tail desert second lift barely minimum stove figure rack milk resource sand kiwi delay sand cupboard resource melt capable office card".split(" ")
+        assertFailsWith<InvalidRecoveryPhraseException> { AndroidRecoveryPhraseCodec().entropy(words) }
     }
 
     @Test fun transferBuildPreservesConfirmedSemantics() = runBlocking {

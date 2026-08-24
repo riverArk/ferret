@@ -2,9 +2,11 @@
 <resources>
     <style name="Theme.Ferret" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
-        <item name="android:colorAccent">#000000</item>
-        <item name="android:navigationBarColor">#FFD600</item>
+        <item name="android:colorAccent">#37353E</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:windowLightNavigationBar">true</item>
         <item name="android:windowLightStatusBar">true</item>
-        <item name="android:statusBarColor">#FFD600</item>
+        <item name="android:windowActionModeOverlay">true</item>
     </style>
 </resources>

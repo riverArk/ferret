@@ -11,6 +11,7 @@ kotlin {
         namespace = "io.riverark.ferret.shared"
         compileSdk = 36
         minSdk = 28
+        androidResources.enable = true
         withJava()
         withHostTestBuilder {}
         withDeviceTestBuilder { sourceSetTreeName = "test" }

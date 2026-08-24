@@ -1,5 +1,6 @@
 package io.riverark.ferret.core.network
 
+import io.riverark.ferret.core.model.Lovelace
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.HttpRequestTimeoutException
@@ -11,7 +12,11 @@ import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable data class HealthDto(val status: String)
 @Serializable data class NetworkDto(val network: String)
@@ -20,12 +25,31 @@ import kotlinx.serialization.json.JsonObject
 @Serializable data class SubmitResponse(@SerialName("transaction_id") val transactionId: String)
 @Serializable data class SessionClaimRequest(val walletVerificationKeyHex: String, val generation: Long, val backupHashHex: String, val devicePublicKeyHex: String, val timestamp: Long, val signatureHex: String)
 @Serializable data class SessionClaimResponse(val lease: String, val expiresAtEpochMillis: Long)
-@Serializable data class AdaptorInfoDto(val network: String, val identityHex: String, val lightningChain: String)
+@Serializable
+data class AdaptorInfoDto(
+    val tos: AdaptorTermsDto,
+    @SerialName("channel_parameters") val channelParameters: AdaptorChannelParametersDto,
+    @SerialName("tx_help") val transactionHelp: AdaptorTransactionHelpDto,
+)
+@Serializable data class AdaptorTermsDto(@SerialName("flat_fee") val flatFee: Long)
+@Serializable
+data class AdaptorChannelParametersDto(
+    @SerialName("adaptor_key") val adaptorKeyHex: String,
+    @SerialName("close_period") val closePeriod: AdaptorClosePeriodDto,
+    @SerialName("tag_length") val tagLength: Int,
+)
+@Serializable data class AdaptorClosePeriodDto(val secs: Long, val nanos: Int)
+@Serializable
+data class AdaptorTransactionHelpDto(
+    @SerialName("host_address") val hostAddress: String,
+    val validator: String,
+)
 
 class ConnectorClient(private val http: HttpClient, private val deployment: NetworkDeployment) {
     suspend fun health(): HealthDto = getOnce("/health")
     suspend fun network(): NetworkDto = getOnce("/network")
     suspend fun protocolParameters(): ProtocolParametersDto = getOnce("/protocol-parameters")
+    suspend fun balance(address: String): Lovelace = getOnce<JsonArray>("/utxos_at/${path(address)}").lovelaceBalance()
     suspend fun utxos(address: String): String = getOnce("/utxos_at/${path(address)}")
     suspend fun transactions(address: String): String = getOnce("/transactions/${path(address)}")
     suspend fun claim(request: SessionClaimRequest): SessionClaimResponse = postOnce("/session/claim", request)
@@ -44,6 +68,17 @@ class ConnectorClient(private val http: HttpClient, private val deployment: Netw
             setBody(request)
         }.body()
 }
+internal fun JsonArray.lovelaceBalance(): Lovelace =
+    fold(Lovelace(0)) { total, output ->
+        output.jsonObject.getValue("value").jsonArray
+            .filter { it.jsonObject.getValue("unit").jsonPrimitive.content == "lovelace" }
+            .fold(total) { balance, value ->
+                val quantity = value.jsonObject.getValue("quantity").jsonPrimitive
+                require(quantity.isString) { "lovelace quantity must be a string" }
+                balance + Lovelace(quantity.content.toLong())
+            }
+    }
+
 
 class AdaptorClient(private val http: HttpClient, private val deployment: NetworkDeployment) {
     suspend fun info(): AdaptorInfoDto = http.get(deployment.adaptor.value + "/info").body()

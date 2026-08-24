@@ -49,6 +49,7 @@ data class WalletProfile(
     val stakeAddress: String,
     val channelState: ChannelState = ChannelState.Absent,
     val backupStatus: BackupStatus = BackupStatus.DISCONNECTED,
+    val recoveryPhraseConfirmed: Boolean = true,
 )
 
 @Serializable

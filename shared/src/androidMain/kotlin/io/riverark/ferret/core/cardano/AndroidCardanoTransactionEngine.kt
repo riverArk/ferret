@@ -26,17 +26,8 @@ import java.util.Optional
 class AndroidCardanoTransactionEngine(
     private val transactionProcessor: TransactionProcessor,
 ) : CardanoTransactionEngine {
-    override suspend fun deriveWallet(entropy: ByteArray, network: CardanoNetwork): DerivedWallet {
-        require(entropy.size == 32)
-        val mnemonic = MnemonicCode.INSTANCE.toMnemonic(entropy).joinToString(" ")
-        val account = Account.createFromMnemonic(network.bloxbean(), mnemonic)
-        val address = account.baseAddress()
-        return DerivedWallet(
-            paymentAddress = address,
-            stakeAddress = account.stakeAddress(),
-            paymentCredentialHex = HexUtil.encodeHexString(Address(address).paymentCredentialHash.orElseThrow()),
-        )
-    }
+    override suspend fun deriveWallet(entropy: ByteArray, network: CardanoNetwork) =
+        deriveAndroidWallet(entropy, network)
 
     override suspend fun build(intent: CardanoIntent, ledger: LedgerSnapshot): UnsignedTransaction {
         require(ledger.network.addressMatches(intent.sourceAddress))
@@ -131,6 +122,18 @@ class AndroidCardanoTransactionEngine(
                 .drop((page ?: 0) * (count ?: 100)).take(count ?: 100)
         override fun getTxOutput(hash: String, index: Int): Optional<Utxo> = Optional.ofNullable(utxos.firstOrNull { it.txHash == hash && it.outputIndex == index })
     }
+}
+
+suspend fun deriveAndroidWallet(entropy: ByteArray, network: CardanoNetwork): DerivedWallet {
+    require(entropy.size == 32)
+    val mnemonic = MnemonicCode.INSTANCE.toMnemonic(entropy).joinToString(" ")
+    val account = Account.createFromMnemonic(network.bloxbean(), mnemonic)
+    val address = account.baseAddress()
+    return DerivedWallet(
+        paymentAddress = address,
+        stakeAddress = account.stakeAddress(),
+        paymentCredentialHex = HexUtil.encodeHexString(Address(address).paymentCredentialHash.orElseThrow()),
+    )
 }
 
 private fun CardanoNetwork.bloxbean() = if (this == CardanoNetwork.MAINNET) Networks.mainnet() else Networks.preprod()

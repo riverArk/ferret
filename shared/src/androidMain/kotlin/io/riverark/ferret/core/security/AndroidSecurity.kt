@@ -53,6 +53,12 @@ class AndroidSecureVault(private val context: Context) : SecureVault {
         try { writeAtomic(file(profile.id), encrypt(key(), plaintext)) } finally { plaintext.fill(0) }
         writeProfiles(profiles() + profile)
     }
+    override suspend fun updateProfile(profile: WalletProfile) {
+        val profiles = profiles()
+        require(profiles.any { it.id == profile.id })
+        writeProfiles(profiles.map { if (it.id == profile.id) profile else it })
+    }
+
 
     override suspend fun renameWallet(walletId: WalletId, name: String) {
         require(name.isNotBlank())
@@ -104,30 +110,60 @@ class AndroidSecureVault(private val context: Context) : SecureVault {
     }
 }
 
-class AndroidUserAuthenticator(
-    private val activity: FragmentActivity,
-    private val wrappedVaultKey: ByteArray,
-) : UserAuthenticator {
-    override suspend fun authenticate(reason: String): ByteArray = suspendCancellableCoroutine { continuation ->
-        val cipher = unwrapCipher(wrappedVaultKey.copyOfRange(0, 12))
-        val prompt = BiometricPrompt(activity, ContextCompat.getMainExecutor(activity), object : BiometricPrompt.AuthenticationCallback() {
-            override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                try { continuation.resume(result.cryptoObject!!.cipher!!.doFinal(wrappedVaultKey, 12, wrappedVaultKey.size - 12)) }
-                catch (error: Throwable) { continuation.resumeWithException(error) }
+class AndroidUserAuthenticator(private val activity: FragmentActivity) : UserAuthenticator {
+    override suspend fun authenticate(reason: String): ByteArray {
+        val keyFile = AtomicFile(activity.filesDir.resolve(VAULT_KEY_FILE))
+        val wrappedVaultKey = if (keyFile.baseFile.exists()) keyFile.readFully() else null
+        if (wrappedVaultKey != null) {
+            require(wrappedVaultKey.size > 12)
+            val cipher = unwrapCipher(wrappedVaultKey.copyOfRange(0, 12))
+            return authenticate(cipher, reason) { it.doFinal(wrappedVaultKey, 12, wrappedVaultKey.size - 12) }
+        }
+
+        val vaultKey = SecureRandom().generateSeed(32)
+        return try {
+            val cipher = wrapCipher()
+            authenticate(cipher, reason) {
+                val output = keyFile.startWrite()
+                try {
+                    output.write(it.iv + it.doFinal(vaultKey))
+                    output.fd.sync()
+                    keyFile.finishWrite(output)
+                    vaultKey.copyOf()
+                } catch (error: Throwable) {
+                    keyFile.failWrite(output)
+                    throw error
+                }
             }
-            override fun onAuthenticationError(code: Int, message: CharSequence) {
-                continuation.resumeWithException(SecurityException("authentication failed: $code"))
-            }
-        })
-        prompt.authenticate(
-            BiometricPrompt.PromptInfo.Builder()
-                .setTitle("Unlock Ferret")
-                .setSubtitle(reason)
-                .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.DEVICE_CREDENTIAL)
-                .build(),
-            BiometricPrompt.CryptoObject(cipher),
-        )
-        continuation.invokeOnCancellation { prompt.cancelAuthentication() }
+        } finally {
+            vaultKey.fill(0)
+        }
+    }
+
+    private suspend fun authenticate(cipher: Cipher, reason: String, result: (Cipher) -> ByteArray): ByteArray =
+        suspendCancellableCoroutine { continuation ->
+            val prompt = BiometricPrompt(activity, ContextCompat.getMainExecutor(activity), object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(authentication: BiometricPrompt.AuthenticationResult) {
+                    try { continuation.resume(result(authentication.cryptoObject!!.cipher!!)) }
+                    catch (error: Throwable) { continuation.resumeWithException(error) }
+                }
+                override fun onAuthenticationError(code: Int, message: CharSequence) {
+                    continuation.resumeWithException(SecurityException("authentication failed: $code"))
+                }
+            })
+            prompt.authenticate(
+                BiometricPrompt.PromptInfo.Builder()
+                    .setTitle("Unlock Ferret")
+                    .setSubtitle(reason)
+                    .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.DEVICE_CREDENTIAL)
+                    .build(),
+                BiometricPrompt.CryptoObject(cipher),
+            )
+            continuation.invokeOnCancellation { prompt.cancelAuthentication() }
+        }
+
+    private fun wrapCipher(): Cipher = Cipher.getInstance("AES/GCM/NoPadding").apply {
+        init(Cipher.ENCRYPT_MODE, keystoreKey())
     }
 
     private fun unwrapCipher(iv: ByteArray): Cipher = Cipher.getInstance("AES/GCM/NoPadding").apply {
@@ -156,5 +192,8 @@ class AndroidUserAuthenticator(
         return try { generate(true) } catch (_: Exception) { generate(false) }
     }
 
-    companion object { private const val KEY_ALIAS = "ferret-vault-kek-v1" }
+    companion object {
+        private const val KEY_ALIAS = "ferret-vault-kek-v1"
+        private const val VAULT_KEY_FILE = "vault-key.v1"
+    }
 }

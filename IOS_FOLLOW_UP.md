@@ -1,14 +1,14 @@
 # iOS Follow-up
 
-The shared Kotlin Multiplatform target and thin Swift Compose host have been started. `:shared:compileKotlinIosSimulatorArm64` passes on Linux. Completing and validating iOS requires macOS, Xcode, Apple signing, and the platform-specific integrations below.
+The shared Kotlin Multiplatform theme, typed onboarding navigation, and explicit iOS wallet-unavailable state compile with `:shared:compileKotlinIosSimulatorArm64`. Completing and validating an iOS wallet requires macOS, Xcode, Apple signing, and the platform-specific integrations below.
 
 ## Current iOS Surface
 
 - `shared/build.gradle.kts` declares `iosArm64` and `iosSimulatorArm64` static frameworks named `Shared`.
-- `shared/src/iosMain/kotlin/io/riverark/ferret/MainViewController.kt` exposes the shared Compose root.
-- `iosApp/iosApp/FerretApp.swift` embeds that Compose view controller.
-- Shared wallet, channel, backup, navigation, payment, and ViewModel contracts compile for the iOS simulator target.
-- No Xcode project, CSL bridge, iOS secure-vault implementation, Drive adapter, camera adapter, or iOS TLS client exists yet.
+- `shared/src/iosMain/kotlin/io/riverark/ferret/MainViewController.kt` exposes the shared Compose root with `walletManager = null`.
+- `iosApp/iosApp/FerretApp.swift` is the thin Swift host source, but no Xcode project is checked in.
+- Shared theme, navigation, wallet, channel, backup, payment, and ViewModel contracts compile for the iOS simulator target.
+- The current UI intentionally displays `Wallet setup is not available in this iOS build.` No secure-vault, authentication, mnemonic, Cardano bridge, Drive, camera, or iOS TLS adapter exists yet.
 
 ## Required macOS Tooling and Credentials
 
@@ -125,7 +125,13 @@ Keep ordinary address and deposit QR screens shareable.
 
 ## 8. Complete Platform Verification
 
-Run shared/native compilation and tests:
+Current Linux compile gate:
+
+```sh
+./gradlew :shared:compileKotlinIosSimulatorArm64
+```
+
+After the platform adapters exist, run the shared/native tests on macOS:
 
 ```sh
 ./gradlew :shared:iosSimulatorArm64Test
@@ -157,4 +163,4 @@ Then verify on an iOS 17 physical device:
 
 ## Completion Gate
 
-iOS is complete only when its platform adapters pass the Android behavioral contracts and the shared semantic fixtures. Any difference in decoded transaction intent, ledger validity, fee bounds, writer-lease behavior, backup recovery, or interruption reconciliation blocks release.
+The compiling shared theme/navigation and unavailable state are not iOS wallet support. iOS is complete only when an Xcode host and its platform adapters pass the Android behavioral contracts and shared semantic fixtures on simulator and physical hardware. Any difference in decoded transaction intent, ledger validity, fee bounds, writer-lease behavior, backup recovery, interruption reconciliation, or sensitive-content protection blocks release.

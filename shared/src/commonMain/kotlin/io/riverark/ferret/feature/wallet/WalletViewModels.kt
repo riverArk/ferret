@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import io.riverark.ferret.core.model.CardanoNetwork
 import io.riverark.ferret.core.model.CreatedWallet
 import io.riverark.ferret.core.model.Lovelace
+import io.riverark.ferret.core.model.InvalidRecoveryPhraseException
 import io.riverark.ferret.core.model.TransactionRecord
 import io.riverark.ferret.core.model.WalletId
 import io.riverark.ferret.core.model.WalletManager
@@ -22,11 +23,39 @@ class WalletPickerViewModel(private val manager: WalletManager) : ViewModel() {
     val state: StateFlow<WalletPickerUiState> = mutableState.asStateFlow()
 
     fun load() = launch { manager.load() }
-    fun create(name: String, network: CardanoNetwork, result: (CreatedWallet) -> Unit) = launch(result) { manager.create(name, network) }
-    fun restore(name: String, network: CardanoNetwork, phrase: String, result: (WalletProfile) -> Unit) = launch(result) { manager.restore(name, network, phrase) }
+    fun select(walletId: WalletId, result: () -> Unit = {}) =
+        launch(result = { result() }) { manager.load(walletId); Unit }
+    fun create(name: String, network: CardanoNetwork, result: (CreatedWallet) -> Unit) {
+        if (name.isBlank()) return fail("Enter a wallet name.")
+        launch(result) { manager.create(name, network) }
+    }
+    fun restore(name: String, network: CardanoNetwork, phrase: String, result: (WalletProfile) -> Unit) {
+        if (name.isBlank()) return fail("Enter a wallet name.")
+        if (phrase.trim().split(Regex("\\s+")).filter(String::isNotBlank).size != 24) return fail("Enter all 24 recovery words.")
+        launch(result, { error ->
+            when {
+                error is InvalidRecoveryPhraseException -> "That recovery phrase is not valid."
+                error is IllegalArgumentException && error.message == "wallet already restored" -> "This wallet is already on this device."
+                error is IllegalArgumentException -> "That recovery phrase is not valid."
+                else -> "Wallet operation failed. Try again."
+            }
+        }) { manager.restore(name, network, phrase) }
+    }
+    fun recoveryWords(walletId: WalletId, result: (List<String>) -> Unit) =
+        launch(result) { manager.recoveryWords(walletId) }
+    fun confirmRecoveryPhrase(walletId: WalletId, result: () -> Unit = {}) =
+        launch(result = { result() }) { manager.confirmRecoveryPhrase(walletId); Unit }
     fun rename(walletId: WalletId, name: String) = launch { manager.rename(walletId, name) }
 
-    private fun <T> launch(result: (T) -> Unit = {}, action: suspend () -> T) {
+    private fun fail(message: String) {
+        mutableState.value = mutableState.value.copy(busy = false, error = message)
+    }
+
+    private fun <T> launch(
+        result: (T) -> Unit = {},
+        errorMessage: (Exception) -> String = { "Wallet operation failed. Try again." },
+        action: suspend () -> T,
+    ) {
         viewModelScope.launch {
             mutableState.value = mutableState.value.copy(busy = true, error = null)
             try {
@@ -35,8 +64,8 @@ class WalletPickerViewModel(private val manager: WalletManager) : ViewModel() {
                 result(value)
             } catch (cancelled: CancellationException) {
                 throw cancelled
-            } catch (_: Exception) {
-                mutableState.value = mutableState.value.copy(busy = false, error = "Wallet operation failed.")
+            } catch (error: Exception) {
+                mutableState.value = mutableState.value.copy(busy = false, error = errorMessage(error))
             }
         }
     }
@@ -52,11 +81,32 @@ interface L1WalletRepository {
     suspend fun submitTransfer(walletId: WalletId, preview: TransferPreview): String
 }
 
-data class HomeUiState(val profile: WalletProfile, val balance: WalletBalance? = null, val loading: Boolean = true)
-class HomeViewModel(private val walletId: WalletId, profile: WalletProfile, private val l1: L1WalletRepository) : ViewModel() {
+data class HomeUiState(
+    val profile: WalletProfile,
+    val balance: Lovelace? = null,
+    val loading: Boolean = true,
+    val error: String? = null,
+)
+
+class HomeViewModel(private val profile: WalletProfile, private val loadBalance: suspend (WalletProfile) -> Lovelace) : ViewModel() {
     private val mutableState = MutableStateFlow(HomeUiState(profile))
     val state = mutableState.asStateFlow()
-    fun refresh() { viewModelScope.launch { mutableState.value = mutableState.value.copy(balance = l1.balance(walletId), loading = false) } }
+
+    fun refresh() {
+        viewModelScope.launch {
+            mutableState.value = mutableState.value.copy(loading = true, error = null)
+            try {
+                mutableState.value = mutableState.value.copy(balance = loadBalance(profile), loading = false)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                mutableState.value = mutableState.value.copy(
+                    loading = false,
+                    error = "Unable to load balance. Check your connection and try again.",
+                )
+            }
+        }
+    }
 }
 
 class TopUpViewModel(val profile: WalletProfile) : ViewModel()

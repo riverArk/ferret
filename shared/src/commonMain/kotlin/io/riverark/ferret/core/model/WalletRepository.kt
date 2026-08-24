@@ -9,14 +9,17 @@ import kotlinx.coroutines.flow.asStateFlow
 class WalletRepository {
     private val mutableState = MutableStateFlow<AppState>(AppState.Locked)
     private val walletLocks = mutableMapOf<WalletId, Mutex>()
+    private var selectedWalletId: WalletId? = null
     val state: StateFlow<AppState> = mutableState.asStateFlow()
 
     fun lock() { mutableState.value = AppState.Locked }
     fun checkingConnectivity() { mutableState.value = AppState.CheckingConnectivity }
     fun offline() { mutableState.value = AppState.Offline }
+    fun selectedWalletId(): WalletId? = selectedWalletId
     fun publish(activeWalletId: WalletId?, wallets: List<WalletProfile>) {
-        mutableState.value = if (activeWalletId == null || wallets.isEmpty()) AppState.NoWallets
-        else AppState.Ready(activeWalletId, wallets.toList())
+        selectedWalletId = activeWalletId?.takeIf { id -> wallets.any { it.id == id } }
+        mutableState.value = if (selectedWalletId == null || wallets.isEmpty()) AppState.NoWallets
+        else AppState.Ready(checkNotNull(selectedWalletId), wallets.toList())
     }
 
     suspend fun <T> withWalletLock(walletId: WalletId, action: suspend () -> T): T =

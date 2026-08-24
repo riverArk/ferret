@@ -4,10 +4,13 @@ import kotlinx.serialization.Serializable
 
 @Serializable sealed interface Route {
     @Serializable data object Unlock : Route
+    @Serializable data object CheckingConnectivity : Route
     @Serializable data object Offline : Route
     @Serializable data object WalletPicker : Route
     @Serializable data object CreateWallet : Route
     @Serializable data object RestoreWallet : Route
+    @Serializable data class RecoveryPhrase(val walletId: String) : Route
+    @Serializable data class VerifyRecovery(val walletId: String) : Route
     @Serializable data class Home(val walletId: String) : Route
     @Serializable data class TopUp(val walletId: String) : Route
     @Serializable data class Transfer(val walletId: String) : Route

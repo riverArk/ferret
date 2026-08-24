@@ -13,6 +13,8 @@ data class NetworkDeployment(
     val validatorAddress: String,
     val adaptor: HttpsUrl,
     val connector: HttpsUrl,
+    val adaptorIdentityHex: String,
+    val validatorHashHex: String,
 ) {
     fun validate() {
         val prefix = if (network == CardanoNetwork.PREPROD) "addr_test1" else "addr1"
@@ -20,6 +22,8 @@ data class NetworkDeployment(
         require(validatorAddress.startsWith(prefix))
         require(adaptor.value.substringAfter("https://").substringBefore('/') in allowedHosts)
         require(connector.value.substringAfter("https://").substringBefore('/') in allowedHosts)
+        require(Regex("[0-9a-f]{64}").matches(adaptorIdentityHex))
+        require(Regex("[0-9a-f]{56}").matches(validatorHashHex))
     }
 
     companion object {
@@ -36,6 +40,8 @@ val PREPROD = NetworkDeployment(
     "addr_test1wrpc0agp7ce78zefuk38kyza8rnu3gzy9vy6ynhh7t9ygygy5fd4h",
     HttpsUrl("https://preprod-adaptor.ferret.channel"),
     HttpsUrl("https://preprod-cardano.ferret.channel"),
+    "fe7d2454c30c6ca3337dd83b64d42358580dd199ac10322ed59475c7f1e20134",
+    "c387f501f633e38b29e5a27b105d38e7c8a0442b09a24ef7f2ca4411",
 ).also(NetworkDeployment::validate)
 
 val MAINNET = NetworkDeployment(
@@ -44,6 +50,8 @@ val MAINNET = NetworkDeployment(
     "addr1w8pc0agp7ce78zefuk38kyza8rnu3gzy9vy6ynhh7t9ygyglua36j",
     HttpsUrl("https://adaptor.ferret.channel"),
     HttpsUrl("https://cardano.ferret.channel"),
+    "fe7d2454c30c6ca3337dd83b64d42358580dd199ac10322ed59475c7f1e20134",
+    "c387f501f633e38b29e5a27b105d38e7c8a0442b09a24ef7f2ca4411",
 ).also(NetworkDeployment::validate)
 
 fun deployment(network: CardanoNetwork) = if (network == CardanoNetwork.PREPROD) PREPROD else MAINNET

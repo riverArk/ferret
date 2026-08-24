@@ -19,6 +19,7 @@ interface SecureVault {
     fun lock()
     suspend fun profiles(): List<WalletProfile>
     suspend fun createWallet(profile: WalletProfile, secret: WalletSecretV1)
+    suspend fun updateProfile(profile: WalletProfile)
     suspend fun renameWallet(walletId: WalletId, name: String)
     suspend fun deleteWallet(walletId: WalletId)
     suspend fun <T> withWalletSeed(walletId: WalletId, action: suspend (ByteArray) -> T): T
