@@ -16,7 +16,7 @@ Later user sessions additionally required the full visual refresh, documentation
 
 ## Current conclusion
 
-The KMP shell, Android secure onboarding, shared visual system, adaptive icon, wallet balance, pull-to-refresh, validated foreground session, and L1 top-up flow are implemented. Most remaining product code is contract-level or disconnected UI: the Android host wires unlock, wallet lifecycle, validated connector/adaptor sessions, `ConnectorClient.balance`, local address QR, and sensitive clipboard expiry; `FerretApp` registers onboarding, Home, and Top Up destinations. The next implementation set should complete history and transfer before enabling any channel or payment action.
+The KMP shell, Android secure onboarding, shared visual system, adaptive icon, wallet balance, pull-to-refresh, validated foreground session, L1 top-up, and L1 history flow are implemented. The Android host wires unlock, wallet lifecycle, validated connector/adaptor sessions, connector balance/history, local address QR, and sensitive clipboard expiry; `FerretApp` registers onboarding, Home, Top Up, and History destinations. Transfer is the next missing P0 functionality before any channel or payment action is enabled.
 
 Status legend: **Complete** means connected behavior exists; **Partial** means reusable code exists but the end-to-end feature does not; **Missing** means no usable implementation exists; **Deferred** is an explicit sequencing decision.
 
@@ -48,12 +48,12 @@ Status legend: **Complete** means connected behavior exists; **Partial** means r
 
 ### P0.2 — Complete the Android L1 wallet vertical slice
 
-**Current status:** Partial. Home loads the real connector balance and pull-to-refresh is manually confirmed. Top Up is reachable, generates its address QR locally, and uses an explicit sensitive clipboard copy with conditional 60-second clearing. `HistoryScreen`, transaction models, typed routes, and the Bloxbean `Transfer` intent exist, but History and Transfer remain disconnected. There is no transaction/history repository, transfer ViewModel/screen, ledger-to-build/sign/inspect/submit orchestration, or pending-operation reconciliation.
+**Current status:** Partial. Home loads the real connector balance and pull-to-refresh is manually confirmed. Top Up is reachable, generates its address QR locally, and uses an explicit sensitive clipboard copy with conditional 60-second clearing. History is reachable, parses the pinned connector transaction contract into immutable records, supports pull-to-refresh, and applies the 5-block confirmed/2160-block settled policy. The Bloxbean `Transfer` intent exists, but Transfer remains disconnected. There is no transfer screen, ledger-to-build/sign/inspect/submit orchestration, or pending-operation reconciliation.
 
 **Missing work:**
 
-1. Register `Transfer` and `History` in the existing `NavHost`; preserve the connected Home action precedence: zero L1 balance → top up, funded without an open channel → open-channel remains disabled until P1, open channel → pay remains disabled until P2.
-2. History: parse connector transaction responses into immutable `TransactionRecord` values, merge without mutating source lists, and preserve 5-block confirmed/2160-block settled display policy.
+1. Register `Transfer` in the existing `NavHost`; preserve the connected Home action precedence: zero L1 balance → top up, funded without an open channel → open-channel remains disabled until P1, open channel → pay remains disabled until P2.
+2. Validate L1 history against a funded Preprod wallet once the connector deployment is available; merge verified L2 records in P2.
 3. Transfer: show only destination profiles on the same network; preview amount, fee bound, change, recipient, and network; write the operation journal before signing/submission; use `CardanoTransactionEngine.requireMatches`; reconcile submission by operation ID rather than retrying a mutation.
 4. Keep external-address entry out of normal transfer. It belongs only to wallet removal.
 
@@ -281,9 +281,9 @@ Status legend: **Complete** means connected behavior exists; **Partial** means r
 
 ### 13. Activity/history — Partial
 
-**Current status:** Immutable transaction types and a styled `HistoryScreen` exist; no connector/adaptor parsing, merge repository, route registration, expandable detail, or refresh timestamp is connected.
+**Current status:** L1 connector parsing, immutable ordering/merge policy, deterministic finality states, pull-to-refresh, and the typed History route are connected. Expandable detail, refresh timestamp, journal-backed pending/failed records, and verified L2 activity are not connected.
 
-**Missing work:** P0 L1 parsing/route, then merge verified L2 activity in P2. Preserve immutable ordering, status semantics, amount, fee, realm, ID, and last refresh.
+**Missing work:** Validate the L1 response against a funded Preprod wallet, then merge verified journal/adaptor activity in P2. Preserve immutable ordering, status semantics, amount, fee, realm, ID, and last refresh.
 
 **Priority:** P0 for L1; P2 for L2.
 

@@ -106,6 +106,16 @@ class MainActivity : FragmentActivity() {
                             throw CancellationException("wallet session offline")
                         }
                     },
+                    loadHistory = { profile ->
+                        try {
+                            connectors.getValue(profile.network).transactions(profile.paymentAddress)
+                        } catch (error: CancellationException) {
+                            throw error
+                        } catch (_: Exception) {
+                            networkUnavailable()
+                            throw CancellationException("wallet session offline")
+                        }
+                    },
                     encodeQr = ::addressQrCode,
                     copyAddress = ::copyAddress,
                 ),

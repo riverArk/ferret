@@ -111,6 +111,46 @@ class HomeViewModel(private val profile: WalletProfile, private val loadBalance:
 
 class TopUpViewModel(val profile: WalletProfile) : ViewModel()
 
+data class HistoryUiState(
+    val profile: WalletProfile,
+    val records: List<TransactionRecord> = emptyList(),
+    val loading: Boolean = true,
+    val error: String? = null,
+)
+
+class HistoryViewModel(
+    private val profile: WalletProfile,
+    private val loadHistory: suspend (WalletProfile) -> List<TransactionRecord>,
+) : ViewModel() {
+    private val mutableState = MutableStateFlow(HistoryUiState(profile))
+    val state = mutableState.asStateFlow()
+
+    fun refresh() {
+        viewModelScope.launch {
+            mutableState.value = mutableState.value.copy(loading = true, error = null)
+            try {
+                mutableState.value = mutableState.value.copy(
+                    records = mergeTransactionRecords(loadHistory(profile), emptyList()),
+                    loading = false,
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                mutableState.value = mutableState.value.copy(
+                    loading = false,
+                    error = "Unable to load history. Check your connection and try again.",
+                )
+            }
+        }
+    }
+}
+
+internal fun mergeTransactionRecords(
+    l1: List<TransactionRecord>,
+    l2: List<TransactionRecord>,
+): List<TransactionRecord> =
+    (l1 + l2).sortedWith(compareByDescending<TransactionRecord> { it.timestampEpochMillis }.thenByDescending { it.id })
+
 class TransferViewModel(private val walletId: WalletId, private val network: CardanoNetwork, private val l1: L1WalletRepository) : ViewModel() {
     suspend fun preview(destination: WalletProfile?, externalAddress: String?, amount: Lovelace): TransferPreview {
         require(destination == null || destination.network == network) { "cross-network transfer" }
@@ -118,8 +158,4 @@ class TransferViewModel(private val walletId: WalletId, private val network: Car
         return l1.previewTransfer(walletId, destination, externalAddress, amount)
     }
     suspend fun submit(preview: TransferPreview) = l1.submitTransfer(walletId, preview)
-}
-
-class HistoryViewModel(private val walletId: WalletId, private val l1: L1WalletRepository) : ViewModel() {
-    suspend fun records(): List<TransactionRecord> = l1.history(walletId).sortedByDescending(TransactionRecord::timestampEpochMillis)
 }

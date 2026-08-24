@@ -233,6 +233,7 @@ fun HomeScreen(
     state: HomeUiState,
     onRefresh: () -> Unit,
     onTopUp: () -> Unit,
+    onHistory: () -> Unit,
     onWallets: () -> Unit,
 ) {
     FerretScreen {
@@ -274,6 +275,7 @@ fun HomeScreen(
                 FerretSecondaryButton("Add ADA", onTopUp)
             }
         }
+        FerretSecondaryButton("History", onHistory)
         FerretSecondaryButton("Wallets", onWallets)
     }
 }
@@ -322,23 +324,48 @@ fun TopUpScreen(profile: WalletProfile, qrCode: QrCode, onBack: () -> Unit, onCo
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HistoryScreen(records: List<TransactionRecord>) {
+fun HistoryScreen(
+    state: HistoryUiState,
+    onRefresh: () -> Unit,
+    onBack: () -> Unit,
+) {
     FerretScreen {
-        FerretTopBar("History")
-        if (records.isEmpty()) {
-            Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                Image(painterResource(Res.drawable.empty_activity_ferret), null, Modifier.size(180.dp))
-                FerretEmptyState("No activity yet", "Wallet activity will appear here.")
-            }
-        } else LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(FerretSpacing.sm)) {
-            items(records, key = TransactionRecord::id) { record ->
-                FerretCard(Modifier.fillMaxWidth()) {
-                    Text("${record.realm}: ${record.amount.value} lovelace", style = MaterialTheme.typography.titleMedium)
-                    Text("${record.state} · fee ${record.fee.value}", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(record.id, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        FerretTopBar("History", navigation = { io.riverark.ferret.ui.FerretTextButton("Back", onBack) })
+        PullToRefreshBox(
+            isRefreshing = state.loading,
+            onRefresh = onRefresh,
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+        ) {
+            when {
+                state.records.isNotEmpty() -> LazyColumn(
+                    Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.spacedBy(FerretSpacing.sm),
+                ) {
+                    items(state.records, key = TransactionRecord::id) { record ->
+                        FerretCard(Modifier.fillMaxWidth()) {
+                            Text("${record.realm}: ${formatAda(record.amount)}", style = MaterialTheme.typography.titleMedium)
+                            Text("${record.state} · fee ${formatAda(record.fee)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(record.id, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+                state.error != null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    FerretErrorState(state.error, "Retry", onRefresh)
+                }
+                !state.loading -> Column(
+                    Modifier.fillMaxSize(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    Image(painterResource(Res.drawable.empty_activity_ferret), null, Modifier.size(180.dp))
+                    FerretEmptyState("No activity yet", "Wallet activity will appear here.")
                 }
             }
+        }
+        if (state.records.isNotEmpty() && state.error != null) {
+            FerretErrorState(state.error, "Retry", onRefresh)
         }
     }
 }

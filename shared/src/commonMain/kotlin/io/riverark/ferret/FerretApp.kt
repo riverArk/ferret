@@ -35,11 +35,14 @@ import io.riverark.ferret.core.model.WalletId
 import io.riverark.ferret.core.model.WalletManager
 import io.riverark.ferret.core.model.Lovelace
 import io.riverark.ferret.core.model.WalletRepository
+import io.riverark.ferret.core.model.TransactionRecord
 import io.riverark.ferret.core.model.WalletProfile
 import io.riverark.ferret.feature.wallet.CreateWalletScreen
 import io.riverark.ferret.feature.wallet.HomeScreen
 import io.riverark.ferret.feature.wallet.QrCode
 import io.riverark.ferret.feature.wallet.HomeViewModel
+import io.riverark.ferret.feature.wallet.HistoryScreen
+import io.riverark.ferret.feature.wallet.HistoryViewModel
 import io.riverark.ferret.feature.wallet.RecoveryPhraseScreen
 import io.riverark.ferret.feature.wallet.RestoreWalletScreen
 import io.riverark.ferret.feature.wallet.VerifyRecoveryScreen
@@ -60,6 +63,7 @@ data class FerretDependencies(
     val wallets: WalletRepository,
     val walletManager: WalletManager?,
     val loadBalance: (suspend (WalletProfile) -> Lovelace)? = null,
+    val loadHistory: (suspend (WalletProfile) -> List<TransactionRecord>)? = null,
     val encodeQr: ((String) -> QrCode)? = null,
     val copyAddress: ((String) -> Unit)? = null,
 )
@@ -86,12 +90,14 @@ fun FerretApp(
             return@FerretTheme
         }
         val loadBalance = checkNotNull(dependencies.loadBalance) { "Wallet balance loader is unavailable." }
+        val loadHistory = checkNotNull(dependencies.loadHistory) { "Wallet history loader is unavailable." }
         val encodeQr = checkNotNull(dependencies.encodeQr) { "QR encoder is unavailable." }
         val copyAddress = checkNotNull(dependencies.copyAddress) { "Clipboard is unavailable." }
         WalletNavigation(
             dependencies.wallets,
             manager,
             loadBalance,
+            loadHistory,
             encodeQr,
             copyAddress,
             onUnlock,
@@ -105,6 +111,7 @@ private fun WalletNavigation(
     repository: WalletRepository,
     manager: WalletManager,
     loadBalance: suspend (WalletProfile) -> Lovelace,
+    loadHistory: suspend (WalletProfile) -> List<TransactionRecord>,
     encodeQr: (String) -> QrCode,
     copyAddress: (String) -> Unit,
     onUnlock: (() -> Unit)?,
@@ -227,6 +234,7 @@ private fun WalletNavigation(
                     homeState,
                     homeViewModel::refresh,
                     { navController.navigate(Route.TopUp(profile.id.value)) },
+                    { navController.navigate(Route.History(profile.id.value)) },
                     { navController.navigate(Route.WalletPicker) },
                 )
             }
@@ -237,6 +245,16 @@ private fun WalletNavigation(
             if (profile != null) {
                 val qrCode = remember(profile.paymentAddress) { encodeQr(profile.paymentAddress) }
                 TopUpScreen(profile, qrCode, navController::popBackStack) { copyAddress(profile.paymentAddress) }
+            }
+        }
+        composable<Route.History> { backStackEntry ->
+            val route = backStackEntry.toRoute<Route.History>()
+            val profile = (state as? AppState.Ready)?.wallets?.firstOrNull { it.id.value == route.walletId }
+            if (profile != null) {
+                val historyViewModel = viewModel { HistoryViewModel(profile, loadHistory) }
+                val historyState by historyViewModel.state.collectAsState()
+                LaunchedEffect(historyViewModel) { historyViewModel.refresh() }
+                HistoryScreen(historyState, historyViewModel::refresh, navController::popBackStack)
             }
         }
     }
