@@ -1,5 +1,6 @@
 package io.riverark.ferret.feature.wallet
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -33,6 +34,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
@@ -225,7 +229,12 @@ fun VerifyRecoveryScreen(words: List<String>, busy: Boolean, error: String?, onC
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HomeScreen(state: HomeUiState, onRefresh: () -> Unit, onWallets: () -> Unit) {
+fun HomeScreen(
+    state: HomeUiState,
+    onRefresh: () -> Unit,
+    onTopUp: () -> Unit,
+    onWallets: () -> Unit,
+) {
     FerretScreen {
         FerretTopBar("Ferret")
         PullToRefreshBox(
@@ -258,6 +267,13 @@ fun HomeScreen(state: HomeUiState, onRefresh: () -> Unit, onWallets: () -> Unit)
                 }
             }
         }
+        when {
+            state.balance?.value == 0L -> FerretPrimaryButton("Add ADA", onTopUp)
+            state.balance != null -> {
+                FerretPrimaryButton("Open channel", {}, enabled = false)
+                FerretSecondaryButton("Add ADA", onTopUp)
+            }
+        }
         FerretSecondaryButton("Wallets", onWallets)
     }
 }
@@ -268,14 +284,41 @@ internal fun formatAda(lovelace: Lovelace): String {
     return "₳ $whole" + if (fraction.isEmpty()) "" else ".$fraction"
 }
 
+data class QrCode(val size: Int, val modules: BooleanArray) {
+    init {
+        require(size > 0 && modules.size == size * size)
+    }
+}
+
 @Composable
-fun TopUpScreen(profile: WalletProfile, onCopy: () -> Unit) {
+fun TopUpScreen(profile: WalletProfile, qrCode: QrCode, onBack: () -> Unit, onCopy: () -> Unit) {
+    var copied by remember { mutableStateOf(false) }
     FerretScreen {
-        FerretTopBar("Add ADA")
+        FerretTopBar("Add ADA", navigation = { io.riverark.ferret.ui.FerretTextButton("Back", onBack) })
         FerretStatusChip(profile.network.name)
-        FerretCard(Modifier.fillMaxWidth()) { SelectionContainer { FerretDataBlock("Payment address", profile.paymentAddress) } }
+        Canvas(
+            Modifier.size(256.dp).align(Alignment.CenterHorizontally)
+                .semantics { contentDescription = "QR code for ${profile.paymentAddress}" },
+        ) {
+            drawRect(Color.White)
+            val moduleSize = size.minDimension / qrCode.size
+            qrCode.modules.forEachIndexed { index, dark ->
+                if (dark) {
+                    drawRect(
+                        Color.Black,
+                        topLeft = androidx.compose.ui.geometry.Offset(
+                            (index % qrCode.size) * moduleSize,
+                            (index / qrCode.size) * moduleSize,
+                        ),
+                        size = androidx.compose.ui.geometry.Size(moduleSize, moduleSize),
+                    )
+                }
+            }
+        }
+        FerretCard(Modifier.fillMaxWidth()) { FerretDataBlock("Payment address", profile.paymentAddress) }
+        if (copied) Text("Address copied", color = MaterialTheme.colorScheme.primary)
         Box(Modifier.weight(1f))
-        FerretPrimaryButton("Copy address", onCopy)
+        FerretPrimaryButton("Copy address", { onCopy(); copied = true })
     }
 }
 

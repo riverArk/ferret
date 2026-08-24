@@ -38,10 +38,12 @@ import io.riverark.ferret.core.model.WalletRepository
 import io.riverark.ferret.core.model.WalletProfile
 import io.riverark.ferret.feature.wallet.CreateWalletScreen
 import io.riverark.ferret.feature.wallet.HomeScreen
+import io.riverark.ferret.feature.wallet.QrCode
 import io.riverark.ferret.feature.wallet.HomeViewModel
 import io.riverark.ferret.feature.wallet.RecoveryPhraseScreen
 import io.riverark.ferret.feature.wallet.RestoreWalletScreen
 import io.riverark.ferret.feature.wallet.VerifyRecoveryScreen
+import io.riverark.ferret.feature.wallet.TopUpScreen
 import io.riverark.ferret.feature.wallet.WalletPickerScreen
 import io.riverark.ferret.feature.wallet.WalletPickerViewModel
 import io.riverark.ferret.navigation.Route
@@ -58,6 +60,8 @@ data class FerretDependencies(
     val wallets: WalletRepository,
     val walletManager: WalletManager?,
     val loadBalance: (suspend (WalletProfile) -> Lovelace)? = null,
+    val encodeQr: ((String) -> QrCode)? = null,
+    val copyAddress: ((String) -> Unit)? = null,
 )
 
 @Composable
@@ -82,7 +86,17 @@ fun FerretApp(
             return@FerretTheme
         }
         val loadBalance = checkNotNull(dependencies.loadBalance) { "Wallet balance loader is unavailable." }
-        WalletNavigation(dependencies.wallets, manager, loadBalance, onUnlock, onSensitiveContentChanged)
+        val encodeQr = checkNotNull(dependencies.encodeQr) { "QR encoder is unavailable." }
+        val copyAddress = checkNotNull(dependencies.copyAddress) { "Clipboard is unavailable." }
+        WalletNavigation(
+            dependencies.wallets,
+            manager,
+            loadBalance,
+            encodeQr,
+            copyAddress,
+            onUnlock,
+            onSensitiveContentChanged,
+        )
     }
 }
 
@@ -91,6 +105,8 @@ private fun WalletNavigation(
     repository: WalletRepository,
     manager: WalletManager,
     loadBalance: suspend (WalletProfile) -> Lovelace,
+    encodeQr: (String) -> QrCode,
+    copyAddress: (String) -> Unit,
     onUnlock: (() -> Unit)?,
     onSensitiveContentChanged: (Boolean) -> Unit,
 ) {
@@ -207,7 +223,20 @@ private fun WalletNavigation(
                 val homeViewModel = viewModel { HomeViewModel(profile, loadBalance) }
                 val homeState by homeViewModel.state.collectAsState()
                 LaunchedEffect(homeViewModel) { homeViewModel.refresh() }
-                HomeScreen(homeState, homeViewModel::refresh) { navController.navigate(Route.WalletPicker) }
+                HomeScreen(
+                    homeState,
+                    homeViewModel::refresh,
+                    { navController.navigate(Route.TopUp(profile.id.value)) },
+                    { navController.navigate(Route.WalletPicker) },
+                )
+            }
+        }
+        composable<Route.TopUp> { backStackEntry ->
+            val route = backStackEntry.toRoute<Route.TopUp>()
+            val profile = (state as? AppState.Ready)?.wallets?.firstOrNull { it.id.value == route.walletId }
+            if (profile != null) {
+                val qrCode = remember(profile.paymentAddress) { encodeQr(profile.paymentAddress) }
+                TopUpScreen(profile, qrCode, navController::popBackStack) { copyAddress(profile.paymentAddress) }
             }
         }
     }

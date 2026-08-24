@@ -16,7 +16,7 @@ Later user sessions additionally required the full visual refresh, documentation
 
 ## Current conclusion
 
-The KMP shell, Android secure onboarding, shared visual system, adaptive icon, wallet balance, and pull-to-refresh are implemented. Most remaining product code is contract-level or disconnected UI: the Android host only wires unlock, wallet lifecycle, and `ConnectorClient.balance`; `FerretApp` only registers onboarding and Home destinations. The next implementation set should complete and harden the Android L1 wallet before enabling any channel or payment action.
+The KMP shell, Android secure onboarding, shared visual system, adaptive icon, wallet balance, pull-to-refresh, validated foreground session, and L1 top-up flow are implemented. Most remaining product code is contract-level or disconnected UI: the Android host wires unlock, wallet lifecycle, validated connector/adaptor sessions, `ConnectorClient.balance`, local address QR, and sensitive clipboard expiry; `FerretApp` registers onboarding, Home, and Top Up destinations. The next implementation set should complete history and transfer before enabling any channel or payment action.
 
 Status legend: **Complete** means connected behavior exists; **Partial** means reusable code exists but the end-to-end feature does not; **Missing** means no usable implementation exists; **Deferred** is an explicit sequencing decision.
 
@@ -48,12 +48,12 @@ Status legend: **Complete** means connected behavior exists; **Partial** means r
 
 ### P0.2 — Complete the Android L1 wallet vertical slice
 
-**Current status:** Partial. Home loads the real connector balance and pull-to-refresh is manually confirmed. `TopUpScreen`, `HistoryScreen`, transaction models, all typed routes, and the Bloxbean `Transfer` intent exist, but only Home is registered. There is no address QR output, clipboard policy, transaction/history repository, transfer ViewModel/screen, ledger-to-build/sign/inspect/submit orchestration, or pending-operation reconciliation.
+**Current status:** Partial. Home loads the real connector balance and pull-to-refresh is manually confirmed. Top Up is reachable, generates its address QR locally, and uses an explicit sensitive clipboard copy with conditional 60-second clearing. `HistoryScreen`, transaction models, typed routes, and the Bloxbean `Transfer` intent exist, but History and Transfer remain disconnected. There is no transaction/history repository, transfer ViewModel/screen, ledger-to-build/sign/inspect/submit orchestration, or pending-operation reconciliation.
 
 **Missing work:**
 
-1. Register `TopUp`, `Transfer`, and `History` in the existing `NavHost`; expose Home actions using the original precedence: zero L1 balance → top up, funded without an open channel → open-channel remains disabled until P1, open channel → pay remains disabled until P2.
-2. Top-up: generate the address QR locally, provide explicit copy, mark clipboard content sensitive, and attempt clear after 60 seconds only if Ferret still owns the clip.
+1. Register `Transfer` and `History` in the existing `NavHost`; preserve the connected Home action precedence: zero L1 balance → top up, funded without an open channel → open-channel remains disabled until P1, open channel → pay remains disabled until P2.
+2. Complete device verification of Top Up by scanning both network address QR values and observing conditional clipboard expiry.
 3. History: parse connector transaction responses into immutable `TransactionRecord` values, merge without mutating source lists, and preserve 5-block confirmed/2160-block settled display policy.
 4. Transfer: show only destination profiles on the same network; preview amount, fee bound, change, recipient, and network; write the operation journal before signing/submission; use `CardanoTransactionEngine.requireMatches`; reconcile submission by operation ID rather than retrying a mutation.
 5. Keep external-address entry out of normal transfer. It belongs only to wallet removal.
@@ -200,11 +200,11 @@ Status legend: **Complete** means connected behavior exists; **Partial** means r
 
 **Verification:** Existing `WalletBalanceTest`; `./gradlew androidCheck`; funded Preprod device comparison against connector response.
 
-### 8. Top-up address QR and clipboard — Partial
+### 8. Top-up address QR and clipboard — Implemented; device verification pending
 
-**Current status:** `TopUpScreen` displays the address and Copy button but is unreachable. No local address QR or Android clipboard adapter is present.
+**Current status:** `TopUpScreen` is reachable from Home, renders a locally encoded QR containing the exact payment address, and copies only on explicit action. Android marks the clip sensitive and clears it after 60 seconds only when its unique Ferret label and address still match.
 
-**Missing work:** P0.2 top-up navigation, local QR output, exact payload verification, explicit copy feedback, sensitive clipboard metadata, and conditional 60-second clearing.
+**Missing work:** Scan Preprod and Mainnet QR values and observe clipboard ownership/expiry on an unlocked device with a confirmed wallet. The implementation session installed and launched the debug app in an isolated emulator user, but did not bypass recovery confirmation or expose a generated mnemonic to manufacture that state.
 
 **Priority:** P0.
 

@@ -48,6 +48,7 @@ kotlin {
             implementation(libs.androidx.camera.view)
             implementation(libs.mlkit.barcode)
             implementation(libs.bloxbean.core)
+            implementation(libs.zxing.core)
         }
     }
 }

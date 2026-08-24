@@ -44,12 +44,12 @@ Seed entropy is cleared after derivation and vault callbacks. Mnemonic restore/d
 
 The Refined Ferret theme is light-only: cream canvas, near-white surfaces, charcoal ink, yellow primary, accessible coral secondary, blue tertiary, and dark red errors. Exo 2 headings, Ubuntu Mono body text, rounded outlined surfaces, 48 dp touch targets, edge-to-edge safe drawing insets, bundled ferret art, and bundled Material Symbols are shared across implemented screens.
 
-Home shows the wallet name, network, confirmed on-chain ADA balance, payment address, and Wallets navigation. The balance loads from the wallet network's connector and supports pull-to-refresh; payment, transaction, and channel actions remain unavailable until their repositories are wired.
+Home shows the wallet name, network, confirmed on-chain ADA balance, payment address, and Wallets navigation. The balance loads from the wallet network's connector and supports pull-to-refresh. Add ADA opens a shared top-up destination with a locally generated address QR and explicit Android sensitive-clipboard copy that clears after 60 seconds while Ferret still owns the clip. Payment, transaction, and channel actions remain unavailable until their repositories are wired.
 
 ## Known platform gaps
 
 - iOS wallet setup and runtime integrations are unavailable; see `IOS_FOLLOW_UP.md`.
-- Existing transaction, channel, payment, settings, and scanner composables are styled, but only wallet lifecycle routes are connected to the real root graph.
+- Existing transaction, channel, payment, settings, and scanner composables are styled, but only wallet lifecycle and L1 top-up routes are connected to the real root graph.
 - No dark theme is implemented.
 
 ## Decisions
@@ -82,3 +82,4 @@ Android installation and manual onboarding verification require an API 36 emulat
 - Wired state-driven shared onboarding navigation and an explicit iOS unavailable state.
 - Applied the Refined Ferret theme, bundled fonts/icons, Android launcher, and shared component styling.
 - Replaced contributor and project documentation with Gradle/KMP instructions and retained deferred iOS work in `IOS_FOLLOW_UP.md`.
+- Connected the L1 top-up route, local address QR, and owned sensitive-clipboard expiry behavior.

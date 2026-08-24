@@ -1,5 +1,10 @@
 package io.riverark.ferret
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.os.Handler
+import android.os.Looper
+import android.os.PersistableBundle
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
@@ -29,10 +34,12 @@ import io.riverark.ferret.core.security.AndroidSecureRandomSource
 import io.riverark.ferret.core.security.AndroidSecureVault
 import io.riverark.ferret.core.security.ForegroundLockPolicy
 import io.riverark.ferret.core.security.AndroidUserAuthenticator
+import io.riverark.ferret.feature.wallet.addressQrCode
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import java.util.UUID
 import java.security.GeneralSecurityException
 
 class MainActivity : FragmentActivity() {
@@ -44,6 +51,7 @@ class MainActivity : FragmentActivity() {
     }
     private val wallets = WalletRepository()
     private val lockPolicy = ForegroundLockPolicy(SystemClock::elapsedRealtime)
+    private val clipboardHandler = Handler(Looper.getMainLooper())
     private lateinit var connectivity: ConnectivityManager
     private lateinit var vault: AndroidSecureVault
     private lateinit var walletManager: WalletManager
@@ -98,6 +106,8 @@ class MainActivity : FragmentActivity() {
                             throw CancellationException("wallet session offline")
                         }
                     },
+                    encodeQr = ::addressQrCode,
+                    copyAddress = ::copyAddress,
                 ),
                 ::unlock,
                 ::setSensitiveContent,
@@ -141,6 +151,26 @@ class MainActivity : FragmentActivity() {
         if (sensitive) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         else window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
     }
+    private fun copyAddress(address: String) {
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val label = "Ferret address ${UUID.randomUUID()}"
+        val clip = ClipData.newPlainText(label, address).apply {
+            description.extras = PersistableBundle().apply {
+                putBoolean("android.content.extra.IS_SENSITIVE", true)
+            }
+        }
+        clipboard.setPrimaryClip(clip)
+        clipboardHandler.postDelayed({
+            val current = clipboard.primaryClip
+            if (
+                current?.description?.label?.toString() == label &&
+                current.getItemAt(0).text?.toString() == address
+            ) {
+                clipboard.clearPrimaryClip()
+            }
+        }, ADDRESS_CLIPBOARD_MILLIS)
+    }
+
 
     private fun unlock() = startOnlineSession(authenticate = !vault.isUnlocked)
 
@@ -204,5 +234,9 @@ class MainActivity : FragmentActivity() {
         cancelActiveWork()
         vault.lock()
         wallets.lock()
+    }
+
+    private companion object {
+        const val ADDRESS_CLIPBOARD_MILLIS = 60_000L
     }
 }

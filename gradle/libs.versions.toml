@@ -14,6 +14,7 @@ androidx-biometric = "1.1.0"
 androidx-fragment = "1.8.9"
 camerax = "1.5.3"
 mlkit-barcode = "17.3.0"
+zxing = "3.5.4"
 
 [libraries]
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "androidx-activity" }
@@ -33,6 +34,7 @@ ktor-content-negotiation = { module = "io.ktor:ktor-client-content-negotiation",
 ktor-serialization-json = { module = "io.ktor:ktor-serialization-kotlinx-json", version.ref = "ktor" }
 lightning = { module = "fr.acinq.lightning:lightning-kmp-core", version.ref = "lightning" }
 bloxbean-core = { module = "com.bloxbean.cardano:cardano-client-lib", version.ref = "bloxbean" }
+zxing-core = { module = "com.google.zxing:core", version.ref = "zxing" }
 
 [plugins]
 kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
