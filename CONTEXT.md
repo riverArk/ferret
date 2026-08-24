@@ -83,3 +83,4 @@ Android installation and manual onboarding verification require an API 36 emulat
 - Applied the Refined Ferret theme, bundled fonts/icons, Android launcher, and shared component styling.
 - Replaced contributor and project documentation with Gradle/KMP instructions and retained deferred iOS work in `IOS_FOLLOW_UP.md`.
 - Connected the L1 top-up route, local address QR, and owned sensitive-clipboard expiry behavior.
+- Verified the rendered Mainnet top-up QR and 60-second owned clipboard expiry on a Pixel 8a.

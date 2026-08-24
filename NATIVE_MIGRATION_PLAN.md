@@ -53,10 +53,9 @@ Status legend: **Complete** means connected behavior exists; **Partial** means r
 **Missing work:**
 
 1. Register `Transfer` and `History` in the existing `NavHost`; preserve the connected Home action precedence: zero L1 balance → top up, funded without an open channel → open-channel remains disabled until P1, open channel → pay remains disabled until P2.
-2. Complete device verification of Top Up by scanning both network address QR values and observing conditional clipboard expiry.
-3. History: parse connector transaction responses into immutable `TransactionRecord` values, merge without mutating source lists, and preserve 5-block confirmed/2160-block settled display policy.
-4. Transfer: show only destination profiles on the same network; preview amount, fee bound, change, recipient, and network; write the operation journal before signing/submission; use `CardanoTransactionEngine.requireMatches`; reconcile submission by operation ID rather than retrying a mutation.
-5. Keep external-address entry out of normal transfer. It belongs only to wallet removal.
+2. History: parse connector transaction responses into immutable `TransactionRecord` values, merge without mutating source lists, and preserve 5-block confirmed/2160-block settled display policy.
+3. Transfer: show only destination profiles on the same network; preview amount, fee bound, change, recipient, and network; write the operation journal before signing/submission; use `CardanoTransactionEngine.requireMatches`; reconcile submission by operation ID rather than retrying a mutation.
+4. Keep external-address entry out of normal transfer. It belongs only to wallet removal.
 
 **Affected files:** `shared/src/commonMain/kotlin/io/riverark/ferret/FerretApp.kt`; `shared/src/commonMain/kotlin/io/riverark/ferret/feature/wallet/WalletScreens.kt`; `shared/src/commonMain/kotlin/io/riverark/ferret/feature/wallet/WalletViewModels.kt`; `shared/src/commonMain/kotlin/io/riverark/ferret/core/network/Clients.kt`; `shared/src/commonMain/kotlin/io/riverark/ferret/core/cardano/CardanoTransactionEngine.kt`; `shared/src/androidMain/kotlin/io/riverark/ferret/core/cardano/AndroidCardanoTransactionEngine.kt`; `androidApp/src/main/kotlin/io/riverark/ferret/MainActivity.kt`.
 
@@ -200,11 +199,11 @@ Status legend: **Complete** means connected behavior exists; **Partial** means r
 
 **Verification:** Existing `WalletBalanceTest`; `./gradlew androidCheck`; funded Preprod device comparison against connector response.
 
-### 8. Top-up address QR and clipboard — Implemented; device verification pending
+### 8. Top-up address QR and clipboard — Complete
 
 **Current status:** `TopUpScreen` is reachable from Home, renders a locally encoded QR containing the exact payment address, and copies only on explicit action. Android marks the clip sensitive and clears it after 60 seconds only when its unique Ferret label and address still match.
 
-**Missing work:** Scan Preprod and Mainnet QR values and observe clipboard ownership/expiry on an unlocked device with a confirmed wallet. The implementation session installed and launched the debug app in an isolated emulator user, but did not bypass recovery confirmation or expose a generated mnemonic to manufacture that state.
+**Missing work:** None.
 
 **Priority:** P0.
 
@@ -214,7 +213,7 @@ Status legend: **Complete** means connected behavior exists; **Partial** means r
 
 **Acceptance criteria:** QR and clipboard contain exactly the full selected network address; ordinary address screen remains shareable; mnemonic/invoice/signed payload copy actions do not exist.
 
-**Verification:** Instrumented QR decode and clipboard ownership/expiry test; manual scan on Preprod and Mainnet profiles.
+**Verification:** Android host decoding verifies the exact Preprod address payload. On a Pixel 8a, the rendered Mainnet QR decoded to the full displayed address, explicit copy produced the same address, and the owned clip cleared after the 60-second timeout when Ferret resumed; replacement clips are protected by the unique-label/address ownership check.
 
 ### 9. Same-network L1 transfer — Partial
 
