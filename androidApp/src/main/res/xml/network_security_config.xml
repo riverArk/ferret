@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors><certificates src="system" /></trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="false">preprod-cardano.ferret.channel</domain>
+        <pin-set expiration="2027-08-24">
+            <pin digest="SHA-256">7jbNyGtnwNf+MpW0NPnODGDXpM4u6GkH3BM4VUjIYn0=</pin>
+            <pin digest="SHA-256">kIdp6NNEd8wsugYyyIYFsi1ylMCED3hZbSR8ZFsa/A4=</pin>
+        </pin-set>
+    </domain-config>
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="false">preprod-adaptor.ferret.channel</domain>
+        <domain includeSubdomains="false">adaptor.ferret.channel</domain>
+        <pin-set expiration="2027-08-24">
+            <pin digest="SHA-256">CC5622ZhmmddKG3zIcjutkVSBXGKLcSZXyMhY4Bz/0Y=</pin>
+            <pin digest="SHA-256">kIdp6NNEd8wsugYyyIYFsi1ylMCED3hZbSR8ZFsa/A4=</pin>
+        </pin-set>
+    </domain-config>
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="false">cardano.ferret.channel</domain>
+        <pin-set expiration="2027-08-24">
+            <pin digest="SHA-256">1oP6AzHOK26nc/hrdhx2XUyZRXwWVqAH0T1CG+MeOAU=</pin>
+            <pin digest="SHA-256">kIdp6NNEd8wsugYyyIYFsi1ylMCED3hZbSR8ZFsa/A4=</pin>
+        </pin-set>
+    </domain-config>
+</network-security-config>

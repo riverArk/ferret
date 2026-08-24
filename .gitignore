@@ -17,6 +17,12 @@ dev-dist
 dist-ssr
 *.local
 
+# Kotlin/Gradle
+.gradle/
+.kotlin/
+**/build/
+local.properties
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
