@@ -11,6 +11,7 @@ import io.riverark.ferret.core.model.WalletRepository
 import io.riverark.ferret.core.security.SecureRandomSource
 import io.riverark.ferret.core.security.SecureVault
 import io.riverark.ferret.core.security.WalletSecretV1
+import io.riverark.ferret.core.security.WalletEncryptedStateV1
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -75,6 +76,7 @@ private object FakePhrases : RecoveryPhraseCodec {
 private class FakeVault : SecureVault {
     private val storedProfiles = mutableListOf<WalletProfile>()
     private val seeds = mutableMapOf<WalletId, ByteArray>()
+    private val states = mutableMapOf<WalletId, WalletEncryptedStateV1>()
     var lastSeedCallback: ByteArray? = null
     override val isUnlocked = true
     override suspend fun unlock(wrappedDataKey: ByteArray) = Unit
@@ -84,6 +86,11 @@ private class FakeVault : SecureVault {
         require(storedProfiles.none { it.id == profile.id })
         storedProfiles += profile
         seeds[profile.id] = secret.entropy.copyOf()
+        states[profile.id] = WalletEncryptedStateV1(
+            secret.channelRecovery.copyOf(),
+            secret.operationJournal.copyOf(),
+            secret.backupGeneration,
+        )
     }
     override suspend fun updateProfile(profile: WalletProfile) {
         val index = storedProfiles.indexOfFirst { it.id == profile.id }
@@ -96,10 +103,15 @@ private class FakeVault : SecureVault {
     override suspend fun deleteWallet(walletId: WalletId) {
         storedProfiles.removeAll { it.id == walletId }
         seeds.remove(walletId)?.fill(0)
+        states.remove(walletId)
     }
     override suspend fun <T> withWalletSeed(walletId: WalletId, action: suspend (ByteArray) -> T): T {
         val seed = seeds.getValue(walletId).copyOf()
         lastSeedCallback = seed
         return try { action(seed) } finally { seed.fill(0) }
+    }
+    override suspend fun walletState(walletId: WalletId) = states.getValue(walletId)
+    override suspend fun updateWalletState(walletId: WalletId, state: WalletEncryptedStateV1) {
+        states[walletId] = state
     }
 }

@@ -40,6 +40,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import ferret.shared.generated.resources.Res
@@ -47,6 +48,7 @@ import ferret.shared.generated.resources.empty_activity_ferret
 import ferret.shared.generated.resources.ferret_unpack
 import ferret.shared.generated.resources.splash_ferret
 import io.riverark.ferret.core.model.CardanoNetwork
+import io.riverark.ferret.core.model.ChannelState
 import io.riverark.ferret.core.model.Lovelace
 import io.riverark.ferret.core.model.TransactionRecord
 import io.riverark.ferret.core.model.WalletProfile
@@ -55,6 +57,7 @@ import io.riverark.ferret.ui.FerretDataBlock
 import io.riverark.ferret.ui.FerretEmptyState
 import io.riverark.ferret.ui.FerretErrorState
 import io.riverark.ferret.ui.FerretPrimaryButton
+import io.riverark.ferret.ui.FerretListRow
 import io.riverark.ferret.ui.FerretScreen
 import io.riverark.ferret.ui.FerretSecondaryButton
 import io.riverark.ferret.ui.FerretSpacing
@@ -233,6 +236,7 @@ fun HomeScreen(
     state: HomeUiState,
     onRefresh: () -> Unit,
     onTopUp: () -> Unit,
+    onTransfer: (() -> Unit)?,
     onHistory: () -> Unit,
     onWallets: () -> Unit,
 ) {
@@ -252,7 +256,7 @@ fun HomeScreen(
                 item {
                     FerretCard(Modifier.fillMaxWidth()) {
                         when {
-                            state.balance != null -> FerretDataBlock("Available balance", formatAda(state.balance))
+                            state.balance != null -> FerretDataBlock("L1 available balance", formatAda(state.balance))
                             state.error != null -> FerretErrorState(state.error, "Retry", onRefresh)
                             else -> Text("Loading balance")
                         }
@@ -270,14 +274,90 @@ fun HomeScreen(
         }
         when {
             state.balance?.value == 0L -> FerretPrimaryButton("Add ADA", onTopUp)
+            state.profile.channelState is ChannelState.Open -> {
+                FerretPrimaryButton("Pay invoice", {}, enabled = false)
+                FerretSecondaryButton("Add ADA", onTopUp)
+                FerretSecondaryButton("Transfer ADA", { onTransfer?.invoke() }, enabled = onTransfer != null)
+            }
             state.balance != null -> {
                 FerretPrimaryButton("Open channel", {}, enabled = false)
                 FerretSecondaryButton("Add ADA", onTopUp)
+                FerretSecondaryButton("Transfer ADA", { onTransfer?.invoke() }, enabled = onTransfer != null)
             }
         }
         FerretSecondaryButton("History", onHistory)
         FerretSecondaryButton("Wallets", onWallets)
     }
+}
+
+@Composable
+fun TransferScreen(
+    profile: WalletProfile,
+    destinations: List<WalletProfile>,
+    state: TransferUiState,
+    onPreview: (WalletProfile, Lovelace) -> Unit,
+    onSubmit: () -> Unit,
+    onBack: () -> Unit,
+) {
+    var selectedWalletId by rememberSaveable { mutableStateOf<String?>(null) }
+    var amount by rememberSaveable { mutableStateOf("") }
+    val destination = destinations.firstOrNull { it.id.value == selectedWalletId }
+    val lovelace = parseAdaAmount(amount)
+    FerretScreen {
+        FerretTopBar("Transfer ADA", navigation = { io.riverark.ferret.ui.FerretTextButton("Back", onBack) })
+        FerretStatusChip(profile.network.name)
+        Text("Send to another ${profile.network.name.lowercase()} wallet", style = MaterialTheme.typography.titleMedium)
+        destinations.forEach { wallet ->
+            FerretListRow(
+                wallet.name,
+                wallet.paymentAddress,
+                onClick = { selectedWalletId = wallet.id.value },
+                trailing = { if (selectedWalletId == wallet.id.value) Text("Selected") },
+            )
+        }
+        if (destinations.isEmpty()) {
+            FerretEmptyState("No destination wallet", "Create or restore another wallet on this network.")
+        }
+        OutlinedTextField(
+            amount,
+            { amount = it },
+            Modifier.fillMaxWidth(),
+            label = { Text("ADA amount") },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+            singleLine = true,
+        )
+        state.preview?.let { preview ->
+            FerretCard(Modifier.fillMaxWidth()) {
+                FerretDataBlock("Recipient", preview.destination.name)
+                FerretDataBlock("Amount", formatAda(preview.amount))
+                FerretDataBlock("Maximum fee", formatAda(preview.feeBound))
+                FerretDataBlock("Change", formatAda(preview.change))
+                FerretDataBlock("Network", preview.destination.network.name)
+            }
+        }
+        state.operationId?.let { FerretDataBlock("Operation submitted", it) }
+        state.error?.let { FerretErrorState(it) }
+        Box(Modifier.weight(1f))
+        if (state.preview == null) {
+            FerretPrimaryButton(
+                "Preview transfer",
+                { onPreview(checkNotNull(destination), checkNotNull(lovelace)) },
+                enabled = destination != null && lovelace != null && !state.busy,
+            )
+        } else {
+            FerretPrimaryButton("Confirm transfer", onSubmit, enabled = !state.busy && state.operationId == null)
+        }
+    }
+}
+
+internal fun parseAdaAmount(value: String): Lovelace? {
+    if (!Regex("(0|[1-9][0-9]*)(\\.[0-9]{0,6})?").matches(value)) return null
+    val parts = value.split('.', limit = 2)
+    val whole = parts[0].toLongOrNull() ?: return null
+    val fraction = parts.getOrElse(1) { "" }.padEnd(6, '0').toLongOrNull() ?: 0
+    if (whole > (Long.MAX_VALUE - fraction) / 1_000_000) return null
+    val total = whole * 1_000_000 + fraction
+    return total.takeIf { it > 0 }?.let(::Lovelace)
 }
 
 internal fun formatAda(lovelace: Lovelace): String {

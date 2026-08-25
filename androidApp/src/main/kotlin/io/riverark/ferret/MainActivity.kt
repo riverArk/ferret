@@ -19,6 +19,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.Lifecycle
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.android.Android
+import io.riverark.ferret.core.cardano.androidCardanoTransactionEngine
 import io.riverark.ferret.core.cardano.deriveAndroidWallet
 import io.riverark.ferret.core.model.CardanoNetwork
 import io.riverark.ferret.core.model.WalletManager
@@ -35,6 +36,7 @@ import io.riverark.ferret.core.security.AndroidSecureVault
 import io.riverark.ferret.core.security.ForegroundLockPolicy
 import io.riverark.ferret.core.security.SensitiveContentCounter
 import io.riverark.ferret.core.security.AndroidUserAuthenticator
+import io.riverark.ferret.feature.wallet.DefaultL1WalletRepository
 import io.riverark.ferret.feature.wallet.addressQrCode
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
@@ -57,6 +59,7 @@ class MainActivity : FragmentActivity() {
     private lateinit var vault: AndroidSecureVault
     private lateinit var walletManager: WalletManager
     private lateinit var authenticator: AndroidUserAuthenticator
+    private lateinit var l1WalletRepository: DefaultL1WalletRepository
     private var activeWork: Job? = null
     private var backgroundLock: Job? = null
     private var unlocking = false
@@ -91,6 +94,14 @@ class MainActivity : FragmentActivity() {
             ::deriveAndroidWallet,
             wallets,
         )
+        l1WalletRepository = DefaultL1WalletRepository(
+            wallets,
+            vault,
+            { profile -> connectors.getValue(profile.network) },
+            androidCardanoTransactionEngine(),
+            { UUID.randomUUID().toString() },
+            System::currentTimeMillis,
+        )
         connectivity = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         connectivity.registerDefaultNetworkCallback(networkCallback)
         setContent {
@@ -124,6 +135,8 @@ class MainActivity : FragmentActivity() {
                     },
                     encodeQr = ::addressQrCode,
                     copyAddress = ::copyAddress,
+                    l1WalletRepository = l1WalletRepository,
+                    l1MutationsAvailable = false,
                 ),
                 ::unlock,
                 ::setSensitiveContent,
@@ -212,6 +225,7 @@ class MainActivity : FragmentActivity() {
                 check(hasValidatedNetwork())
                 val selected = profiles.firstOrNull { it.id == wallets.selectedWalletId() } ?: profiles.first()
                 coordinators.getValue(selected.network).validate(selected)
+                l1WalletRepository.reconcilePending(selected.id)
                 wallets.publish(selected.id, profiles)
             } catch (error: CancellationException) {
                 throw error

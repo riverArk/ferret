@@ -79,6 +79,51 @@ class AndroidSecureVault(private val context: Context) : SecureVault {
         return try { action(entropy) } finally { entropy.fill(0) }
     }
 
+    override suspend fun walletState(walletId: WalletId): WalletEncryptedStateV1 {
+        val secret = readSecret(walletId)
+        return try {
+            WalletEncryptedStateV1(
+                channelRecovery = secret.channelRecovery.copyOf(),
+                operationJournal = secret.operationJournal.copyOf(),
+                backupGeneration = secret.backupGeneration,
+            )
+        } finally {
+            secret.clear()
+        }
+    }
+
+    override suspend fun updateWalletState(walletId: WalletId, state: WalletEncryptedStateV1) {
+        require(state.backupGeneration >= 0)
+        val secret = readSecret(walletId)
+        val updated = secret.copy(
+            channelRecovery = state.channelRecovery,
+            operationJournal = state.operationJournal,
+            backupGeneration = state.backupGeneration,
+        )
+        val plaintext = json.encodeToString(updated).encodeToByteArray()
+        try {
+            writeAtomic(file(walletId), encrypt(key(), plaintext))
+        } finally {
+            plaintext.fill(0)
+            secret.clear()
+        }
+    }
+
+    private fun readSecret(walletId: WalletId): WalletSecretV1 {
+        val plaintext = decrypt(key(), file(walletId).readFully())
+        return try {
+            json.decodeFromString<WalletSecretV1>(plaintext.decodeToString())
+        } finally {
+            plaintext.fill(0)
+        }
+    }
+
+    private fun WalletSecretV1.clear() {
+        entropy.fill(0)
+        channelRecovery.fill(0)
+        operationJournal.fill(0)
+    }
+
     private fun key() = dataKey ?: error("vault locked")
     private fun file(walletId: WalletId) = AtomicFile(context.filesDir.resolve("wallet-${walletId.value}.v1"))
     private fun indexFile() = AtomicFile(context.filesDir.resolve("wallet-index.v1"))

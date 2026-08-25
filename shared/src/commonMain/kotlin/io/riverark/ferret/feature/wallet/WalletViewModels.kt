@@ -2,6 +2,8 @@ package io.riverark.ferret.feature.wallet
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import io.riverark.ferret.core.cardano.CardanoIntent
+import io.riverark.ferret.core.cardano.UnsignedTransaction
 import io.riverark.ferret.core.model.CardanoNetwork
 import io.riverark.ferret.core.model.CreatedWallet
 import io.riverark.ferret.core.model.Lovelace
@@ -72,7 +74,21 @@ class WalletPickerViewModel(private val manager: WalletManager) : ViewModel() {
 }
 
 data class WalletBalance(val spendable: Lovelace, val pending: Lovelace)
-data class TransferPreview(val destination: WalletProfile, val amount: Lovelace, val feeBound: Lovelace, val change: Lovelace)
+data class TransferPreview(
+    val destination: WalletProfile,
+    val amount: Lovelace,
+    val feeBound: Lovelace,
+    val change: Lovelace,
+    val intent: CardanoIntent.Transfer? = null,
+    val unsigned: UnsignedTransaction? = null,
+)
+
+data class TransferUiState(
+    val preview: TransferPreview? = null,
+    val busy: Boolean = false,
+    val error: String? = null,
+    val operationId: String? = null,
+)
 
 interface L1WalletRepository {
     suspend fun balance(walletId: WalletId): WalletBalance
@@ -152,6 +168,35 @@ internal fun mergeTransactionRecords(
     (l1 + l2).sortedWith(compareByDescending<TransactionRecord> { it.timestampEpochMillis }.thenByDescending { it.id })
 
 class TransferViewModel(private val walletId: WalletId, private val network: CardanoNetwork, private val l1: L1WalletRepository) : ViewModel() {
+    private val mutableState = MutableStateFlow(TransferUiState())
+    val state = mutableState.asStateFlow()
+
+    fun previewAsync(destination: WalletProfile, amount: Lovelace) {
+        viewModelScope.launch {
+            mutableState.value = TransferUiState(busy = true)
+            try {
+                mutableState.value = TransferUiState(preview(destination, amount))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                mutableState.value = TransferUiState(error = "Unable to preview transfer. Check the amount and connection.")
+            }
+        }
+    }
+
+    fun submitAsync() {
+        val preview = mutableState.value.preview ?: return
+        viewModelScope.launch {
+            mutableState.value = mutableState.value.copy(busy = true, error = null)
+            try {
+                mutableState.value = TransferUiState(operationId = submit(preview))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                mutableState.value = mutableState.value.copy(busy = false, error = "Transfer status is unavailable. Check History before trying again.")
+            }
+        }
+    }
     fun destinations(profiles: List<WalletProfile>) =
         profiles.filter { it.id != walletId && it.network == network }
 

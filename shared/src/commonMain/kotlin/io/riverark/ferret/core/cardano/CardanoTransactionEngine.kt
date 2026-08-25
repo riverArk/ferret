@@ -48,11 +48,13 @@ interface CardanoTransactionEngine {
     suspend fun build(intent: CardanoIntent, ledger: LedgerSnapshot): UnsignedTransaction
     fun sign(unsigned: UnsignedTransaction, seed: ByteArray): SignedTransaction
     fun inspect(signedCbor: ByteArray): TransactionSummary
+    fun transactionId(signedCbor: ByteArray): String
 }
 
 fun TransactionSummary.requireMatches(intent: CardanoIntent, network: CardanoNetwork, feeBound: Lovelace) {
     require(this.network == network)
     require(fee.value <= feeBound.value)
+    require(validityStart != null && validityStart == intent.validFrom)
     require(validityEnd != null && validityEnd == intent.validUntil)
     val (destination, expectedAmount, expectedAssets) = when (intent) {
         is CardanoIntent.Transfer -> Triple(intent.destinationAddress, intent.amount, emptyMap())
@@ -65,6 +67,6 @@ fun TransactionSummary.requireMatches(intent: CardanoIntent, network: CardanoNet
         )
         is CardanoIntent.CloseChannel -> Triple(intent.sourceAddress, intent.amount, intent.channelInput.assets)
     }
-    require(outputs.any { it.address == destination && it.lovelace == expectedAmount && it.assets == expectedAssets })
+    require(outputs.count { it.address == destination && it.lovelace == expectedAmount && it.assets == expectedAssets } == 1)
     require(outputs.all { it.address == destination || it.address == intent.sourceAddress })
 }

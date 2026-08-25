@@ -42,11 +42,14 @@ import io.riverark.ferret.feature.wallet.HomeScreen
 import io.riverark.ferret.feature.wallet.QrCode
 import io.riverark.ferret.feature.wallet.HomeViewModel
 import io.riverark.ferret.feature.wallet.HistoryScreen
+import io.riverark.ferret.feature.wallet.L1WalletRepository
 import io.riverark.ferret.feature.wallet.HistoryViewModel
 import io.riverark.ferret.feature.wallet.RecoveryPhraseScreen
 import io.riverark.ferret.feature.wallet.RestoreWalletScreen
 import io.riverark.ferret.feature.wallet.VerifyRecoveryScreen
 import io.riverark.ferret.feature.wallet.TopUpScreen
+import io.riverark.ferret.feature.wallet.TransferScreen
+import io.riverark.ferret.feature.wallet.TransferViewModel
 import io.riverark.ferret.feature.wallet.WalletPickerScreen
 import io.riverark.ferret.feature.wallet.WalletPickerViewModel
 import io.riverark.ferret.navigation.Route
@@ -66,6 +69,8 @@ data class FerretDependencies(
     val loadHistory: (suspend (WalletProfile) -> List<TransactionRecord>)? = null,
     val encodeQr: ((String) -> QrCode)? = null,
     val copyAddress: ((String) -> Unit)? = null,
+    val l1WalletRepository: L1WalletRepository? = null,
+    val l1MutationsAvailable: Boolean = false,
 )
 
 @Composable
@@ -100,6 +105,8 @@ fun FerretApp(
             loadHistory,
             encodeQr,
             copyAddress,
+            dependencies.l1WalletRepository,
+            dependencies.l1MutationsAvailable,
             onUnlock,
             onSensitiveContentChanged,
         )
@@ -114,6 +121,8 @@ private fun WalletNavigation(
     loadHistory: suspend (WalletProfile) -> List<TransactionRecord>,
     encodeQr: (String) -> QrCode,
     copyAddress: (String) -> Unit,
+    l1WalletRepository: L1WalletRepository?,
+    l1MutationsAvailable: Boolean,
     onUnlock: (() -> Unit)?,
     onSensitiveContentChanged: (Boolean) -> Unit,
 ) {
@@ -236,6 +245,11 @@ private fun WalletNavigation(
                     homeState,
                     homeViewModel::refresh,
                     { navController.navigate(Route.TopUp(profile.id.value)) },
+                    if (l1MutationsAvailable && l1WalletRepository != null) {
+                        { navController.navigate(Route.Transfer(profile.id.value)) }
+                    } else {
+                        null
+                    },
                     { navController.navigate(Route.History(profile.id.value)) },
                     { navController.navigate(Route.WalletPicker) },
                 )
@@ -247,6 +261,25 @@ private fun WalletNavigation(
             if (profile != null) {
                 val qrCode = remember(profile.paymentAddress) { encodeQr(profile.paymentAddress) }
                 TopUpScreen(profile, qrCode, navController::popBackStack) { copyAddress(profile.paymentAddress) }
+            }
+        }
+        composable<Route.Transfer> { backStackEntry ->
+            val route = backStackEntry.toRoute<Route.Transfer>()
+            val ready = state as? AppState.Ready
+            val profile = ready?.wallets?.firstOrNull { it.id.value == route.walletId }
+            if (profile != null && l1WalletRepository != null && l1MutationsAvailable) {
+                val transferViewModel = viewModel { TransferViewModel(profile.id, profile.network, l1WalletRepository) }
+                val transferState by transferViewModel.state.collectAsState()
+                SensitiveContent(onSensitiveContentChanged) {
+                    TransferScreen(
+                        profile,
+                        transferViewModel.destinations(ready.wallets),
+                        transferState,
+                        transferViewModel::previewAsync,
+                        transferViewModel::submitAsync,
+                        navController::popBackStack,
+                    )
+                }
             }
         }
         composable<Route.History> { backStackEntry ->

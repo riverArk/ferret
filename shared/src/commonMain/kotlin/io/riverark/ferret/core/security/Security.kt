@@ -13,6 +13,13 @@ data class WalletSecretV1(
     val backupGeneration: Long = 0,
 )
 
+@Serializable
+data class WalletEncryptedStateV1(
+    val channelRecovery: ByteArray = byteArrayOf(),
+    val operationJournal: ByteArray = byteArrayOf(),
+    val backupGeneration: Long = 0,
+)
+
 interface SecureVault {
     val isUnlocked: Boolean
     suspend fun unlock(wrappedDataKey: ByteArray)
@@ -23,6 +30,8 @@ interface SecureVault {
     suspend fun renameWallet(walletId: WalletId, name: String)
     suspend fun deleteWallet(walletId: WalletId)
     suspend fun <T> withWalletSeed(walletId: WalletId, action: suspend (ByteArray) -> T): T
+    suspend fun walletState(walletId: WalletId): WalletEncryptedStateV1
+    suspend fun updateWalletState(walletId: WalletId, state: WalletEncryptedStateV1)
 }
 
 interface UserAuthenticator {

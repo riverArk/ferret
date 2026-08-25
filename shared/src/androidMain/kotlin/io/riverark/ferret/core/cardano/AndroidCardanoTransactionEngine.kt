@@ -4,6 +4,8 @@ import com.bloxbean.cardano.client.account.Account
 import com.bloxbean.cardano.client.address.Address
 import com.bloxbean.cardano.client.api.ProtocolParamsSupplier
 import com.bloxbean.cardano.client.api.TransactionProcessor
+import com.bloxbean.cardano.client.api.model.EvaluationResult
+import com.bloxbean.cardano.client.api.model.Result
 import com.bloxbean.cardano.client.api.UtxoSupplier
 import com.bloxbean.cardano.client.api.common.OrderEnum
 import com.bloxbean.cardano.client.api.model.Amount
@@ -16,6 +18,7 @@ import com.bloxbean.cardano.client.quicktx.QuickTxBuilder
 import com.bloxbean.cardano.client.quicktx.ScriptTx
 import com.bloxbean.cardano.client.quicktx.Tx
 import com.bloxbean.cardano.client.transaction.spec.Transaction
+import com.bloxbean.cardano.client.transaction.util.TransactionUtil
 import com.bloxbean.cardano.client.util.HexUtil
 import com.fasterxml.jackson.databind.ObjectMapper
 import io.riverark.ferret.core.model.CardanoNetwork
@@ -103,6 +106,9 @@ class AndroidCardanoTransactionEngine(
         )
     }
 
+    override fun transactionId(signedCbor: ByteArray): String =
+        TransactionUtil.getTxHash(Transaction.deserialize(signedCbor))
+
     private fun inferNetwork(transaction: Transaction) = Address(transaction.body.outputs.firstOrNull()?.address ?: error("transaction has no outputs")).network
     private fun plutus(hex: String) = PlutusData.deserialize(HexUtil.decodeHexString(hex))
     private fun Lovelace.amount() = Amount.lovelace(BigInteger.valueOf(value))
@@ -123,6 +129,15 @@ class AndroidCardanoTransactionEngine(
         override fun getTxOutput(hash: String, index: Int): Optional<Utxo> = Optional.ofNullable(utxos.firstOrNull { it.txHash == hash && it.outputIndex == index })
     }
 }
+
+fun androidCardanoTransactionEngine(): CardanoTransactionEngine =
+    AndroidCardanoTransactionEngine(object : TransactionProcessor {
+        override fun submitTransaction(cborData: ByteArray): Result<String> =
+            error("Connector submission must use an operation ID.")
+
+        override fun evaluateTx(cbor: ByteArray, inputUtxos: Set<Utxo>): Result<List<EvaluationResult>> =
+            error("Controlled-node script evaluation is unavailable.")
+    })
 
 suspend fun deriveAndroidWallet(entropy: ByteArray, network: CardanoNetwork): DerivedWallet {
     require(entropy.size == 32)
