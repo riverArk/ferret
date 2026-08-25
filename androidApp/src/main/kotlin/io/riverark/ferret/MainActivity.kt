@@ -100,7 +100,9 @@ class MainActivity : FragmentActivity() {
                     walletManager,
                     loadBalance = { profile ->
                         try {
-                            connectors.getValue(profile.network).balance(profile.paymentAddress)
+                            coordinators.getValue(profile.network).refresh {
+                                connectors.getValue(profile.network).balance(profile.paymentAddress)
+                            }
                         } catch (error: CancellationException) {
                             throw error
                         } catch (_: Exception) {
@@ -110,7 +112,9 @@ class MainActivity : FragmentActivity() {
                     },
                     loadHistory = { profile ->
                         try {
-                            connectors.getValue(profile.network).transactions(profile.paymentAddress)
+                            coordinators.getValue(profile.network).refresh {
+                                connectors.getValue(profile.network).transactions(profile.paymentAddress)
+                            }
                         } catch (error: CancellationException) {
                             throw error
                         } catch (_: Exception) {
@@ -240,6 +244,7 @@ class MainActivity : FragmentActivity() {
     private fun cancelActiveWork() {
         activeWork?.cancel()
         activeWork = null
+        coordinators.values.forEach(RefreshCoordinator::cancelActiveWork)
     }
 
     private fun lockSession() {

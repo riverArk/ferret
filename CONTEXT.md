@@ -44,7 +44,7 @@ Seed entropy is cleared after derivation and vault callbacks. Mnemonic restore/d
 
 The Refined Ferret theme is light-only: cream canvas, near-white surfaces, charcoal ink, yellow primary, accessible coral secondary, blue tertiary, and dark red errors. Exo 2 headings, Ubuntu Mono body text, rounded outlined surfaces, 48 dp touch targets, edge-to-edge safe drawing insets, bundled ferret art, and bundled Material Symbols are shared across implemented screens.
 
-Home shows the wallet name, network, confirmed on-chain ADA balance, payment address, and Wallets navigation. The balance loads from the wallet network's connector and supports pull-to-refresh. Add ADA opens a shared top-up destination with a locally generated address QR and explicit Android sensitive-clipboard copy that clears after 60 seconds while Ferret still owns the clip. History is reachable from Home, parses the pinned connector response into immutable L1 records, supports pull-to-refresh, and applies 5-block confirmed/2160-block settled finality. Payment, transfer, and channel actions remain unavailable until their repositories are wired.
+Home shows the wallet name, network, confirmed on-chain ADA balance, payment address, and Wallets navigation. The balance loads from the wallet network's connector and supports pull-to-refresh. Balance and history requests are owned by the validated foreground session and are cancelled when the app backgrounds or connectivity is lost. Add ADA opens a shared top-up destination with a locally generated address QR and explicit Android sensitive-clipboard copy that clears after 60 seconds while Ferret still owns the clip. History is reachable from Home, parses the pinned connector response into immutable L1 records, supports pull-to-refresh, and applies 5-block confirmed/2160-block settled finality. Payment, transfer, and channel actions remain unavailable until their repositories are wired.
 
 ## Known platform gaps
 
@@ -77,6 +77,7 @@ Android installation and manual onboarding verification require an API 36 emulat
 
 ### 2026-08-25
 
+- Completed the five-minute foreground lock/deployment gate by cancelling in-flight balance and history refreshes whenever the validated session backgrounds or goes offline.
 - Protected Unlock with `FLAG_SECURE` and kept protection active across overlapping sensitive-route transitions.
 - Packaged the third-party notice, completed release dependency locks, and preserved ML Kit component registrars through R8.
 - Verified `androidCheck`, `androidReleaseCheck`, the merged release manifest, non-debuggable installation, clean release startup, and the protected unlock window on an API 34 emulator.

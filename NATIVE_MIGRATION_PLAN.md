@@ -24,14 +24,9 @@ Status legend: **Complete** means connected behavior exists; **Partial** means r
 
 ### P0.1 — Foreground lock and validated online session
 
-**Current status:** Partial. Android biometric/device-credential unlock, encrypted atomic vault files, seed wiping, HTTPS-only transport, redirect refusal, timeouts, strict JSON, and SPKI pins exist. There is no five-minute continuous-background lock, lifecycle cancellation, startup connector/adaptor tuple validation, or `RefreshCoordinator`; `CheckingConnectivity` and `Offline` are not published by `MainActivity`.
+**Current status:** Complete. Android retains the unlocked vault only while foregrounded, locks at the exact five-minute continuous-background boundary, cancels in-flight balance/history refreshes on background or connectivity loss, and exposes no wallet data while checking or offline. `RefreshCoordinator` validates the selected profile against connector health/network and the pinned adaptor identity/script tuple before `Ready`; foreground retry repeats every deployment check. Authentication and keystore failures preserve encrypted wallet files and fail back to `Locked`.
 
-**Missing work:**
-
-1. Add the existing planned lifecycle policy: retain the unlocked vault only while foregrounded, wipe it and publish `Locked` after five continuous background minutes, and cancel active refresh/camera work on background.
-2. Add a shared `RefreshCoordinator` using the existing immutable `NetworkDeployment`, `ConnectorClient`, and `AdaptorClient`. Before `Ready`, verify connector health/network and adaptor network/identity against the selected profile and deployment.
-3. Publish `CheckingConnectivity` and `Offline` through the existing `WalletRepository`; queue no offline action and expose no cached wallet data.
-4. Keep all error output redacted. Authentication/key invalidation must route to recovery, never an empty-wallet reset.
+**Missing work:** None.
 
 **Affected files:** `androidApp/src/main/kotlin/io/riverark/ferret/MainActivity.kt`; `shared/src/commonMain/kotlin/io/riverark/ferret/core/model/WalletRepository.kt`; `shared/src/commonMain/kotlin/io/riverark/ferret/core/network/Clients.kt`; `shared/src/commonMain/kotlin/io/riverark/ferret/core/network/FerretHttpClient.kt`; a minimal coordinator under `core/network`; Android lifecycle tests.
 

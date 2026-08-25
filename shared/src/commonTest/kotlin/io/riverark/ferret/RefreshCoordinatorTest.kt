@@ -14,6 +14,9 @@ import io.riverark.ferret.core.network.PREPROD
 import io.riverark.ferret.core.network.RefreshCoordinator
 import io.riverark.ferret.core.security.ForegroundLockPolicy
 import kotlinx.serialization.json.Json
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
@@ -65,6 +68,30 @@ class RefreshCoordinatorTest {
             validCoordinator(identity = "1".repeat(64)).validate(profile)
         }
         Unit
+    }
+
+    @Test
+    fun cancellingActiveWorkStopsRefresh() = runBlocking {
+        val coordinator = validCoordinator()
+        val started = CompletableDeferred<Unit>()
+        val stopped = CompletableDeferred<Unit>()
+        val refresh = launch {
+            coordinator.refresh {
+                started.complete(Unit)
+                try {
+                    awaitCancellation()
+                } finally {
+                    stopped.complete(Unit)
+                }
+            }
+        }
+
+        started.await()
+        coordinator.cancelActiveWork()
+        stopped.await()
+        refresh.join()
+
+        assertTrue(refresh.isCancelled)
     }
 
     private fun validCoordinator(
