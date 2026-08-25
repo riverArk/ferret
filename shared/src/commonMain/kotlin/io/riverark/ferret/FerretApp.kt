@@ -157,13 +157,15 @@ private fun WalletNavigation(
 
     NavHost(navController, startDestination = Route.Unlock) {
         composable<Route.Unlock> {
-            FerretScreen {
-                Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                    Image(painterResource(Res.drawable.splash_ferret), null, Modifier.size(180.dp))
-                    Text("Ferret", style = MaterialTheme.typography.displaySmall)
-                    Text("Your wallet stays encrypted on this device.", textAlign = TextAlign.Center)
+            SensitiveContent(onSensitiveContentChanged) {
+                FerretScreen {
+                    Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                        Image(painterResource(Res.drawable.splash_ferret), null, Modifier.size(180.dp))
+                        Text("Ferret", style = MaterialTheme.typography.displaySmall)
+                        Text("Your wallet stays encrypted on this device.", textAlign = TextAlign.Center)
+                    }
+                    if (onUnlock != null) FerretPrimaryButton("Unlock", onUnlock)
                 }
-                if (onUnlock != null) FerretPrimaryButton("Unlock", onUnlock)
             }
         }
         composable<Route.CheckingConnectivity> { FerretScreen { Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { FerretLoadingState("Checking secure connection") } } }

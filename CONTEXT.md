@@ -75,6 +75,12 @@ Android installation and manual onboarding verification require an API 36 emulat
 
 ## Session log
 
+### 2026-08-25
+
+- Protected Unlock with `FLAG_SECURE` and kept protection active across overlapping sensitive-route transitions.
+- Packaged the third-party notice, completed release dependency locks, and preserved ML Kit component registrars through R8.
+- Verified `androidCheck`, `androidReleaseCheck`, the merged release manifest, non-debuggable installation, clean release startup, and the protected unlock window on an API 34 emulator.
+
 ### 2026-08-24
 
 - Cut over the repository handoff from the removed frontend to the live Kotlin Multiplatform project.

@@ -16,7 +16,7 @@ Later user sessions additionally required the full visual refresh, documentation
 
 ## Current conclusion
 
-The KMP shell, Android secure onboarding, shared visual system, adaptive icon, wallet balance, pull-to-refresh, validated foreground session, L1 top-up, and L1 history flow are implemented. The Android host wires unlock, wallet lifecycle, validated connector/adaptor sessions, connector balance/history, local address QR, and sensitive clipboard expiry; `FerretApp` registers onboarding, Home, Top Up, and History destinations. Transfer is the next missing P0 functionality before any channel or payment action is enabled.
+The KMP shell, Android secure onboarding, shared visual system, adaptive icon, wallet balance, pull-to-refresh, validated foreground session, L1 top-up, L1 history flow, and current-surface release hardening are implemented. The Android host wires unlock, wallet lifecycle, validated connector/adaptor sessions, connector balance/history, local address QR, and sensitive clipboard expiry; `FerretApp` registers onboarding, Home, Top Up, and History destinations. Transfer is the next missing P0 functionality before any channel or payment action is enabled, but remains gated on the connector contract and deployment recorded under P0.2.
 
 Status legend: **Complete** means connected behavior exists; **Partial** means reusable code exists but the end-to-end feature does not; **Missing** means no usable implementation exists; **Deferred** is an explicit sequencing decision.
 
@@ -110,9 +110,9 @@ slice before Drive/device-writer identity exists.
 
 ### P0.3 — Finish Android release security for the L1 slice
 
-**Current status:** Partial. Dependency locks/checksums, min/target SDK policy, cleartext denial, SPKI pins, release OAuth configuration gate, encrypted vault, `FLAG_SECURE` on mnemonic routes, and release aggregate tasks exist. Full release hardening and runtime secret-leak checks are not evidenced.
+**Current status:** Partial. Dependency locks/checksums, min/target SDK policy, cleartext denial, SPKI pins, release OAuth configuration gate, encrypted vault, screenshot protection for unlock and mnemonic routes, packaged notices, and release aggregate tasks exist. The minified release was installed on an API 34 emulator: the merged manifest was non-debuggable, cleartext-disabled, and backup-disabled; the unlock window carried `FLAG_SECURE`; startup logs contained no wallet secrets; and the ML Kit registrars survived R8.
 
-**Missing work:** Apply sensitive-surface protection to unlock and future confirmation/removal routes; verify manifest backup/debuggable/minification rules; package NOTICE/licenses; add deterministic version diagnostics and bounded local error codes; add secret scanning and the focused MASVS review. Do not add analytics, remote crash reporting, root-detection, or Play Integrity without a consuming policy.
+**Missing work:** Protect future transaction confirmation/removal routes when they are added; add deterministic version diagnostics and bounded local error codes; perform secret scanning and the focused MASVS review against the complete L1 slice. Do not add analytics, remote crash reporting, root-detection, or Play Integrity without a consuming policy.
 
 **Affected files:** `androidApp/build.gradle.kts`; Android manifest/resources/proguard configuration; `MainActivity.kt`; shared settings/diagnostics models; CI/release configuration when present.
 

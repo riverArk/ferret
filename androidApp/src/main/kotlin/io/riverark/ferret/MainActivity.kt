@@ -33,6 +33,7 @@ import io.riverark.ferret.core.security.AndroidRecoveryPhraseCodec
 import io.riverark.ferret.core.security.AndroidSecureRandomSource
 import io.riverark.ferret.core.security.AndroidSecureVault
 import io.riverark.ferret.core.security.ForegroundLockPolicy
+import io.riverark.ferret.core.security.SensitiveContentCounter
 import io.riverark.ferret.core.security.AndroidUserAuthenticator
 import io.riverark.ferret.feature.wallet.addressQrCode
 import kotlinx.coroutines.launch
@@ -59,6 +60,7 @@ class MainActivity : FragmentActivity() {
     private var activeWork: Job? = null
     private var backgroundLock: Job? = null
     private var unlocking = false
+    private val sensitiveContent = SensitiveContentCounter()
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onLost(network: Network) = networkUnavailable()
@@ -158,7 +160,7 @@ class MainActivity : FragmentActivity() {
     }
 
     private fun setSensitiveContent(sensitive: Boolean) {
-        if (sensitive) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        if (sensitiveContent.update(sensitive)) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         else window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
     }
     private fun copyAddress(address: String) {
