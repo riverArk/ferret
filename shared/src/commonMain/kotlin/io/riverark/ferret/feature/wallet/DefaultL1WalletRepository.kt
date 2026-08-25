@@ -28,6 +28,7 @@ data class L1OperationRecord(
     val expectedTransactionId: String? = null,
     val destinationWalletId: WalletId,
     val amount: Lovelace,
+    val fee: Lovelace,
     val createdAtEpochMillis: Long,
     val state: L1OperationState,
 )
@@ -71,10 +72,25 @@ class DefaultL1WalletRepository(
             .fold(Lovelace(0)) { total, utxo -> total + utxo.lovelace }
         return WalletBalance(spendable, Lovelace(0))
     }
-
     override suspend fun history(walletId: WalletId): List<TransactionRecord> {
         val profile = profile(walletId)
-        return loadTransactions(profile)
+        val remote = loadTransactions(profile)
+        val local = operation(walletId) ?: return remote
+        val id = local.expectedTransactionId ?: local.operationId
+        if (remote.any { it.id == id }) return remote
+        return (remote + TransactionRecord(
+            id,
+            local.createdAtEpochMillis,
+            local.amount,
+            local.fee,
+            io.riverark.ferret.core.model.Realm.L1,
+            when (local.state) {
+                L1OperationState.CONFIRMED -> io.riverark.ferret.core.model.TransactionState.CONFIRMED
+                L1OperationState.SETTLED -> io.riverark.ferret.core.model.TransactionState.SETTLED
+                L1OperationState.REJECTED -> io.riverark.ferret.core.model.TransactionState.FAILED
+                else -> io.riverark.ferret.core.model.TransactionState.PENDING
+            },
+        )).sortedWith(compareByDescending<TransactionRecord> { it.timestampEpochMillis }.thenByDescending { it.id })
     }
 
     override suspend fun previewTransfer(walletId: WalletId, destination: WalletProfile, amount: Lovelace): TransferPreview =
@@ -115,6 +131,7 @@ class DefaultL1WalletRepository(
                 intent.operationId,
                 destinationWalletId = preview.destination.id,
                 amount = preview.amount,
+                fee = preview.feeBound,
                 createdAtEpochMillis = nowEpochMillis(),
                 state = L1OperationState.PREPARED,
             ))
@@ -127,12 +144,13 @@ class DefaultL1WalletRepository(
                     transactionId,
                     preview.destination.id,
                     preview.amount,
+                    preview.feeBound,
                     nowEpochMillis(),
                     L1OperationState.SUBMITTING,
                 ))
                 val remote = submitOperation(profile, L1SubmitRequest(intent.operationId, transactionId, signed.cbor.hex()))
                 require(remote.operationId == intent.operationId && remote.expectedTransactionId == transactionId)
-                writeOperation(walletId, remote.record(preview.destination.id, preview.amount, nowEpochMillis()))
+                writeOperation(walletId, remote.record(preview.destination.id, preview.amount, preview.feeBound, nowEpochMillis()))
                 intent.operationId
             } finally {
                 signed.cbor.fill(0)
@@ -144,7 +162,7 @@ class DefaultL1WalletRepository(
         if (local.state !in setOf(L1OperationState.SUBMITTING, L1OperationState.PENDING)) return@withWalletLock local
         val remote = lookupOperation(profile(walletId), local.operationId)
         require(remote.expectedTransactionId == local.expectedTransactionId)
-        remote.record(local.destinationWalletId, local.amount, local.createdAtEpochMillis).also {
+        remote.record(local.destinationWalletId, local.amount, local.fee, local.createdAtEpochMillis).also {
             writeOperation(walletId, it)
         }
     }
@@ -157,12 +175,17 @@ class DefaultL1WalletRepository(
         } finally {
             bytes.fill(0)
         }
-        if (journal.l1.isEmpty()) return null
+        if (journal.l1.isEmpty()) {
+            journal.channel.fill(0)
+            journal.payment.fill(0)
+            return null
+        }
         return try {
             json.decodeFromString<L1OperationRecord>(journal.l1.decodeToString())
         } finally {
             journal.l1.fill(0)
             journal.channel.fill(0)
+            journal.payment.fill(0)
         }
     }
 
@@ -179,6 +202,7 @@ class DefaultL1WalletRepository(
             current.operationJournal.fill(0)
             journal.l1.fill(0)
             journal.channel.fill(0)
+            journal.payment.fill(0)
             l1.fill(0)
             encoded.fill(0)
         }
@@ -187,12 +211,13 @@ class DefaultL1WalletRepository(
     private suspend fun profile(walletId: WalletId): WalletProfile =
         vault.profiles().single { it.id == walletId }
 
-    private fun L1OperationDto.record(destinationWalletId: WalletId, amount: Lovelace, createdAt: Long) =
+    private fun L1OperationDto.record(destinationWalletId: WalletId, amount: Lovelace, fee: Lovelace, createdAt: Long) =
         L1OperationRecord(
             operationId,
             expectedTransactionId,
             destinationWalletId,
             amount,
+            fee,
             createdAt,
             when (state) {
                 "confirmed" -> L1OperationState.CONFIRMED

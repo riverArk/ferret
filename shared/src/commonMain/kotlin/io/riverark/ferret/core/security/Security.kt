@@ -25,6 +25,7 @@ data class WalletOperationJournalV1(
     val schema: Int = 1,
     val l1: ByteArray = byteArrayOf(),
     val channel: ByteArray = byteArrayOf(),
+    val payment: ByteArray = byteArrayOf(),
 )
 
 interface SecureVault {

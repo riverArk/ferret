@@ -37,6 +37,8 @@ import io.riverark.ferret.core.security.ForegroundLockPolicy
 import io.riverark.ferret.core.security.SensitiveContentCounter
 import io.riverark.ferret.core.security.AndroidUserAuthenticator
 import io.riverark.ferret.feature.wallet.DefaultL1WalletRepository
+import io.riverark.ferret.core.channel.VaultPaymentStore
+import io.riverark.ferret.feature.payment.QrPaymentScannerScreen
 import io.riverark.ferret.feature.wallet.addressQrCode
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
@@ -59,6 +61,7 @@ class MainActivity : FragmentActivity() {
     private lateinit var vault: AndroidSecureVault
     private lateinit var walletManager: WalletManager
     private lateinit var authenticator: AndroidUserAuthenticator
+    private lateinit var paymentStore: VaultPaymentStore
     private lateinit var l1WalletRepository: DefaultL1WalletRepository
     private var activeWork: Job? = null
     private var backgroundLock: Job? = null
@@ -102,6 +105,7 @@ class MainActivity : FragmentActivity() {
             { UUID.randomUUID().toString() },
             System::currentTimeMillis,
         )
+        paymentStore = VaultPaymentStore(vault)
         connectivity = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         connectivity.registerDefaultNetworkCallback(networkCallback)
         setContent {
@@ -124,7 +128,8 @@ class MainActivity : FragmentActivity() {
                     loadHistory = { profile ->
                         try {
                             coordinators.getValue(profile.network).refresh {
-                                connectors.getValue(profile.network).transactions(profile.paymentAddress)
+                                (l1WalletRepository.history(profile.id) + paymentStore.history(profile.id))
+                                    .sortedWith(compareByDescending<io.riverark.ferret.core.model.TransactionRecord> { it.timestampEpochMillis }.thenByDescending { it.id })
                             }
                         } catch (error: CancellationException) {
                             throw error
@@ -137,6 +142,9 @@ class MainActivity : FragmentActivity() {
                     copyAddress = ::copyAddress,
                     l1WalletRepository = l1WalletRepository,
                     l1MutationsAvailable = false,
+                    invoiceScanner = { onInvoice, onError -> QrPaymentScannerScreen(onInvoice, onError) },
+                    nowEpochMillis = System::currentTimeMillis,
+                    paymentActionsAvailable = false,
                 ),
                 ::unlock,
                 ::setSensitiveContent,

@@ -26,6 +26,7 @@ class VaultChannelJournal(
         }
         if (journal.channel.isEmpty()) {
             journal.l1.fill(0)
+            journal.payment.fill(0)
             return ChannelSnapshot(vault.profiles().single { it.id == walletId }.channelState)
         }
         return try {
@@ -33,6 +34,7 @@ class VaultChannelJournal(
         } finally {
             journal.l1.fill(0)
             journal.channel.fill(0)
+            journal.payment.fill(0)
         }
     }
 
@@ -50,6 +52,7 @@ class VaultChannelJournal(
             state.operationJournal.fill(0)
             journal.l1.fill(0)
             journal.channel.fill(0)
+            journal.payment.fill(0)
             channel.fill(0)
             encoded.fill(0)
         }

@@ -30,6 +30,9 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import ferret.shared.generated.resources.Res
 import ferret.shared.generated.resources.splash_ferret
+import io.riverark.ferret.core.channel.PaymentQuote
+import io.riverark.ferret.core.channel.PaymentUiState
+import io.riverark.ferret.core.channel.PaymentViewModel
 import io.riverark.ferret.core.model.AppState
 import io.riverark.ferret.core.model.WalletId
 import io.riverark.ferret.core.model.WalletManager
@@ -37,6 +40,8 @@ import io.riverark.ferret.core.model.Lovelace
 import io.riverark.ferret.core.model.WalletRepository
 import io.riverark.ferret.core.model.TransactionRecord
 import io.riverark.ferret.core.model.WalletProfile
+import io.riverark.ferret.feature.payment.ConfirmPaymentScreen
+import io.riverark.ferret.feature.payment.PaymentReceiptScreen
 import io.riverark.ferret.feature.wallet.CreateWalletScreen
 import io.riverark.ferret.feature.wallet.HomeScreen
 import io.riverark.ferret.feature.wallet.QrCode
@@ -61,6 +66,7 @@ import io.riverark.ferret.ui.FerretScreen
 import io.riverark.ferret.ui.FerretSpacing
 import io.riverark.ferret.ui.FerretTheme
 import org.jetbrains.compose.resources.painterResource
+import kotlinx.coroutines.delay
 
 data class FerretDependencies(
     val wallets: WalletRepository,
@@ -71,6 +77,12 @@ data class FerretDependencies(
     val copyAddress: ((String) -> Unit)? = null,
     val l1WalletRepository: L1WalletRepository? = null,
     val l1MutationsAvailable: Boolean = false,
+    val paymentViewModelFactory: ((WalletId) -> PaymentViewModel)? = null,
+    val invoiceScanner: (@Composable ((String) -> Unit, () -> Unit) -> Unit)? = null,
+    val paymentActionsAvailable: Boolean = false,
+    val nowEpochMillis: (() -> Long)? = null,
+    val newOperationId: (() -> String)? = null,
+    val paymentIntentHash: ((PaymentQuote) -> String)? = null,
 )
 
 @Composable
@@ -107,6 +119,12 @@ fun FerretApp(
             copyAddress,
             dependencies.l1WalletRepository,
             dependencies.l1MutationsAvailable,
+            dependencies.paymentViewModelFactory,
+            dependencies.invoiceScanner,
+            dependencies.paymentActionsAvailable,
+            dependencies.nowEpochMillis,
+            dependencies.newOperationId,
+            dependencies.paymentIntentHash,
             onUnlock,
             onSensitiveContentChanged,
         )
@@ -123,6 +141,12 @@ private fun WalletNavigation(
     copyAddress: (String) -> Unit,
     l1WalletRepository: L1WalletRepository?,
     l1MutationsAvailable: Boolean,
+    paymentViewModelFactory: ((WalletId) -> PaymentViewModel)?,
+    invoiceScanner: (@Composable ((String) -> Unit, () -> Unit) -> Unit)?,
+    paymentActionsAvailable: Boolean,
+    nowEpochMillis: (() -> Long)?,
+    newOperationId: (() -> String)?,
+    paymentIntentHash: ((PaymentQuote) -> String)?,
     onUnlock: (() -> Unit)?,
     onSensitiveContentChanged: (Boolean) -> Unit,
 ) {
@@ -132,6 +156,13 @@ private fun WalletNavigation(
     val destination = entry?.destination
     val walletViewModel = viewModel { WalletPickerViewModel(manager) }
     val pickerState by walletViewModel.state.collectAsState()
+    val activeWalletId = (state as? AppState.Ready)?.activeWalletId
+    val paymentViewModel = if (activeWalletId != null && paymentViewModelFactory != null) {
+        viewModel(key = "payment-${activeWalletId.value}") { paymentViewModelFactory(activeWalletId) }
+    } else {
+        null
+    }
+    val paymentState = paymentViewModel?.state?.collectAsState()?.value
 
     LaunchedEffect(Unit) { onUnlock?.invoke() }
     LaunchedEffect(state, destination?.route) {
@@ -245,6 +276,11 @@ private fun WalletNavigation(
                     homeState,
                     homeViewModel::refresh,
                     { navController.navigate(Route.TopUp(profile.id.value)) },
+                    if (paymentActionsAvailable && paymentViewModel != null && invoiceScanner != null) {
+                        { navController.navigate(Route.ScanInvoice(profile.id.value)) }
+                    } else {
+                        null
+                    },
                     if (l1MutationsAvailable && l1WalletRepository != null) {
                         { navController.navigate(Route.Transfer(profile.id.value)) }
                     } else {
@@ -282,11 +318,78 @@ private fun WalletNavigation(
                 }
             }
         }
+        composable<Route.ScanInvoice> { backStackEntry ->
+            val route = backStackEntry.toRoute<Route.ScanInvoice>()
+            if (
+                paymentActionsAvailable && paymentViewModel != null && invoiceScanner != null &&
+                nowEpochMillis != null && activeWalletId?.value == route.walletId
+            ) {
+                when (val current = paymentState) {
+                    PaymentUiState.Scanning -> invoiceScanner(
+                        { paymentViewModel.scanned(it, nowEpochMillis()) },
+                        { paymentViewModel.scanAgain() },
+                    )
+                    is PaymentUiState.Confirming -> {
+                        LaunchedEffect(current.quote.id) { navController.navigate(Route.ConfirmPayment(route.walletId)) }
+                        FerretScreen { Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { FerretLoadingState("Preparing payment") } }
+                    }
+                    is PaymentUiState.Processing -> FerretScreen { Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { FerretLoadingState("Reconciling payment") } }
+                    is PaymentUiState.Complete -> {
+                        LaunchedEffect(current.receipt.operationId) {
+                            navController.navigate(Route.PaymentReceipt(route.walletId, current.receipt.operationId))
+                        }
+                    }
+                    is PaymentUiState.Error -> FerretScreen {
+                        Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { FerretErrorState(current.message) }
+                        FerretPrimaryButton("Scan another QR", paymentViewModel::scanAgain)
+                    }
+                    null -> Unit
+                }
+            }
+        }
+        composable<Route.ConfirmPayment> { backStackEntry ->
+            val route = backStackEntry.toRoute<Route.ConfirmPayment>()
+            val current = paymentState
+            if (
+                paymentActionsAvailable && paymentViewModel != null && current is PaymentUiState.Confirming &&
+                nowEpochMillis != null && newOperationId != null && paymentIntentHash != null &&
+                activeWalletId?.value == route.walletId
+            ) {
+                var guardComplete by remember(current.quote.id) { mutableStateOf(false) }
+                LaunchedEffect(current.confirmAfterEpochMillis) {
+                    delay(maxOf(0, current.confirmAfterEpochMillis - nowEpochMillis()))
+                    guardComplete = true
+                }
+                SensitiveContent(onSensitiveContentChanged) {
+                    ConfirmPaymentScreen(current.description, current.quote, guardComplete) {
+                        paymentViewModel.confirm(newOperationId(), paymentIntentHash(current.quote), nowEpochMillis())
+                    }
+                }
+            } else if (current is PaymentUiState.Complete) {
+                LaunchedEffect(current.receipt.operationId) {
+                    navController.navigate(Route.PaymentReceipt(route.walletId, current.receipt.operationId))
+                }
+            }
+        }
+        composable<Route.PaymentReceipt> { backStackEntry ->
+            val route = backStackEntry.toRoute<Route.PaymentReceipt>()
+            val complete = paymentState as? PaymentUiState.Complete
+            if (complete?.receipt?.operationId == route.operationId && activeWalletId?.value == route.walletId) {
+                SensitiveContent(onSensitiveContentChanged) {
+                    PaymentReceiptScreen(complete.receipt) {
+                        navController.navigate(Route.Home(route.walletId)) {
+                            launchSingleTop = true
+                            popUpTo(navController.graph.startDestinationId) { inclusive = true }
+                        }
+                    }
+                }
+            }
+        }
         composable<Route.History> { backStackEntry ->
             val route = backStackEntry.toRoute<Route.History>()
             val profile = (state as? AppState.Ready)?.wallets?.firstOrNull { it.id.value == route.walletId }
             if (profile != null) {
-                val historyViewModel = viewModel { HistoryViewModel(profile, loadHistory) }
+                val historyViewModel = viewModel { HistoryViewModel(profile, loadHistory, nowEpochMillis ?: { 0L }) }
                 val historyState by historyViewModel.state.collectAsState()
                 LaunchedEffect(historyViewModel) { historyViewModel.refresh() }
                 HistoryScreen(historyState, historyViewModel::refresh, navController::popBackStack)

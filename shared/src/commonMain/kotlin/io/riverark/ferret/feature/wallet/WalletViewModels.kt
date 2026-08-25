@@ -132,11 +132,13 @@ data class HistoryUiState(
     val records: List<TransactionRecord> = emptyList(),
     val loading: Boolean = true,
     val error: String? = null,
+    val lastRefreshEpochMillis: Long? = null,
 )
 
 class HistoryViewModel(
     private val profile: WalletProfile,
     private val loadHistory: suspend (WalletProfile) -> List<TransactionRecord>,
+    private val nowEpochMillis: () -> Long = { 0 },
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(HistoryUiState(profile))
     val state = mutableState.asStateFlow()
@@ -147,6 +149,7 @@ class HistoryViewModel(
             try {
                 mutableState.value = mutableState.value.copy(
                     records = mergeTransactionRecords(loadHistory(profile), emptyList()),
+                    lastRefreshEpochMillis = nowEpochMillis().takeIf { it > 0 },
                     loading = false,
                 )
             } catch (cancelled: CancellationException) {

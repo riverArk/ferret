@@ -236,6 +236,7 @@ fun HomeScreen(
     state: HomeUiState,
     onRefresh: () -> Unit,
     onTopUp: () -> Unit,
+    onPay: (() -> Unit)?,
     onTransfer: (() -> Unit)?,
     onHistory: () -> Unit,
     onWallets: () -> Unit,
@@ -275,7 +276,7 @@ fun HomeScreen(
         when {
             state.balance?.value == 0L -> FerretPrimaryButton("Add ADA", onTopUp)
             state.profile.channelState is ChannelState.Open -> {
-                FerretPrimaryButton("Pay invoice", {}, enabled = false)
+                FerretPrimaryButton("Pay invoice", { onPay?.invoke() }, enabled = onPay != null)
                 FerretSecondaryButton("Add ADA", onTopUp)
                 FerretSecondaryButton("Transfer ADA", { onTransfer?.invoke() }, enabled = onTransfer != null)
             }
@@ -411,8 +412,10 @@ fun HistoryScreen(
     onRefresh: () -> Unit,
     onBack: () -> Unit,
 ) {
+    var expandedId by remember { mutableStateOf<String?>(null) }
     FerretScreen {
         FerretTopBar("History", navigation = { io.riverark.ferret.ui.FerretTextButton("Back", onBack) })
+        state.lastRefreshEpochMillis?.let { Text("Last refreshed: $it", color = MaterialTheme.colorScheme.onSurfaceVariant) }
         PullToRefreshBox(
             isRefreshing = state.loading,
             onRefresh = onRefresh,
@@ -424,10 +427,17 @@ fun HistoryScreen(
                     verticalArrangement = Arrangement.spacedBy(FerretSpacing.sm),
                 ) {
                     items(state.records, key = TransactionRecord::id) { record ->
-                        FerretCard(Modifier.fillMaxWidth()) {
+                        FerretCard(
+                            Modifier.fillMaxWidth(),
+                            onClick = { expandedId = record.id.takeUnless { it == expandedId } },
+                        ) {
                             Text("${record.realm}: ${formatAda(record.amount)}", style = MaterialTheme.typography.titleMedium)
                             Text("${record.state} · fee ${formatAda(record.fee)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(record.id, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(record.id, maxLines = if (expandedId == record.id) Int.MAX_VALUE else 1, overflow = TextOverflow.Ellipsis)
+                            if (expandedId == record.id) {
+                                FerretDataBlock("Recorded at", record.timestampEpochMillis.toString())
+                                FerretDataBlock("Realm", record.realm.name)
+                            }
                         }
                     }
                 }
