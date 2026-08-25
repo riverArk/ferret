@@ -1,6 +1,6 @@
 package io.riverark.ferret.core.security
 
-import android.util.Base64
+import java.util.Base64
 import io.riverark.ferret.core.backup.BackupCrypto
 import java.security.MessageDigest
 import java.security.SecureRandom
@@ -42,7 +42,7 @@ class AndroidBackupCrypto : BackupCrypto {
     override fun decryptAesGcm(key: ByteArray, nonce: ByteArray, ciphertext: ByteArray, aad: ByteArray): ByteArray =
         cipher(Cipher.DECRYPT_MODE, key, nonce, aad).doFinal(ciphertext)
 
-    override fun base64Url(input: ByteArray): String = Base64.encodeToString(input, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+    override fun base64Url(input: ByteArray): String = Base64.getUrlEncoder().withoutPadding().encodeToString(input)
 
     private fun cipher(mode: Int, key: ByteArray, nonce: ByteArray, aad: ByteArray) =
         Cipher.getInstance("AES/GCM/NoPadding").apply {

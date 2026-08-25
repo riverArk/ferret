@@ -8,6 +8,8 @@ import io.riverark.ferret.core.model.WalletRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 
 sealed interface ChannelAction {
     data class Open(val amount: Long) : ChannelAction
@@ -17,6 +19,7 @@ sealed interface ChannelAction {
     data object Squash : ChannelAction
 }
 
+@kotlinx.serialization.Serializable
 data class ChannelSnapshot(val state: ChannelState, val pending: PendingOperation? = null)
 
 data class MutationResult(val remoteId: String, val state: ChannelState)
@@ -64,14 +67,27 @@ class ChannelRepository(
 
             val result = try {
                 remote.mutate(walletId, operationId, action)
-            } catch (cancelled: Throwable) {
-                val pending = armed.copy(pending = armed.pending!!.copy(state = OperationState.PENDING_RECONCILIATION))
-                persist(walletId, pending)
-                throw cancelled
+            } catch (error: Exception) {
+                withContext(NonCancellable) {
+                    persist(walletId, armed.copy(pending = armed.pending!!.copy(state = OperationState.PENDING_RECONCILIATION)))
+                }
+                throw error
             }
+            val submitted = armed.copy(pending = armed.pending!!.copy(
+                state = OperationState.SUBMITTED,
+                remoteId = result.remoteId,
+            ))
+            persist(walletId, submitted)
             val terminal = ChannelSnapshot(result.state, null)
+            try {
+                backup.commit(walletId, terminal)
+            } catch (error: Exception) {
+                withContext(NonCancellable) {
+                    persist(walletId, submitted.copy(pending = submitted.pending!!.copy(state = OperationState.PENDING_RECONCILIATION)))
+                }
+                throw error
+            }
             persist(walletId, terminal)
-            backup.commit(walletId, terminal)
             result
         }
 
@@ -81,8 +97,8 @@ class ChannelRepository(
         backup.requireVerifiedWriter(walletId)
         val result = remote.reconcile(walletId, pending) ?: return@withWalletLock null
         val terminal = ChannelSnapshot(result.state, null)
-        persist(walletId, terminal)
         backup.commit(walletId, terminal)
+        persist(walletId, terminal)
         result
     }
 

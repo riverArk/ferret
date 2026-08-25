@@ -20,6 +20,13 @@ data class WalletEncryptedStateV1(
     val backupGeneration: Long = 0,
 )
 
+@Serializable
+data class WalletOperationJournalV1(
+    val schema: Int = 1,
+    val l1: ByteArray = byteArrayOf(),
+    val channel: ByteArray = byteArrayOf(),
+)
+
 interface SecureVault {
     val isUnlocked: Boolean
     suspend fun unlock(wrappedDataKey: ByteArray)

@@ -13,6 +13,7 @@ import io.riverark.ferret.core.model.WalletRepository
 import io.riverark.ferret.core.network.ConnectorClient
 import io.riverark.ferret.core.network.L1OperationDto
 import io.riverark.ferret.core.network.L1SubmitRequest
+import io.riverark.ferret.core.security.WalletOperationJournalV1
 import io.riverark.ferret.core.security.SecureVault
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -151,21 +152,34 @@ class DefaultL1WalletRepository(
     suspend fun operation(walletId: WalletId): L1OperationRecord? {
         val bytes = vault.walletState(walletId).operationJournal
         if (bytes.isEmpty()) return null
-        return try {
-            json.decodeFromString<L1OperationRecord>(bytes.decodeToString())
+        val journal = try {
+            json.decodeFromString<WalletOperationJournalV1>(bytes.decodeToString())
         } finally {
             bytes.fill(0)
+        }
+        if (journal.l1.isEmpty()) return null
+        return try {
+            json.decodeFromString<L1OperationRecord>(journal.l1.decodeToString())
+        } finally {
+            journal.l1.fill(0)
+            journal.channel.fill(0)
         }
     }
 
     private suspend fun writeOperation(walletId: WalletId, operation: L1OperationRecord) {
         val current = vault.walletState(walletId)
-        val encoded = json.encodeToString(operation).encodeToByteArray()
+        val journal = if (current.operationJournal.isEmpty()) WalletOperationJournalV1() else
+            json.decodeFromString<WalletOperationJournalV1>(current.operationJournal.decodeToString())
+        val l1 = json.encodeToString(operation).encodeToByteArray()
+        val encoded = json.encodeToString(journal.copy(l1 = l1)).encodeToByteArray()
         try {
             vault.updateWalletState(walletId, current.copy(operationJournal = encoded))
         } finally {
             current.channelRecovery.fill(0)
             current.operationJournal.fill(0)
+            journal.l1.fill(0)
+            journal.channel.fill(0)
+            l1.fill(0)
             encoded.fill(0)
         }
     }

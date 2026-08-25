@@ -3,6 +3,7 @@ package io.riverark.ferret.core.backup
 import io.riverark.ferret.core.model.WalletId
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
+import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 
 @Serializable
@@ -51,6 +52,34 @@ class DriveBackupRepository(
     private val crypto: BackupCrypto,
     private val json: Json = Json { ignoreUnknownKeys = false },
 ) {
+    suspend fun discover(walletId: WalletId, seed: ByteArray): List<FerretChannelBackupV1> {
+        val id = backupId(seed, walletId.value.substringBefore('-'))
+        val prefix = "ferret-$id-"
+        val objects = drive.list(prefix)
+        require(objects.size <= 10_000) { "too many backup objects" }
+        val backups = objects.map { objectInfo ->
+            require(objectInfo.name.startsWith(prefix))
+            val bytes = drive.get(objectInfo.name)
+            require(bytes.size in 1..MAX_BACKUP_BYTES)
+            try {
+                json.decodeFromString<FerretChannelBackupV1>(bytes.decodeToString()).also {
+                    require(it.backupId == id)
+                    validate(it)
+                }
+            } finally {
+                bytes.fill(0)
+            }
+        }
+        if (backups.isNotEmpty()) verifyChain(backups)
+        return backups
+    }
+
+    suspend fun deleteAll(walletId: WalletId, seed: ByteArray) {
+        val prefix = "ferret-${backupId(seed, walletId.value.substringBefore('-'))}-"
+        drive.list(prefix).forEach { drive.delete(it.name) }
+        require(drive.list(prefix).isEmpty()) { "backup deletion could not be verified" }
+    }
+
     suspend fun write(
         walletId: WalletId,
         seed: ByteArray,
@@ -60,6 +89,8 @@ class DriveBackupRepository(
         createdAtEpochMillis: Long,
         plaintext: ByteArray,
     ): FerretChannelBackupV1 {
+        require(plaintext.size in 1..MAX_BACKUP_BYTES)
+        require(sequence == 1L && previousHash.contentEquals(ZERO_HASH) || sequence > 1L && !previousHash.contentEquals(ZERO_HASH))
         require(generation >= 1 && sequence >= 1)
         require(previousHash.size == 32)
         val backupId = backupId(seed, walletId.value.substringBefore('-'))
@@ -80,13 +111,28 @@ class DriveBackupRepository(
         key.fill(0)
         val name = "ferret-$backupId-g$generation-s$sequence.bin"
         val bytes = json.encodeToString(backup).encodeToByteArray()
+        require(bytes.size <= MAX_BACKUP_BYTES)
         drive.put(name, bytes)
-        require(drive.get(name).contentEquals(bytes)) { "backup read-back mismatch" }
-        return backup
+        val storedBytes = drive.get(name)
+        require(storedBytes.size <= MAX_BACKUP_BYTES && storedBytes.contentEquals(bytes)) { "backup read-back mismatch" }
+        return try {
+            val stored = json.decodeFromString<FerretChannelBackupV1>(storedBytes.decodeToString())
+            validate(stored)
+            val decrypted = decrypt(seed, stored)
+            try {
+                require(decrypted.contentEquals(plaintext)) { "backup decrypt verification failed" }
+            } finally {
+                decrypted.fill(0)
+            }
+            stored
+        } finally {
+            bytes.fill(0)
+            storedBytes.fill(0)
+        }
     }
 
     fun decrypt(seed: ByteArray, backup: FerretChannelBackupV1): ByteArray {
-        require(backup.schema == 1 && backup.previousCiphertextHash.size == 32 && backup.salt.size == 32 && backup.nonce.size == 12)
+        validate(backup)
         val key = crypto.hkdfSha256(seed, backup.salt, CHANNEL_INFO, 32)
         return try {
             crypto.decryptAesGcm(key, backup.nonce, backup.ciphertext, header(
@@ -98,12 +144,29 @@ class DriveBackupRepository(
 
     fun verifyChain(backups: List<FerretChannelBackupV1>): FerretChannelBackupV1 {
         require(backups.isNotEmpty())
-        val sorted = backups.sortedWith(compareBy(FerretChannelBackupV1::generation, FerretChannelBackupV1::sequence))
-        sorted.forEachIndexed { index, backup ->
-            val expected = if (index == 0 || sorted[index - 1].generation != backup.generation) ZERO_HASH else crypto.sha256(sorted[index - 1].ciphertext)
-            require(backup.previousCiphertextHash.contentEquals(expected)) { "broken backup chain" }
+        require(backups.map(FerretChannelBackupV1::backupId).distinct().size == 1) { "mixed backup identities" }
+        backups.forEach(::validate)
+        val generations = backups.groupBy(FerretChannelBackupV1::generation).toList().sortedBy { it.first }
+        generations.map { it.first }.zipWithNext().forEach { (before, after) ->
+            require(after == before + 1) { "missing backup generation" }
         }
-        return sorted.last()
+        generations.forEach { (_, generationBackups) ->
+            val sorted = generationBackups.sortedBy(FerretChannelBackupV1::sequence)
+            sorted.forEachIndexed { index, backup ->
+                require(backup.sequence == index + 1L) { "missing or divergent backup sequence" }
+                val expected = if (index == 0) ZERO_HASH else crypto.sha256(sorted[index - 1].ciphertext)
+                require(backup.previousCiphertextHash.contentEquals(expected)) { "broken backup chain" }
+            }
+        }
+        return generations.last().second.maxBy(FerretChannelBackupV1::sequence)
+    }
+
+    private fun validate(backup: FerretChannelBackupV1) {
+        require(backup.schema == 1)
+        require(backup.backupId.length in 20..64 && backup.backupId.all { it.isLetterOrDigit() || it == '-' || it == '_' })
+        require(backup.generation >= 1 && backup.sequence >= 1 && backup.createdAtEpochMillis >= 0)
+        require(backup.previousCiphertextHash.size == 32 && backup.salt.size == 32 && backup.nonce.size == 12)
+        require(backup.ciphertext.size in 17..MAX_BACKUP_BYTES)
     }
 
     private fun backupId(seed: ByteArray, network: String) = crypto.base64Url(
@@ -115,6 +178,7 @@ class DriveBackupRepository(
 
     companion object {
         private val ZERO_HASH = ByteArray(32)
+        private const val MAX_BACKUP_BYTES = 1_048_576
         private val DISCOVERY_INFO = "io.riverark.ferret/backup-discovery/v1".encodeToByteArray()
         private val CHANNEL_INFO = "io.riverark.ferret/channel-backup/v1".encodeToByteArray()
     }
