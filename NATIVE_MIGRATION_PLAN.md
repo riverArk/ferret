@@ -61,6 +61,43 @@ Status legend: **Complete** means connected behavior exists; **Partial** means r
 
 **Dependencies:** P0.1 validated online session; existing vault, wallet mutex, connector, deployment, and Android Cardano engine. Use an already installed local QR library only if present; otherwise prefer the smallest platform implementation and add no general image framework.
 
+**Connector prerequisite discovered 2026-08-25:** Konduit commit `7675e86` adds
+`/protocol-parameters`, lease-gated idempotent `/submit`, and `/session/claim`,
+but that revision is not deployed at `preprod-cardano.ferret.channel`.
+The deployed OpenAPI contract still accepts only `{transaction}` at `/submit`
+and returns 404 for `/protocol-parameters`. Konduit also has no public operation
+lookup endpoint, and its backup-generation lease cannot be created by the P0 L1
+slice before Drive/device-writer identity exists.
+
+**Minimal cross-repository unblock plan:**
+
+1. In Konduit's `packages/cardano/connector-server`, keep the existing
+   lease-gated `/submit` for channel transactions. Add a separate L1 operation
+   endpoint whose request contains `operation_id`, the expected
+   `transaction_id`, and signed transaction CBOR. A signed Cardano transaction
+   already authorizes an independent L1 spend; it must not depend on the
+   channel backup writer lease.
+2. Persist the L1 operation ID and expected transaction ID before submission,
+   reject reuse of an operation ID with different transaction bytes, and expose
+   `GET /operations/{operation_id}`. Reconciliation returns the original
+   transaction ID and queries chain state; it never creates a second operation
+   or substitutes a different transaction.
+3. Add Konduit contract tests for exact UUID/hex validation, conflicting reuse,
+   concurrent duplicate submission, lookup before/after upstream acceptance,
+   and lookup after client disconnect. Update OpenAPI, deploy Preprod, and
+   verify `/protocol-parameters`, L1 submission, and operation lookup against
+   the deployed URL before changing Ferret reachability.
+4. In Ferret, add strict typed UTxO/protocol/operation DTOs and response bounds;
+   an encrypted atomic L1 journal in the existing wallet secret; one
+   `L1WalletRepository` using the existing per-wallet mutex and Android
+   transaction engine; and Transfer screen/ViewModel/navigation wiring.
+   Journal before signing/submission, inspect with `requireMatches`, and on
+   restart reconcile the stored operation ID instead of posting again.
+5. Verify with shared boundary tests, Android semantic tests,
+   `./gradlew androidCheck`, then a funded two-wallet Preprod device run with a
+   process kill after submit. Only after one operation ID resolves to one
+   transaction through confirmed/settled may Transfer become reachable.
+
 **Acceptance criteria:**
 
 - A funded Preprod wallet shows the exact connector balance and refreshed immutable history after pull-to-refresh.
