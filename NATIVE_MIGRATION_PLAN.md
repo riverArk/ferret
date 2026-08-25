@@ -43,13 +43,13 @@ Status legend: **Complete** means connected behavior exists; **Partial** means r
 
 ### P0.2 — Complete the Android L1 wallet vertical slice
 
-**Current status:** Partial. Home loads the real connector balance and pull-to-refresh is manually confirmed. Top Up is reachable, generates its address QR locally, and uses an explicit sensitive clipboard copy with conditional 60-second clearing. History is reachable, parses the pinned connector transaction contract into immutable records, supports pull-to-refresh, and applies the 5-block confirmed/2160-block settled policy. The Bloxbean `Transfer` intent exists, but Transfer remains disconnected. There is no transfer screen, ledger-to-build/sign/inspect/submit orchestration, or pending-operation reconciliation.
+**Current status:** Partial. Home loads the real connector balance and pull-to-refresh is manually confirmed. Top Up is reachable, generates its address QR locally, and uses an explicit sensitive clipboard copy with conditional 60-second clearing. History is reachable, parses the pinned connector transaction contract into immutable records, supports pull-to-refresh, and applies the 5-block confirmed/2160-block settled policy. The Bloxbean `Transfer` intent exists, and the shared transfer boundary exposes only other same-network profiles and rejects self/cross-network destinations before transaction preview. Transfer remains disconnected. There is no transfer screen, ledger-to-build/sign/inspect/submit orchestration, or pending-operation reconciliation.
 
 **Missing work:**
 
 1. Register `Transfer` in the existing `NavHost`; preserve the connected Home action precedence: zero L1 balance → top up, funded without an open channel → open-channel remains disabled until P1, open channel → pay remains disabled until P2.
 2. Validate L1 history against a funded Preprod wallet once the connector deployment is available; merge verified L2 records in P2.
-3. Transfer: show only destination profiles on the same network; preview amount, fee bound, change, recipient, and network; write the operation journal before signing/submission; use `CardanoTransactionEngine.requireMatches`; reconcile submission by operation ID rather than retrying a mutation.
+3. Transfer: preview amount, fee bound, change, recipient, and network; write the operation journal before signing/submission; use `CardanoTransactionEngine.requireMatches`; reconcile submission by operation ID rather than retrying a mutation.
 4. Keep external-address entry out of normal transfer. It belongs only to wallet removal.
 
 **Affected files:** `shared/src/commonMain/kotlin/io/riverark/ferret/FerretApp.kt`; `shared/src/commonMain/kotlin/io/riverark/ferret/feature/wallet/WalletScreens.kt`; `shared/src/commonMain/kotlin/io/riverark/ferret/feature/wallet/WalletViewModels.kt`; `shared/src/commonMain/kotlin/io/riverark/ferret/core/network/Clients.kt`; `shared/src/commonMain/kotlin/io/riverark/ferret/core/cardano/CardanoTransactionEngine.kt`; `shared/src/androidMain/kotlin/io/riverark/ferret/core/cardano/AndroidCardanoTransactionEngine.kt`; `androidApp/src/main/kotlin/io/riverark/ferret/MainActivity.kt`.
@@ -249,7 +249,7 @@ slice before Drive/device-writer identity exists.
 
 ### 9. Same-network L1 transfer — Partial
 
-**Current status:** Typed `Route.Transfer`, `CardanoIntent.Transfer`, and Android transaction builder exist. No screen, ViewModel, repository orchestration, journal, or submission wiring exists.
+**Current status:** Typed `Route.Transfer`, `CardanoIntent.Transfer`, Android transaction builder, and a shared same-network destination boundary exist. Normal transfer cannot accept an external address. No screen, repository orchestration, journal, or submission wiring exists.
 
 **Missing work:** P0.2 transfer vertical slice.
 

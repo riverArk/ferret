@@ -72,12 +72,12 @@ class WalletPickerViewModel(private val manager: WalletManager) : ViewModel() {
 }
 
 data class WalletBalance(val spendable: Lovelace, val pending: Lovelace)
-data class TransferPreview(val destination: WalletProfile?, val externalAddress: String?, val amount: Lovelace, val feeBound: Lovelace, val change: Lovelace)
+data class TransferPreview(val destination: WalletProfile, val amount: Lovelace, val feeBound: Lovelace, val change: Lovelace)
 
 interface L1WalletRepository {
     suspend fun balance(walletId: WalletId): WalletBalance
     suspend fun history(walletId: WalletId): List<TransactionRecord>
-    suspend fun previewTransfer(walletId: WalletId, destination: WalletProfile?, externalAddress: String?, amount: Lovelace): TransferPreview
+    suspend fun previewTransfer(walletId: WalletId, destination: WalletProfile, amount: Lovelace): TransferPreview
     suspend fun submitTransfer(walletId: WalletId, preview: TransferPreview): String
 }
 
@@ -152,10 +152,13 @@ internal fun mergeTransactionRecords(
     (l1 + l2).sortedWith(compareByDescending<TransactionRecord> { it.timestampEpochMillis }.thenByDescending { it.id })
 
 class TransferViewModel(private val walletId: WalletId, private val network: CardanoNetwork, private val l1: L1WalletRepository) : ViewModel() {
-    suspend fun preview(destination: WalletProfile?, externalAddress: String?, amount: Lovelace): TransferPreview {
-        require(destination == null || destination.network == network) { "cross-network transfer" }
-        require((destination == null) xor (externalAddress == null))
-        return l1.previewTransfer(walletId, destination, externalAddress, amount)
+    fun destinations(profiles: List<WalletProfile>) =
+        profiles.filter { it.id != walletId && it.network == network }
+
+    suspend fun preview(destination: WalletProfile, amount: Lovelace): TransferPreview {
+        require(destination.id != walletId && destination.network == network) { "invalid transfer destination" }
+        return l1.previewTransfer(walletId, destination, amount)
     }
+
     suspend fun submit(preview: TransferPreview) = l1.submitTransfer(walletId, preview)
 }
