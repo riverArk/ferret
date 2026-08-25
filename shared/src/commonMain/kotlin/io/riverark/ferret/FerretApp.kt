@@ -37,6 +37,7 @@ import io.riverark.ferret.core.model.AppState
 import io.riverark.ferret.core.model.WalletId
 import io.riverark.ferret.core.model.WalletManager
 import io.riverark.ferret.core.model.Lovelace
+import io.riverark.ferret.core.model.WalletRemovalManager
 import io.riverark.ferret.core.model.WalletRepository
 import io.riverark.ferret.core.model.TransactionRecord
 import io.riverark.ferret.core.model.WalletProfile
@@ -50,6 +51,8 @@ import io.riverark.ferret.feature.wallet.HistoryScreen
 import io.riverark.ferret.feature.wallet.L1WalletRepository
 import io.riverark.ferret.feature.wallet.HistoryViewModel
 import io.riverark.ferret.feature.wallet.RecoveryPhraseScreen
+import io.riverark.ferret.feature.wallet.SettingsScreen
+import io.riverark.ferret.feature.wallet.WalletSettings
 import io.riverark.ferret.feature.wallet.RestoreWalletScreen
 import io.riverark.ferret.feature.wallet.VerifyRecoveryScreen
 import io.riverark.ferret.feature.wallet.TopUpScreen
@@ -58,6 +61,8 @@ import io.riverark.ferret.feature.wallet.TransferViewModel
 import io.riverark.ferret.feature.wallet.WalletPickerScreen
 import io.riverark.ferret.feature.wallet.WalletPickerViewModel
 import io.riverark.ferret.navigation.Route
+import io.riverark.ferret.feature.wallet.WalletRemovalScreen
+import io.riverark.ferret.feature.wallet.WalletRemovalViewModel
 import io.riverark.ferret.ui.FerretEmptyState
 import io.riverark.ferret.ui.FerretErrorState
 import io.riverark.ferret.ui.FerretLoadingState
@@ -83,6 +88,8 @@ data class FerretDependencies(
     val nowEpochMillis: (() -> Long)? = null,
     val newOperationId: (() -> String)? = null,
     val paymentIntentHash: ((PaymentQuote) -> String)? = null,
+    val loadSettings: (suspend (WalletProfile) -> WalletSettings)? = null,
+    val walletRemovalManager: WalletRemovalManager? = null,
 )
 
 @Composable
@@ -125,6 +132,8 @@ fun FerretApp(
             dependencies.nowEpochMillis,
             dependencies.newOperationId,
             dependencies.paymentIntentHash,
+            dependencies.loadSettings,
+            dependencies.walletRemovalManager,
             onUnlock,
             onSensitiveContentChanged,
         )
@@ -147,6 +156,8 @@ private fun WalletNavigation(
     nowEpochMillis: (() -> Long)?,
     newOperationId: (() -> String)?,
     paymentIntentHash: ((PaymentQuote) -> String)?,
+    loadSettings: (suspend (WalletProfile) -> WalletSettings)?,
+    walletRemovalManager: WalletRemovalManager?,
     onUnlock: (() -> Unit)?,
     onSensitiveContentChanged: (Boolean) -> Unit,
 ) {
@@ -288,6 +299,7 @@ private fun WalletNavigation(
                     },
                     { navController.navigate(Route.History(profile.id.value)) },
                     { navController.navigate(Route.WalletPicker) },
+                    { navController.navigate(Route.Settings(profile.id.value)) },
                 )
             }
         }
@@ -380,6 +392,49 @@ private fun WalletNavigation(
                         navController.navigate(Route.Home(route.walletId)) {
                             launchSingleTop = true
                             popUpTo(navController.graph.startDestinationId) { inclusive = true }
+                        }
+                    }
+                }
+            }
+        }
+        composable<Route.Settings> { backStackEntry ->
+            val route = backStackEntry.toRoute<Route.Settings>()
+            val profile = (state as? AppState.Ready)?.wallets?.firstOrNull { it.id.value == route.walletId }
+            if (profile != null && loadSettings != null) {
+                var settings by remember(profile) { mutableStateOf<WalletSettings?>(null) }
+                LaunchedEffect(profile) { settings = loadSettings(profile) }
+                settings?.let { current ->
+                    SettingsScreen(
+                        current,
+                        navController::popBackStack,
+                        { walletViewModel.rename(profile.id, it) },
+                        null,
+                        { navController.navigate(Route.RemoveWallet(profile.id.value)) },
+                    )
+                } ?: FerretScreen {
+                    Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { FerretLoadingState("Loading settings") }
+                }
+            }
+        }
+        composable<Route.RemoveWallet> { backStackEntry ->
+            val route = backStackEntry.toRoute<Route.RemoveWallet>()
+            val profile = (state as? AppState.Ready)?.wallets?.firstOrNull { it.id.value == route.walletId }
+            if (profile != null && walletRemovalManager != null) {
+                val removalViewModel = viewModel { WalletRemovalViewModel(profile.id, walletRemovalManager) }
+                val removalState by removalViewModel.state.collectAsState()
+                LaunchedEffect(removalViewModel) { removalViewModel.load() }
+                SensitiveContent(onSensitiveContentChanged) {
+                    WalletRemovalScreen(
+                        removalState,
+                        navController::popBackStack,
+                        removalViewModel::sweep,
+                    ) {
+                        removalViewModel.remove {
+                            walletViewModel.load()
+                            navController.navigate(Route.WalletPicker) {
+                                launchSingleTop = true
+                                popUpTo(navController.graph.startDestinationId) { inclusive = true }
+                            }
                         }
                     }
                 }

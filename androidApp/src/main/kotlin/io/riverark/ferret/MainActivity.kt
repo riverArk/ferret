@@ -23,7 +23,14 @@ import io.riverark.ferret.core.cardano.androidCardanoTransactionEngine
 import io.riverark.ferret.core.cardano.deriveAndroidWallet
 import io.riverark.ferret.core.model.CardanoNetwork
 import io.riverark.ferret.core.model.WalletManager
+import io.riverark.ferret.core.model.DiagnosticCode
+import io.riverark.ferret.core.model.RuntimeDiagnostics
 import io.riverark.ferret.core.model.WalletRepository
+import io.riverark.ferret.core.model.DefaultWalletRemovalRepository
+import io.riverark.ferret.core.model.Lovelace
+import io.riverark.ferret.core.model.RemovalReadiness
+import io.riverark.ferret.core.model.TransactionState
+import io.riverark.ferret.core.model.WalletRemovalManager
 import io.riverark.ferret.core.model.WalletProfile
 import io.riverark.ferret.core.network.ConnectorClient
 import io.riverark.ferret.core.network.AdaptorClient
@@ -36,10 +43,13 @@ import io.riverark.ferret.core.security.AndroidSecureVault
 import io.riverark.ferret.core.security.ForegroundLockPolicy
 import io.riverark.ferret.core.security.SensitiveContentCounter
 import io.riverark.ferret.core.security.AndroidUserAuthenticator
+import io.riverark.ferret.core.channel.VaultChannelJournal
+import io.riverark.ferret.feature.wallet.L1OperationState
 import io.riverark.ferret.feature.wallet.DefaultL1WalletRepository
 import io.riverark.ferret.core.channel.VaultPaymentStore
 import io.riverark.ferret.feature.payment.QrPaymentScannerScreen
 import io.riverark.ferret.feature.wallet.addressQrCode
+import io.riverark.ferret.feature.wallet.WalletSettings
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -56,6 +66,7 @@ class MainActivity : FragmentActivity() {
     }
     private val wallets = WalletRepository()
     private val lockPolicy = ForegroundLockPolicy(SystemClock::elapsedRealtime)
+    private val diagnostics = RuntimeDiagnostics()
     private val clipboardHandler = Handler(Looper.getMainLooper())
     private lateinit var connectivity: ConnectivityManager
     private lateinit var vault: AndroidSecureVault
@@ -63,6 +74,7 @@ class MainActivity : FragmentActivity() {
     private lateinit var authenticator: AndroidUserAuthenticator
     private lateinit var paymentStore: VaultPaymentStore
     private lateinit var l1WalletRepository: DefaultL1WalletRepository
+    private lateinit var walletRemovalManager: WalletRemovalManager
     private var activeWork: Job? = null
     private var backgroundLock: Job? = null
     private var unlocking = false
@@ -106,6 +118,44 @@ class MainActivity : FragmentActivity() {
             System::currentTimeMillis,
         )
         paymentStore = VaultPaymentStore(vault)
+        val channelJournal = VaultChannelJournal(vault)
+        walletRemovalManager = WalletRemovalManager(
+            DefaultWalletRemovalRepository(
+                loadReadiness = { walletId ->
+                    val profile = vault.profiles().single { it.id == walletId }
+                    coordinators.getValue(profile.network).refresh {
+                        val encrypted = vault.walletState(walletId)
+                        try {
+                            val l1Operation = l1WalletRepository.operation(walletId)
+                            val channel = channelJournal.load(walletId)
+                            val transactions = connectors.getValue(profile.network).transactions(profile.paymentAddress)
+                            RemovalReadiness(
+                                profile,
+                                connectors.getValue(profile.network).balance(profile.paymentAddress),
+                                l1Operation?.state in setOf(L1OperationState.PREPARED, L1OperationState.SUBMITTING, L1OperationState.PENDING) ||
+                                    channel.pending != null || paymentStore.pending(walletId) != null,
+                                encrypted.backupGeneration == 0L,
+                                if (transactions.none { it.state != TransactionState.SETTLED }) 2_160 else 0,
+                            )
+                        } finally {
+                            encrypted.channelRecovery.fill(0)
+                            encrypted.operationJournal.fill(0)
+                        }
+                    }
+                },
+                sweepWallet = { _, _ -> error("L1 sweep deployment is unavailable") },
+                deleteBackup = { walletId ->
+                    val encrypted = vault.walletState(walletId)
+                    try {
+                        require(encrypted.backupGeneration == 0L) { "Drive backup deletion is unavailable" }
+                    } finally {
+                        encrypted.channelRecovery.fill(0)
+                        encrypted.operationJournal.fill(0)
+                    }
+                },
+            ),
+            vault,
+        )
         connectivity = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         connectivity.registerDefaultNetworkCallback(networkCallback)
         setContent {
@@ -144,6 +194,27 @@ class MainActivity : FragmentActivity() {
                     l1MutationsAvailable = false,
                     invoiceScanner = { onInvoice, onError -> QrPaymentScannerScreen(onInvoice, onError) },
                     nowEpochMillis = System::currentTimeMillis,
+                    loadSettings = { profile ->
+                        val encrypted = vault.walletState(profile.id)
+                        try {
+                            WalletSettings(
+                                profile = profile,
+                                paymentCredential = profile.id.value.substringAfter('-'),
+                                stakingCredential = profile.stakeAddress,
+                                adaptorStatus = "validated",
+                                driveAccount = null,
+                                driveSequence = encrypted.backupGeneration.takeIf { it > 0 },
+                                lockStatus = "unlocked",
+                                version = BuildConfig.VERSION_NAME,
+                                buildCommit = BuildConfig.BUILD_COMMIT,
+                                diagnosticCode = diagnostics.code.value?.name,
+                            )
+                        } finally {
+                            encrypted.channelRecovery.fill(0)
+                            encrypted.operationJournal.fill(0)
+                        }
+                    },
+                    walletRemovalManager = walletRemovalManager,
                     paymentActionsAvailable = false,
                 ),
                 ::unlock,
@@ -226,22 +297,30 @@ class MainActivity : FragmentActivity() {
                 }
                 val profiles = vault.profiles()
                 if (profiles.isEmpty()) {
+                    diagnostics.clear()
                     wallets.publish(null, profiles)
                     return@launch
                 }
                 wallets.checkingConnectivity()
-                check(hasValidatedNetwork())
+                if (!hasValidatedNetwork()) {
+                    diagnostics.record(DiagnosticCode.CONNECTIVITY)
+                    error("validated network unavailable")
+                }
                 val selected = profiles.firstOrNull { it.id == wallets.selectedWalletId() } ?: profiles.first()
                 coordinators.getValue(selected.network).validate(selected)
                 l1WalletRepository.reconcilePending(selected.id)
                 wallets.publish(selected.id, profiles)
+                diagnostics.clear()
             } catch (error: CancellationException) {
                 throw error
             } catch (_: SecurityException) {
+                diagnostics.record(DiagnosticCode.AUTHENTICATION)
                 lockSession()
             } catch (_: GeneralSecurityException) {
+                diagnostics.record(DiagnosticCode.KEYSTORE)
                 lockSession()
             } catch (_: Exception) {
+                if (diagnostics.code.value != DiagnosticCode.CONNECTIVITY) diagnostics.record(DiagnosticCode.DEPLOYMENT)
                 if (vault.isUnlocked) wallets.offline() else wallets.lock()
             } finally {
                 if (authenticate) unlocking = false
@@ -257,6 +336,7 @@ class MainActivity : FragmentActivity() {
 
     private fun networkUnavailable() {
         if (!::vault.isInitialized || !vault.isUnlocked) return
+        diagnostics.record(DiagnosticCode.CONNECTIVITY)
         lifecycleScope.launch {
             cancelActiveWork()
             wallets.offline()

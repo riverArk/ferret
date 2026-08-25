@@ -4,6 +4,9 @@ plugins {
 }
 
 val googleServerClientId = providers.environmentVariable("FERRET_GOOGLE_SERVER_CLIENT_ID")
+val buildCommit = providers.environmentVariable("FERRET_BUILD_COMMIT").getOrElse("development").also {
+    require(it == "development" || Regex("[0-9a-f]{7,40}").matches(it)) { "FERRET_BUILD_COMMIT must be a lowercase git commit" }
+}
 if (gradle.startParameter.taskNames.any { it.contains("release", ignoreCase = true) }) {
     require(googleServerClientId.getOrElse("").isNotBlank()) { "FERRET_GOOGLE_SERVER_CLIENT_ID is required for release builds" }
 }
@@ -19,6 +22,7 @@ android {
         versionCode = 1
         versionName = "1.0.0"
         buildConfigField("String", "GOOGLE_SERVER_CLIENT_ID", "\"${googleServerClientId.getOrElse("")}\"")
+        buildConfigField("String", "BUILD_COMMIT", "\"$buildCommit\"")
     }
 
     compileOptions {

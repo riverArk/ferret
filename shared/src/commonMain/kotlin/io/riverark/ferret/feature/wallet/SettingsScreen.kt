@@ -4,8 +4,13 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import io.riverark.ferret.core.model.WalletProfile
 import io.riverark.ferret.ui.FerretDangerButton
@@ -13,9 +18,10 @@ import io.riverark.ferret.ui.FerretListRow
 import io.riverark.ferret.ui.FerretScreen
 import io.riverark.ferret.ui.FerretSecondaryButton
 import io.riverark.ferret.ui.FerretSpacing
+import io.riverark.ferret.ui.FerretTextButton
 import io.riverark.ferret.ui.FerretTopBar
 
-data class WalletSettings(
+ data class WalletSettings(
     val profile: WalletProfile,
     val paymentCredential: String,
     val stakingCredential: String,
@@ -29,15 +35,25 @@ data class WalletSettings(
 )
 
 @Composable
-fun SettingsScreen(settings: WalletSettings, onVerifyBackup: () -> Unit, onRemove: () -> Unit) {
+fun SettingsScreen(
+    settings: WalletSettings,
+    onBack: () -> Unit,
+    onRename: (String) -> Unit,
+    onVerifyBackup: (() -> Unit)?,
+    onRemove: () -> Unit,
+) {
+    var name by rememberSaveable(settings.profile.id.value) { mutableStateOf(settings.profile.name) }
     FerretScreen {
-        FerretTopBar("Settings")
+        FerretTopBar("Settings", navigation = { FerretTextButton("Back", onBack) })
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(FerretSpacing.sm)) {
             section("Profile")
-            item { FerretListRow("Wallet", settings.profile.name) }
+            item {
+                OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("Wallet name") }, singleLine = true)
+            }
+            item { FerretSecondaryButton("Rename wallet", { onRename(name.trim()) }, enabled = name.isNotBlank() && name.trim() != settings.profile.name) }
             item { FerretListRow("Payment address", settings.profile.paymentAddress) }
             item { FerretListRow("Payment credential", settings.paymentCredential) }
-            item { FerretListRow("Staking credential", settings.stakingCredential) }
+            item { FerretListRow("Staking address", settings.stakingCredential) }
 
             section("Network and channel")
             item { FerretListRow("Network", settings.profile.network.name) }
@@ -47,7 +63,7 @@ fun SettingsScreen(settings: WalletSettings, onVerifyBackup: () -> Unit, onRemov
             section("Backup")
             item { FerretListRow("Drive account", settings.driveAccount ?: "not connected") }
             settings.driveSequence?.let { sequence -> item { FerretListRow("Last verified backup sequence", sequence.toString()) } }
-            item { FerretSecondaryButton("Verify encrypted backup", onVerifyBackup) }
+            item { FerretSecondaryButton("Verify encrypted backup", { onVerifyBackup?.invoke() }, enabled = onVerifyBackup != null) }
 
             section("Security")
             item { FerretListRow("App lock", settings.lockStatus) }

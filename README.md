@@ -2,16 +2,17 @@
 
 Ferret is an Android-first Kotlin Multiplatform wallet for Cardano and Lightning payments. Shared domain, state, navigation, and Compose UI live in `shared`; Android supplies biometric authentication, encrypted persistence, Cardano derivation, and QR scanning.
 
-Android wallet onboarding is implemented end to end:
+Android repository-contained wallet flows include:
 
-- biometric or device-credential unlock;
-- encrypted local wallet profiles and 32-byte seed entropy;
-- wallet creation or 24-word recovery-phrase restore;
-- Preprod and Mainnet selection;
-- mandatory, resumable recovery-phrase confirmation for newly created wallets;
+- biometric or device-credential unlock and an exact five-minute background lock;
+- encrypted local wallet profiles, seed entropy, operation journals, and channel recovery state;
+- wallet creation or 24-word recovery-phrase restore with random three-word confirmation;
+- immutable Preprod and Mainnet selection;
+- validated online-session gating, L1 balance/history, local top-up QR, and durable L1 transfer orchestration;
+- encrypted Drive appData backup primitives, single-writer channel journaling, QR-only BOLT11 reconciliation, settings, diagnostics, and safe wallet removal;
 - a shared cream, charcoal, yellow, and coral Compose interface.
 
-The iOS shared target compiles and renders an explicit platform-availability gate. iOS wallet support remains disabled until the adapters and Xcode host in [`IOS_FOLLOW_UP.md`](IOS_FOLLOW_UP.md) are complete.
+Financial mutations remain unreachable until the pinned connector/adaptor deployment exposes the required operation lookup, protocol parameters, writer lease, and reconciliation contracts. The iOS shared target compiles and renders an explicit platform-availability gate; iOS wallet support remains disabled until the adapters and Xcode host in [`IOS_FOLLOW_UP.md`](IOS_FOLLOW_UP.md) are complete.
 
 ## Prerequisites
 
@@ -53,6 +54,6 @@ FERRET_GOOGLE_SERVER_CLIENT_ID='<client-id>' ./gradlew androidReleaseCheck
 
 ## Security model
 
-`WalletManager` is the create, restore, selection, and recovery-confirmation boundary. `SecureVault` stores the encrypted wallet index separately from each encrypted seed file. New wallets remain marked as unconfirmed until the user verifies recovery words 4, 12, and 21; an interrupted flow resumes after the next unlock. Restored wallets are confirmed because the user supplied the complete phrase.
+`WalletManager` is the create, restore, selection, rename, and recovery-confirmation boundary. `SecureVault` stores the encrypted wallet index separately from each encrypted seed and journal file. New wallets remain unconfirmed until the user verifies three distinct random recovery words; an interrupted flow resumes after the next unlock. Restored wallets are confirmed because the user supplied the complete phrase.
 
-Mnemonic routes set Android `FLAG_SECURE`. The UI never offers mnemonic copy actions. Do not log recovery phrases, seed entropy, credentials, signed payloads, or encrypted vault keys.
+Mnemonic, transfer-confirmation, payment-receipt, and removal routes set Android `FLAG_SECURE`. The UI never offers mnemonic or invoice copy actions. Do not log recovery phrases, seed entropy, credentials, signed payloads, decrypted channel state, or encrypted vault keys.

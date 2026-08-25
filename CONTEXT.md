@@ -2,8 +2,8 @@
 
 ## Snapshot
 
-- Date: 2026-08-24
-- Current focus: Android wallet onboarding, shared Compose navigation, and the Refined Ferret visual cutover.
+- Date: 2026-08-25
+- Current focus: repository-complete Android financial orchestration with deployment-gated mutation reachability.
 - The live repository is a Kotlin Multiplatform project. This file describes current code only.
 
 ## Product and platforms
@@ -44,12 +44,13 @@ Seed entropy is cleared after derivation and vault callbacks. Mnemonic restore/d
 
 The Refined Ferret theme is light-only: cream canvas, near-white surfaces, charcoal ink, yellow primary, accessible coral secondary, blue tertiary, and dark red errors. Exo 2 headings, Ubuntu Mono body text, rounded outlined surfaces, 48 dp touch targets, edge-to-edge safe drawing insets, bundled ferret art, and bundled Material Symbols are shared across implemented screens.
 
-Home shows the wallet name, network, confirmed on-chain ADA balance, payment address, and Wallets navigation. The balance loads from the wallet network's connector and supports pull-to-refresh. Balance and history requests are owned by the validated foreground session and are cancelled when the app backgrounds or connectivity is lost. Add ADA opens a shared top-up destination with a locally generated address QR and explicit Android sensitive-clipboard copy that clears after 60 seconds while Ferret still owns the clip. History is reachable from Home, parses the pinned connector response into immutable L1 records, supports pull-to-refresh, and applies 5-block confirmed/2160-block settled finality. Payment, transfer, and channel actions remain unavailable until their repositories are wired.
+Home shows the wallet name, network, confirmed on-chain ADA balance, payment address, and wallet/settings navigation. Balance and unified L1/L2 history support pull-to-refresh. Validated foreground sessions cancel work on background or connectivity loss. Top-up renders a local address QR with owned sensitive-clipboard expiry. Transfer, channel recovery, BOLT11 payment, and removal use encrypted durable journals and reconciliation boundaries; financial mutation entry points remain disabled until the pinned server operation and writer-lease contracts are deployed and verified.
 
 ## Known platform gaps
 
 - iOS wallet setup and runtime integrations are unavailable; see `IOS_FOLLOW_UP.md`.
-- Existing transfer, channel, payment, settings, and scanner composables are styled, but only wallet lifecycle, L1 top-up, and L1 history routes are connected to the real root graph.
+- Connector/adaptor deployment lacks the verified L1 operation lookup and writer-lease contracts required to enable transfer, channel, and payment mutations.
+- Google Drive account selection and real backup verification require OAuth credentials; release checks remain credential-gated.
 - No dark theme is implemented.
 
 ## Decisions

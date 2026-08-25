@@ -240,6 +240,7 @@ fun HomeScreen(
     onTransfer: (() -> Unit)?,
     onHistory: () -> Unit,
     onWallets: () -> Unit,
+    onSettings: () -> Unit,
 ) {
     FerretScreen {
         FerretTopBar("Ferret")
@@ -288,6 +289,7 @@ fun HomeScreen(
         }
         FerretSecondaryButton("History", onHistory)
         FerretSecondaryButton("Wallets", onWallets)
+        FerretSecondaryButton("Settings", onSettings)
     }
 }
 
