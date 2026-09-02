@@ -244,6 +244,9 @@ fun HomeScreen(
 ) {
     FerretScreen {
         FerretTopBar("Ferret")
+        state.lastRefreshEpochMillis?.let {
+            Text("Last refreshed: $it", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
         PullToRefreshBox(
             isRefreshing = state.loading,
             onRefresh = onRefresh,
@@ -262,6 +265,15 @@ fun HomeScreen(
                             state.error != null -> FerretErrorState(state.error, "Retry", onRefresh)
                             else -> Text("Loading balance")
                         }
+                    }
+                }
+                item {
+                    FerretCard(Modifier.fillMaxWidth()) {
+                        Text("Latest activity", style = MaterialTheme.typography.titleMedium)
+                        state.latestActivity?.let { activity ->
+                            Text("${activity.realm}: ${formatAda(activity.amount)}")
+                            Text("${activity.state} · fee ${formatAda(activity.fee)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        } ?: Text("No activity yet", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
                 item {

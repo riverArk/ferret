@@ -44,7 +44,7 @@ Seed entropy is cleared after derivation and vault callbacks. Mnemonic restore/d
 
 The Refined Ferret theme is light-only: cream canvas, near-white surfaces, charcoal ink, yellow primary, accessible coral secondary, blue tertiary, and dark red errors. Exo 2 headings, Ubuntu Mono body text, rounded outlined surfaces, 48 dp touch targets, edge-to-edge safe drawing insets, bundled ferret art, and bundled Material Symbols are shared across implemented screens.
 
-Home shows the wallet name, network, confirmed on-chain ADA balance, payment address, and wallet/settings navigation. Balance and unified L1/L2 history support pull-to-refresh. Validated foreground sessions cancel work on background or connectivity loss. Top-up renders a local address QR with owned sensitive-clipboard expiry. Transfer, channel recovery, BOLT11 payment, and removal use encrypted durable journals and reconciliation boundaries; financial mutation entry points remain disabled until the pinned server operation and writer-lease contracts are deployed and verified.
+Home shows the wallet name, network, confirmed on-chain ADA balance, latest immutable activity, refresh timestamp, payment address, and wallet/settings navigation. Pull-to-refresh updates the balance and activity projection together. Validated foreground sessions cancel work on background or connectivity loss. Top-up renders a local address QR with owned sensitive-clipboard expiry. Transfer, channel recovery, BOLT11 payment, and removal use encrypted durable journals and reconciliation boundaries; financial mutation entry points remain disabled until the pinned server operation and writer-lease contracts are deployed and verified.
 
 ## Known platform gaps
 
@@ -75,6 +75,11 @@ Primary commands:
 Android installation and manual onboarding verification require an API 36 emulator or device. Release checks require `FERRET_GOOGLE_SERVER_CLIENT_ID`.
 
 ## Session log
+
+### 2026-09-02
+
+- Connected Home refresh to balance and immutable history together, with the latest activity and refresh timestamp visible on the dashboard.
+- Confirmed the dashboard’s initial load and pull-to-refresh behavior on an API 34 emulator.
 
 ### 2026-08-25
 

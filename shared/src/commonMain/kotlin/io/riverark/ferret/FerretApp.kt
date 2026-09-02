@@ -280,7 +280,7 @@ private fun WalletNavigation(
             val ready = state as? AppState.Ready
             val profile = ready?.wallets?.firstOrNull { it.id.value == route.walletId }
             if (profile != null) {
-                val homeViewModel = viewModel { HomeViewModel(profile, loadBalance) }
+                val homeViewModel = viewModel { HomeViewModel(profile, loadBalance, loadHistory, nowEpochMillis ?: { 0L }) }
                 val homeState by homeViewModel.state.collectAsState()
                 LaunchedEffect(homeViewModel) { homeViewModel.refresh() }
                 HomeScreen(

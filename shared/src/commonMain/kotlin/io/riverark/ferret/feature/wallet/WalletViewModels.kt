@@ -100,27 +100,41 @@ interface L1WalletRepository {
 data class HomeUiState(
     val profile: WalletProfile,
     val balance: Lovelace? = null,
+    val latestActivity: TransactionRecord? = null,
     val loading: Boolean = true,
     val error: String? = null,
+    val lastRefreshEpochMillis: Long? = null,
 )
 
-class HomeViewModel(private val profile: WalletProfile, private val loadBalance: suspend (WalletProfile) -> Lovelace) : ViewModel() {
+class HomeViewModel(
+    private val profile: WalletProfile,
+    private val loadBalance: suspend (WalletProfile) -> Lovelace,
+    private val loadHistory: suspend (WalletProfile) -> List<TransactionRecord>,
+    private val nowEpochMillis: () -> Long = { 0 },
+) : ViewModel() {
     private val mutableState = MutableStateFlow(HomeUiState(profile))
     val state = mutableState.asStateFlow()
 
     fun refresh() {
-        viewModelScope.launch {
-            mutableState.value = mutableState.value.copy(loading = true, error = null)
-            try {
-                mutableState.value = mutableState.value.copy(balance = loadBalance(profile), loading = false)
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: Exception) {
-                mutableState.value = mutableState.value.copy(
-                    loading = false,
-                    error = "Unable to load balance. Check your connection and try again.",
-                )
-            }
+        viewModelScope.launch { refreshNow() }
+    }
+
+    suspend fun refreshNow() {
+        mutableState.value = mutableState.value.copy(loading = true, error = null)
+        try {
+            mutableState.value = mutableState.value.copy(
+                balance = loadBalance(profile),
+                latestActivity = mergeTransactionRecords(loadHistory(profile), emptyList()).firstOrNull(),
+                loading = false,
+                lastRefreshEpochMillis = nowEpochMillis().takeIf { it > 0 },
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            mutableState.value = mutableState.value.copy(
+                loading = false,
+                error = "Unable to refresh wallet. Check your connection and try again.",
+            )
         }
     }
 }

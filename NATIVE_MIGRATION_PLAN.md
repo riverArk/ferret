@@ -16,7 +16,7 @@ Later user sessions additionally required the full visual refresh, documentation
 
 ## Current conclusion
 
-The KMP shell, Android secure onboarding, shared visual system, adaptive icon, wallet balance, pull-to-refresh, validated foreground session, L1 top-up, L1 history flow, and current-surface release hardening are implemented. The Android host wires unlock, wallet lifecycle, validated connector/adaptor sessions, connector balance/history, local address QR, and sensitive clipboard expiry; `FerretApp` registers onboarding, Home, Top Up, and History destinations. Transfer is the next missing P0 functionality before any channel or payment action is enabled, but remains gated on the connector contract and deployment recorded under P0.2.
+The KMP shell, Android secure onboarding, shared visual system, adaptive icon, validated foreground session, live L1 dashboard, top-up, history, durable transfer orchestration, encrypted channel recovery, payment reconciliation, settings/diagnostics, and safe removal boundaries are implemented. Home now refreshes the exact connector balance and immutable activity together, showing the latest record and refresh timestamp. Financial mutations remain unreachable until the pinned connector/adaptor operation lookup, protocol-parameter, writer-lease, and reconciliation contracts are deployed and verified. Concrete channel transaction adapters and lifecycle UI are the next repository functionality.
 
 Status legend: **Complete** means connected behavior exists; **Partial** means reusable code exists but the end-to-end feature does not; **Missing** means no usable implementation exists; **Deferred** is an explicit sequencing decision.
 
@@ -215,21 +215,21 @@ slice before Drive/device-writer identity exists.
 
 **Verification:** `./gradlew :shared:testAndroidHostTest`; run the five fixture evaluations against a controlled Preprod node; include exact decoded summaries in test artifacts.
 
-### 7. Home balance and pull-to-refresh — Complete for L1 balance
+### 7. Home balance and pull-to-refresh — Complete for the connected L1 dashboard
 
-**Current status:** The selected profile’s network connector loads real ADA balance; Home shows wallet/network/address and pull-to-refresh. The user manually confirmed pull-to-refresh.
+**Current status:** The selected profile’s connector balance, immutable unified history, latest activity, and refresh timestamp update together on initial load and pull-to-refresh. The primary action follows wallet state: zero L1 balance offers top-up, a funded wallet without an open channel keeps channel opening disabled, and an open channel keeps payment disabled until its deployment gate passes. No fiat value is shown.
 
-**Missing work:** Dynamic primary action, L1/L2 cards, latest activity, last-refresh/stale state, and pending refresh cadence are part of P0.2/P1. Do not add fiat.
+**Missing work:** Add the L2 balance projection and pending-operation 20-second cadence with the connected channel repository in P1.
 
-**Priority:** P0 extension.
+**Priority:** P1 extension.
 
 **Affected files:** `FerretApp.kt`, `WalletViewModels.kt`, `WalletScreens.kt`.
 
-**Dependencies:** P0.1 coordinator and P0.2 repositories.
+**Dependencies:** Connected channel repository for L2 and pending-operation state.
 
-**Acceptance criteria:** Balance exactly matches connector UTxOs; refresh updates balance/history; action precedence matches channel state; errors retain prior balance only if policy explicitly permits it—current original policy requires the Offline gate instead.
+**Acceptance criteria:** Balance exactly matches connector UTxOs; one refresh updates balance, latest immutable activity, and refresh timestamp; action precedence matches channel state; connectivity failure routes to Offline before cached wallet data is exposed.
 
-**Verification:** Existing `WalletBalanceTest`; `./gradlew androidCheck`; funded Preprod device comparison against connector response.
+**Verification:** `WalletBalanceTest`; `./gradlew androidCheck`; API 34 device pull-to-refresh confirms the timestamp and dashboard activity state update together.
 
 ### 8. Top-up address QR and clipboard — Complete
 
@@ -313,7 +313,7 @@ slice before Drive/device-writer identity exists.
 
 ### 13. Activity/history — Partial
 
-**Current status:** L1 connector parsing, immutable ordering/merge policy, deterministic finality states, pull-to-refresh, and the typed History route are connected. Expandable detail, refresh timestamp, journal-backed pending/failed records, and verified L2 activity are not connected.
+**Current status:** L1 connector parsing, immutable ordering/merge policy, deterministic finality states, pull-to-refresh, typed History navigation, expandable detail, refresh timestamp, and Home’s latest-activity projection are connected. Journal-backed payment records are merged into history. Verified channel activity is not connected.
 
 **Missing work:** Validate the L1 response against a funded Preprod wallet, then merge verified journal/adaptor activity in P2. Preserve immutable ordering, status semantics, amount, fee, realm, ID, and last refresh.
 
