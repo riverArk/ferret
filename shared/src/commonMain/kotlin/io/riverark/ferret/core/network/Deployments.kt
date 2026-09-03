@@ -29,7 +29,7 @@ data class NetworkDeployment(
     companion object {
         private val allowedHosts = setOf(
             "preprod-adaptor.ferret.channel", "preprod-cardano.ferret.channel",
-            "adaptor.ferret.channel", "cardano.ferret.channel",
+            "konduit.crustypants.com", "konduit-cardano.crustypants.com",
         )
     }
 }
@@ -46,12 +46,12 @@ val PREPROD = NetworkDeployment(
 
 val MAINNET = NetworkDeployment(
     CardanoNetwork.MAINNET,
-    "addr1qyvf5xgy6kn78mn66epp3ztlw3z47hpyz6v2l7l3v4eqyj40utxhve3xuj42n3fxaz64ldnjzg07yw30f3ypuncx9ajsee6f34",
-    "addr1w8pc0agp7ce78zefuk38kyza8rnu3gzy9vy6ynhh7t9ygyglua36j",
-    HttpsUrl("https://adaptor.ferret.channel"),
-    HttpsUrl("https://cardano.ferret.channel"),
-    "fe7d2454c30c6ca3337dd83b64d42358580dd199ac10322ed59475c7f1e20134",
-    "c387f501f633e38b29e5a27b105d38e7c8a0442b09a24ef7f2ca4411",
+    "addr1vy9z4llh8hxdwc54c0xlfgeza39vqm3zua4zva4elp0quqcxa7mjc",
+    "addr1wxxvdwawa53vy5ae6upa88mrkl3ptaa0pz76jv9vdwz7htcw94adk",
+    HttpsUrl("https://konduit.crustypants.com"),
+    HttpsUrl("https://konduit-cardano.crustypants.com"),
+    "57da4bfac4a2d097c8b2f391ea5a0772b6db8a28bfbadd5cd72fb5b138d5a07c",
+    "8cc6bbaeed22c253b9d703d39f63b7e215f7af08bda930ac6b85ebaf",
 ).also(NetworkDeployment::validate)
 
 fun deployment(network: CardanoNetwork) = if (network == CardanoNetwork.PREPROD) PREPROD else MAINNET

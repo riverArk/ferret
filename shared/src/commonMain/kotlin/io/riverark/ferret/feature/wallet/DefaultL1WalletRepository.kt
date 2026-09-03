@@ -219,7 +219,7 @@ class DefaultL1WalletRepository(
             amount,
             fee,
             createdAt,
-            when (state) {
+            when (status) {
                 "confirmed" -> L1OperationState.CONFIRMED
                 "settled" -> L1OperationState.SETTLED
                 "rejected" -> L1OperationState.REJECTED

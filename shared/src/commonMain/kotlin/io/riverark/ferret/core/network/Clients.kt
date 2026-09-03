@@ -73,7 +73,13 @@ data class ConnectorOutputDto(
         require(quantity.length in 1..20 && Regex("(0|[1-9][0-9]*)").matches(quantity))
     }
 }
-@Serializable data class SubmitRequest(@SerialName("operation_id") val operationId: String, @SerialName("transaction") val signedCborHex: String)
+@Serializable
+data class SubmitRequest(@SerialName("transaction") val signedCborHex: String) {
+    init {
+        require(signedCborHex.length in 2..1_048_576 && signedCborHex.length % 2 == 0)
+        require(signedCborHex.all { it in "0123456789abcdef" })
+    }
+}
 @Serializable data class SubmitResponse(@SerialName("transaction_id") val transactionId: String)
 @Serializable
 data class L1SubmitRequest(
@@ -93,14 +99,14 @@ data class L1OperationDto(
     @SerialName("operation_id") val operationId: String,
     @SerialName("expected_transaction_id") val expectedTransactionId: String,
     @SerialName("transaction_id") val transactionId: String? = null,
-    val state: String,
+    val status: String,
     val depth: Long? = null,
 ) {
     init {
         require(UUID.matches(operationId))
         require(HEX_64.matches(expectedTransactionId))
         require(transactionId == null || transactionId == expectedTransactionId)
-        require(state in setOf("pending", "accepted", "confirmed", "settled", "rejected"))
+        require(status in setOf("pending", "accepted", "confirmed", "settled", "rejected"))
         require(depth == null || depth >= 0)
     }
 }
@@ -110,13 +116,23 @@ data class ConnectorUtxoDto(
     @SerialName("output_index") val outputIndex: Int,
     val address: String,
     val value: List<ConnectorAssetDto>,
+    @SerialName("consumed_by") val consumedBy: String? = null,
+    @SerialName("datum_hash") val datumHash: String? = null,
     @SerialName("datum_inline") val datumInline: String? = null,
     @SerialName("reference_script_hash") val referenceScriptHash: String? = null,
+    @SerialName("reference_script_version") val referenceScriptVersion: Int? = null,
+    @SerialName("reference_script") val referenceScript: String? = null,
 ) {
     fun ledger(): LedgerUtxo {
         require(HEX_64.matches(transactionId))
         require(outputIndex >= 0 && address.length in 1..256)
         require(value.size in 1..100 && value.map(ConnectorAssetDto::unit).distinct().size == value.size)
+        require(consumedBy == null || HEX_64.matches(consumedBy))
+        require(datumHash == null || HEX_64.matches(datumHash))
+        require(datumInline == null || datumInline.isBoundedHex(131_072))
+        require(referenceScriptHash == null || Regex("[0-9a-f]{56}").matches(referenceScriptHash))
+        require(referenceScriptVersion == null || referenceScriptVersion in 0..3)
+        require(referenceScript == null || referenceScript.isBoundedHex(131_072))
         val quantities = value.associate { asset ->
             require(asset.unit == "lovelace" || asset.unit.length in 56..120 && asset.unit.length % 2 == 0 && asset.unit.all { it in "0123456789abcdef" })
             require(Regex("(0|[1-9][0-9]*)").matches(asset.quantity))
@@ -133,14 +149,32 @@ data class ConnectorUtxoDto(
         )
     }
 }
-@Serializable data class SessionClaimRequest(val walletVerificationKeyHex: String, val generation: Long, val backupHashHex: String, val devicePublicKeyHex: String, val timestamp: Long, val signatureHex: String)
+@Serializable
+data class SessionClaimRequest(
+    val walletVerificationKeyHex: String,
+    val adaptorVerificationKeyHex: String,
+    val generation: Long,
+    val backupHashHex: String,
+    val devicePublicKeyHex: String,
+    val timestamp: Long,
+    val signatureHex: String,
+) {
+    init {
+        require(listOf(walletVerificationKeyHex, adaptorVerificationKeyHex, backupHashHex, devicePublicKeyHex).all(HEX_64::matches))
+        require(generation >= 1 && timestamp >= 0)
+        require(Regex("[0-9a-f]{128}").matches(signatureHex))
+    }
+}
 @Serializable data class SessionClaimResponse(val lease: String, val expiresAtEpochMillis: Long)
 @Serializable
 data class AdaptorInfoDto(
     val tos: AdaptorTermsDto,
     @SerialName("channel_parameters") val channelParameters: AdaptorChannelParametersDto,
     @SerialName("tx_help") val transactionHelp: AdaptorTransactionHelpDto,
-)
+    @SerialName("asset_catalog_digest") val assetCatalogDigest: String? = null,
+) {
+    init { require(assetCatalogDigest == null || HEX_64.matches(assetCatalogDigest)) }
+}
 @Serializable data class AdaptorTermsDto(@SerialName("flat_fee") val flatFee: Long)
 @Serializable
 data class AdaptorChannelParametersDto(
@@ -163,8 +197,7 @@ class ConnectorClient(private val http: HttpClient, private val deployment: Netw
     suspend fun utxos(address: String): List<ConnectorUtxoDto> = getOnce("/utxos_at/${path(address)}")
     suspend fun transactions(address: String): List<TransactionRecord> =
         getOnce<List<ConnectorTransactionDto>>("/transactions/${path(address)}").transactionRecords(address)
-    suspend fun claim(request: SessionClaimRequest): SessionClaimResponse = postOnce("/session/claim", request)
-    suspend fun submit(request: SubmitRequest, lease: String): SubmitResponse = postOnce("/submit", request, lease)
+    suspend fun submit(request: SubmitRequest): SubmitResponse = postOnce("/submit", request)
     suspend fun ledger(address: String, network: CardanoNetwork): LedgerSnapshot {
         val parameters = protocolParameters()
         return LedgerSnapshot(network, utxos(address).map(ConnectorUtxoDto::ledger), parameters.payload.toString(), parameters.slot)
@@ -253,6 +286,11 @@ private fun List<ConnectorAssetDto>.lovelace(): Lovelace {
 
 class AdaptorClient(private val http: HttpClient, private val deployment: NetworkDeployment) {
     suspend fun info(): AdaptorInfoDto = http.get(deployment.adaptor.value + "/info").body()
+    suspend fun claim(request: SessionClaimRequest): SessionClaimResponse =
+        http.post(deployment.adaptor.value + "/session/claim") {
+            contentType(ContentType.Application.Json)
+            setBody(request)
+        }.body()
     suspend fun receipt(keytag: String): String = http.get(deployment.adaptor.value + "/ch/receipt") { header("KONDUIT", keytag) }.body()
     suspend fun quote(keytag: String, lease: String, request: String): String = mutate("/ch/quote", keytag, lease, request)
     suspend fun pay(keytag: String, lease: String, request: String): String = mutate("/ch/pay", keytag, lease, request)
@@ -269,6 +307,9 @@ class AdaptorClient(private val http: HttpClient, private val deployment: Networ
 
 private val UUID = Regex("[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
 private val HEX_64 = Regex("[0-9a-f]{64}")
+
+private fun String.isBoundedHex(maxLength: Int) =
+    length <= maxLength && length % 2 == 0 && all { it in "0123456789abcdef" }
 
 private fun path(value: String): String {
     require(value.all { it.isLetterOrDigit() || it == '_' })

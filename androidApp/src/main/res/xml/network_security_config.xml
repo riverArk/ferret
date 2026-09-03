@@ -25,4 +25,18 @@
             <pin digest="SHA-256">kIdp6NNEd8wsugYyyIYFsi1ylMCED3hZbSR8ZFsa/A4=</pin>
         </pin-set>
     </domain-config>
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="false">konduit.crustypants.com</domain>
+        <pin-set expiration="2027-09-03">
+            <pin digest="SHA-256">i53/avaLL/MmCn1VsVDNZSPo/uQt2RBl6HCEUJ+lFqo=</pin>
+            <pin digest="SHA-256">brzvtCELCIZUo4sD/qPX0ccRtPsd3DY6RfmxpOU9oB4=</pin>
+        </pin-set>
+    </domain-config>
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="false">konduit-cardano.crustypants.com</domain>
+        <pin-set expiration="2027-09-03">
+            <pin digest="SHA-256">tqIfLixQGOlWUYCl3a4CIz1FbFs3r7d6R6y5hnjroxA=</pin>
+            <pin digest="SHA-256">brzvtCELCIZUo4sD/qPX0ccRtPsd3DY6RfmxpOU9oB4=</pin>
+        </pin-set>
+    </domain-config>
 </network-security-config>

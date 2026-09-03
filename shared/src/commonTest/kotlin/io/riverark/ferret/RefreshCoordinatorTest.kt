@@ -3,11 +3,15 @@ package io.riverark.ferret
 import io.riverark.ferret.core.model.CardanoNetwork
 import io.riverark.ferret.core.model.WalletId
 import io.riverark.ferret.core.model.WalletProfile
+import io.riverark.ferret.core.channel.sessionClaimMessage
 import io.riverark.ferret.core.network.AdaptorChannelParametersDto
 import io.riverark.ferret.core.network.AdaptorClosePeriodDto
 import io.riverark.ferret.core.network.AdaptorInfoDto
 import io.riverark.ferret.core.network.AdaptorTermsDto
 import io.riverark.ferret.core.network.AdaptorTransactionHelpDto
+import io.riverark.ferret.core.network.ConnectorUtxoDto
+import io.riverark.ferret.core.network.L1OperationDto
+import io.riverark.ferret.core.network.MAINNET
 import io.riverark.ferret.core.network.HealthDto
 import io.riverark.ferret.core.network.NetworkDto
 import io.riverark.ferret.core.network.PREPROD
@@ -54,6 +58,44 @@ class RefreshCoordinatorTest {
         )
 
         assertTrue(info.channelParameters.adaptorKeyHex == PREPROD.adaptorIdentityHex)
+    }
+
+    @Test
+    fun mainnetContractsMatchDeployedStrictSchema() = runBlocking {
+        val info = Json.decodeFromString<AdaptorInfoDto>(
+            """{"tos":{"flat_fee":1414},"channel_parameters":{"adaptor_key":"${MAINNET.adaptorIdentityHex}","close_period":{"secs":1800,"nanos":0},"tag_length":32},"tx_help":{"host_address":"${MAINNET.scriptDeploymentAddress}","validator":"${MAINNET.validatorHashHex}"},"asset_catalog_digest":"${"a".repeat(64)}"}""",
+        )
+        val utxo = Json.decodeFromString<ConnectorUtxoDto>(
+            """{"transaction_id":"${"b".repeat(64)}","output_index":0,"address":"${MAINNET.scriptDeploymentAddress}","value":[{"unit":"lovelace","quantity":"1"}],"reference_script_hash":"${MAINNET.validatorHashHex}","reference_script_version":3,"reference_script":"00"}""",
+        )
+        val operation = Json.decodeFromString<L1OperationDto>(
+            """{"operation_id":"00000000-0000-4000-8000-000000000000","expected_transaction_id":"${"c".repeat(64)}","status":"accepted","depth":0}""",
+        )
+
+        assertTrue(info.assetCatalogDigest != null)
+        assertTrue(utxo.ledger().scriptRefHex == MAINNET.validatorHashHex)
+        assertTrue(operation.status == "accepted")
+        RefreshCoordinator(
+            MAINNET,
+            { HealthDto("ok") },
+            { NetworkDto("mainnet") },
+            { info },
+        ).validate(
+            WalletProfile(
+                WalletId("mainnet-${"0".repeat(56)}"),
+                "Mainnet",
+                CardanoNetwork.MAINNET,
+                MAINNET.scriptDeploymentAddress,
+                "stake1wallet",
+            ),
+        )
+    }
+
+    @Test
+    fun sessionClaimSignatureBindsAdaptorIdentity() {
+        val message = sessionClaimMessage(MAINNET.adaptorIdentityHex, 3, "a".repeat(64), "b".repeat(64), 42)
+
+        assertTrue(message.decodeToString().startsWith("${MAINNET.adaptorIdentityHex}\n3\n"))
     }
 
 
