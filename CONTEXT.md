@@ -92,6 +92,7 @@ Android installation and manual onboarding verification require an API 36 emulat
 - Wired first encrypted Drive appData backup creation and later read-back/decrypt verification, with the verified sequence projected in Settings.
 - Added post-mnemonic encrypted Drive backup recovery. Verified channel snapshots are installed into the local encrypted journal; missing, conflicting, or modified backups fail closed.
 - Added stale Drive writer detection and an explicit Settings takeover flow. Takeover restores the latest verified channel snapshot locally and starts a new backup generation.
+- Channel mutations now revalidate the remote encrypted Drive checkpoint immediately before writer-lease resolution, preventing a stale device from journaling or calling the adaptor after takeover.
 
 ### 2026-09-02
 

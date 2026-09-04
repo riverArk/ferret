@@ -2,6 +2,8 @@ package io.riverark.ferret.core.backup
 
 import io.riverark.ferret.core.channel.ChannelSnapshot
 import io.riverark.ferret.core.channel.VaultChannelJournal
+import io.riverark.ferret.core.channel.DriveChannelBackupProtocol
+import io.riverark.ferret.core.channel.WriterLease
 import io.riverark.ferret.core.model.ChannelState
 import io.riverark.ferret.core.model.WalletId
 import io.riverark.ferret.core.model.WalletProfile
@@ -16,6 +18,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFails
+import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
@@ -69,15 +72,29 @@ class DriveBackupRepositoryTest {
         second.restore(walletId)
         first.writeNext(walletId, "latest".encodeToByteArray())
 
-        val stale = assertFailsWith<StaleBackupWriterException> { second.verify(walletId) }
+        var writerClaimed = false
+        val protocol = DriveChannelBackupProtocol(second, requireWriter = { _, checkpoint ->
+            writerClaimed = true
+            WriterLease(
+                "a".repeat(64),
+                checkpoint.generation,
+                checkpoint.ciphertextHash.toHex(),
+                "b".repeat(64),
+                1_000,
+            )
+        })
+        val stale = assertFailsWith<StaleBackupWriterException> { protocol.requireVerifiedWriter(walletId) }
         assertEquals(1L, stale.remoteGeneration)
         assertEquals(2L, stale.remoteSequence)
+        assertFalse(writerClaimed)
 
         val takeover = second.takeover(walletId)
         assertEquals(2L, takeover.generation)
         assertEquals(1L, takeover.sequence)
         assertContentEquals("latest".encodeToByteArray(), takeover.channelSnapshot)
         assertEquals(2L, second.verify(walletId).generation)
+        assertEquals(2L, protocol.requireVerifiedWriter(walletId).generation)
+        assertTrue(writerClaimed)
         seed.fill(0)
     }
 
@@ -150,3 +167,5 @@ class DriveBackupRepositoryTest {
         }
     }
 }
+
+private fun ByteArray.toHex() = joinToString("") { it.toUByte().toString(16).padStart(2, '0') }

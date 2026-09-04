@@ -74,8 +74,15 @@ class DriveChannelBackupProtocol(
     private val requireWriter: suspend (WalletId, BackupCheckpointV1) -> WriterLease,
     private val json: Json = Json { ignoreUnknownKeys = false },
 ) : ChannelBackupProtocol {
-    override suspend fun requireVerifiedWriter(walletId: WalletId): WriterLease =
-        requireWriter(walletId, requireNotNull(backups.checkpoint(walletId)) { "verified Drive backup is required" })
+    override suspend fun requireVerifiedWriter(walletId: WalletId): WriterLease {
+        val checkpoint = backups.verify(walletId)
+        return try {
+            requireWriter(walletId, checkpoint)
+        } finally {
+            checkpoint.ciphertextHash.fill(0)
+            checkpoint.channelSnapshot.fill(0)
+        }
+    }
 
     override suspend fun writeAhead(walletId: WalletId, snapshot: ChannelSnapshot) = write(walletId, snapshot)
 
