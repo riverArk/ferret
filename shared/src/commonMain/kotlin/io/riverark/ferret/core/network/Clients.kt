@@ -257,8 +257,9 @@ internal fun List<ConnectorTransactionDto>.transactionRecords(address: String): 
         val walletInput = inputs.filter { it.first == address }.fold(Lovelace(0)) { total, (_, amount) -> total + amount }
         val walletOutput = outputs.filter { it.first == address }.fold(Lovelace(0)) { total, (_, amount) -> total + amount }
         require(walletInput.value > 0 || walletOutput.value > 0) { "transaction does not contain wallet address" }
-        val fee = totalInput - totalOutput
-        val amount = if (walletOutput.value >= walletInput.value) {
+        val incoming = walletOutput.value >= walletInput.value
+        val fee = if (incoming) Lovelace(0) else totalInput - totalOutput
+        val amount = if (incoming) {
             walletOutput - walletInput
         } else {
             (walletInput - walletOutput) - fee

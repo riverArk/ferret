@@ -238,7 +238,14 @@ private fun WalletNavigation(
             LaunchedEffect(Unit) { walletViewModel.load() }
             WalletPickerScreen(
                 pickerState,
-                { walletViewModel.select(it.id) },
+                { profile ->
+                    walletViewModel.select(profile.id) {
+                        navController.navigate(Route.Home(profile.id.value)) {
+                            launchSingleTop = true
+                            popUpTo(navController.graph.startDestinationId) { inclusive = true }
+                        }
+                    }
+                },
                 { navController.navigate(Route.CreateWallet) },
                 { navController.navigate(Route.RestoreWallet) },
             )

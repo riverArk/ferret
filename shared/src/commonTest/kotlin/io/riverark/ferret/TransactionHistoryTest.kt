@@ -51,6 +51,25 @@ class TransactionHistoryTest {
         }
     }
 
+    @Test fun incomingTransactionDoesNotChargeSenderFeeToWallet() {
+        val transaction = Json.decodeFromString<List<ConnectorTransactionDto>>(response)
+            .single()
+            .copy(
+                inputs = emptyList(),
+                outputs = listOf(
+                    io.riverark.ferret.core.network.ConnectorOutputDto(
+                        wallet,
+                        listOf(io.riverark.ferret.core.network.ConnectorAssetDto("lovelace", "5000000")),
+                    ),
+                ),
+            )
+
+        val record = listOf(transaction).transactionRecords(wallet).single()
+
+        assertEquals(Lovelace(5_000_000), record.amount)
+        assertEquals(Lovelace(0), record.fee)
+    }
+
     @Test fun mergingHistoryIsDescendingAndDoesNotMutateSources() {
         val older = record("older", 1)
         val newer = record("newer", 2)
