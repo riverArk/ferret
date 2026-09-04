@@ -21,10 +21,12 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.android.Android
 import io.riverark.ferret.core.cardano.androidCardanoTransactionEngine
 import io.riverark.ferret.core.cardano.AndroidProtocolCrypto
+import io.riverark.ferret.core.cardano.AndroidProtocolSigner
 import io.riverark.ferret.core.backup.AndroidGoogleOAuthTokenProvider
 import io.riverark.ferret.core.backup.DriveBackupRepository
 import io.riverark.ferret.core.backup.GoogleDriveAppDataClient
 import io.riverark.ferret.core.backup.WalletBackupCoordinator
+import io.riverark.ferret.core.backup.BackupCheckpointV1
 import io.riverark.ferret.core.cardano.deriveAndroidWallet
 import io.riverark.ferret.core.model.CardanoNetwork
 import io.riverark.ferret.core.model.WalletManager
@@ -36,6 +38,7 @@ import io.riverark.ferret.core.model.Lovelace
 import io.riverark.ferret.core.model.RemovalReadiness
 import io.riverark.ferret.core.model.TransactionState
 import io.riverark.ferret.core.model.WalletRemovalManager
+import io.riverark.ferret.core.model.WalletId
 import io.riverark.ferret.core.model.WalletProfile
 import io.riverark.ferret.core.network.ConnectorClient
 import io.riverark.ferret.core.network.AdaptorClient
@@ -50,6 +53,9 @@ import io.riverark.ferret.core.security.SensitiveContentCounter
 import io.riverark.ferret.core.security.AndroidUserAuthenticator
 import io.riverark.ferret.core.security.AndroidBackupCrypto
 import io.riverark.ferret.core.channel.VaultChannelJournal
+import io.riverark.ferret.core.security.AndroidDeviceIdentity
+import io.riverark.ferret.core.channel.SessionLeaseRepository
+import io.riverark.ferret.core.channel.WriterLease
 import io.riverark.ferret.feature.wallet.L1OperationState
 import io.riverark.ferret.feature.wallet.DefaultL1WalletRepository
 import io.riverark.ferret.core.channel.VaultPaymentStore
@@ -83,6 +89,8 @@ class MainActivity : FragmentActivity() {
     private lateinit var walletRemovalManager: WalletRemovalManager
     private lateinit var driveTokens: AndroidGoogleOAuthTokenProvider
     private lateinit var backupCoordinator: WalletBackupCoordinator
+    private lateinit var deviceIdentity: AndroidDeviceIdentity
+    private val sessionLeases = mutableMapOf<WalletId, SessionLeaseRepository>()
     private var activeWork: Job? = null
     private var backgroundLock: Job? = null
     private var unlocking = false
@@ -118,6 +126,7 @@ class MainActivity : FragmentActivity() {
             wallets,
         )
         driveTokens = AndroidGoogleOAuthTokenProvider(this)
+        deviceIdentity = AndroidDeviceIdentity(this)
         val backupCrypto = AndroidBackupCrypto()
         backupCoordinator = WalletBackupCoordinator(
             vault,
@@ -249,6 +258,7 @@ class MainActivity : FragmentActivity() {
                         val snapshot = channelJournal.backupSnapshot(walletId)
                         try {
                             val checkpoint = backupCoordinator.initializeOrVerify(walletId, snapshot)
+                            claimWriter(walletId, checkpoint)
                             try {
                                 checkpoint.sequence
                             } finally {
@@ -267,6 +277,7 @@ class MainActivity : FragmentActivity() {
                     takeoverBackup = { walletId ->
                         val checkpoint = backupCoordinator.takeover(walletId)
                         try {
+                            claimWriter(walletId, checkpoint)
                             val snapshot = channelJournal.restoreFromBackup(walletId, checkpoint.channelSnapshot)
                             val profile = vault.profiles().single { it.id == walletId }
                             vault.updateProfile(profile.copy(channelState = snapshot.state))
@@ -433,6 +444,20 @@ class MainActivity : FragmentActivity() {
         activeWork?.cancel()
         activeWork = null
         coordinators.values.forEach(RefreshCoordinator::cancelActiveWork)
+        sessionLeases.values.forEach(SessionLeaseRepository::clear)
+    }
+
+    private suspend fun claimWriter(walletId: WalletId, checkpoint: BackupCheckpointV1): WriterLease {
+        val profile = vault.profiles().single { it.id == walletId }
+        return sessionLeases.getOrPut(walletId) {
+            SessionLeaseRepository(
+                adaptors.getValue(profile.network)::claim,
+                deployment(profile.network).adaptorIdentityHex,
+                AndroidProtocolSigner(vault, walletId, profile.network),
+                deviceIdentity.publicKeyHex(),
+                System::currentTimeMillis,
+            )
+        }.claim(checkpoint)
     }
 
     private fun lockSession() {
