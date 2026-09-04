@@ -85,6 +85,7 @@ Android installation and manual onboarding verification require an API 36 emulat
 - Added stable redacted diagnostic identifiers (`FRT-001` through `FRT-006`) and expanded the release logging scan across Android and shared production Kotlin.
 - Confirmed `FLAG_SECURE` on the API 36 unlock window; screenshot capture returned black and startup logs contained no wallet data.
 
+- Added a stable non-backed-up Android installation identity and bound writer-lease claims to the exact verified Drive generation, ciphertext hash, adaptor identity, and monotonic timestamp.
 - Bounded every connector/adaptor response by its decoded UTF-8 byte count and tightened transaction, operation, session-lease, and adaptor DTO validation before channel adapters are connected.
 - Made the validated writer lease mandatory for every channel mutation and reconciliation; missing ownership now fails before journal or remote side effects.
 
