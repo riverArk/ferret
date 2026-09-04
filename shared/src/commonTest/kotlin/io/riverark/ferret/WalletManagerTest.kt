@@ -64,6 +64,9 @@ class WalletManagerTest {
         assertFailsWith<IllegalArgumentException> {
             manager.restore("Duplicate", CardanoNetwork.PREPROD, restorePhrase)
         }
+        assertFailsWith<IllegalArgumentException> {
+            manager.restore("Cross-network duplicate", CardanoNetwork.MAINNET, restorePhrase)
+        }
         assertTrue(derivedSeeds.drop(1).all { seed -> seed.all { it == 0.toByte() } })
     }
 }

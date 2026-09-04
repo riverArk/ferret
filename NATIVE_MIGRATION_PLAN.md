@@ -150,13 +150,13 @@ Preprod and `ferret.channel` availability must not block or satisfy this gate.
 
 **Verification:** `./gradlew androidCheck`; navigation tests exercise each registered route and process recreation without secrets in route arguments.
 
-### 3. Android custody, multi-wallet onboarding, and recovery — Partial
+### 3. Android custody, multi-wallet onboarding, and recovery — Complete
 
-**Current status:** Android biometric/device-credential unlock, StrongBox-with-fallback Keystore wrapping, encrypted atomic profile/seed files, 32-byte entropy, BIP-39 create/restore, existing Preprod/Mainnet profiles, duplicate credential rejection, secure mnemonic routes, resumable confirmation, and random three-position verification are implemented. Deployment and device acceptance testing are Mainnet-only. Old raw-key/Svelte backups are unsupported as required.
+**Current status:** Android biometric/device-credential unlock, StrongBox-with-fallback Keystore wrapping, encrypted atomic profile/seed files, 32-byte entropy, BIP-39 create/restore, existing Preprod/Mainnet profiles, duplicate credential rejection across networks, secure mnemonic routes, resumable confirmation, random three-position verification, the exact five-minute background lock, Drive backup discovery during restore, and Settings rename are implemented. Deployment and device acceptance testing are Mainnet-only. Old raw-key/Svelte backups are unsupported as required.
 
-**Missing work:** Five-minute background lock and key-invalidation-to-restore handling from P0.1; Drive backup discovery offer during restore after item 10. Rename exists in the ViewModel but is not exposed. Confirm the encrypted index retains network-independent duplicate detection across networks.
+**Missing work:** None.
 
-**Priority:** P0 lifecycle; P1 Drive restore; P3 rename/settings polish.
+**Priority:** Done.
 
 **Affected files:** `AndroidSecurity.kt`, `MainActivity.kt`, `WalletManager.kt`, `WalletViewModels.kt`, `WalletScreens.kt`.
 

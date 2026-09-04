@@ -34,6 +34,7 @@ class AndroidCardanoTransactionEngineTest {
         assertTrue(first.paymentAddress.startsWith("addr_test1"))
         assertTrue(mainnet.paymentAddress.startsWith("addr1"))
         assertEquals(56, first.paymentCredentialHex.length)
+        assertEquals(first.paymentCredentialHex, mainnet.paymentCredentialHex)
     }
 
     @Test fun restoresGeneratedRecoveryPhrase() = runBlocking {
