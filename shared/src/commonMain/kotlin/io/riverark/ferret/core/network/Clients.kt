@@ -7,6 +7,9 @@ import io.riverark.ferret.core.channel.AdaptorPayRequest
 import io.riverark.ferret.core.channel.Bolt11QuoteRequest
 import io.riverark.ferret.core.channel.ProtocolKeytag
 import io.riverark.ferret.core.channel.ProtocolQuote
+import io.riverark.ferret.core.channel.ProtocolReceipt
+import io.riverark.ferret.core.channel.ProtocolSquashStatus
+import io.riverark.ferret.core.channel.SignedSquashWire
 import io.riverark.ferret.core.model.CardanoNetwork
 import io.riverark.ferret.core.model.Realm
 import io.riverark.ferret.core.model.TransactionRecord
@@ -321,16 +324,16 @@ class AdaptorClient(private val http: HttpClient, private val deployment: Networ
             contentType(ContentType.Application.Json)
             setBody(request)
         }.boundedJsonBody()
-    suspend fun receipt(keytag: ProtocolKeytag): String =
+    suspend fun receipt(keytag: ProtocolKeytag): ProtocolReceipt? =
         http.get(deployment.adaptor.value + "/ch/receipt") {
             header("KONDUIT", keytag.value)
-        }.boundedTextBody()
+        }.boundedJsonBody()
     suspend fun quote(keytag: ProtocolKeytag, lease: String, invoice: String): ProtocolQuote =
         mutateJson("/ch/quote", keytag, lease, Bolt11QuoteRequest(invoice))
-    suspend fun pay(keytag: ProtocolKeytag, lease: String, request: AdaptorPayRequest): String =
-        mutateText("/ch/pay", keytag, lease, request)
-    suspend fun squash(keytag: ProtocolKeytag, lease: String, request: String): String =
-        mutateText("/ch/squash", keytag, lease, request)
+    suspend fun pay(keytag: ProtocolKeytag, lease: String, request: AdaptorPayRequest): ProtocolSquashStatus =
+        mutateJson("/ch/pay", keytag, lease, request)
+    suspend fun squash(keytag: ProtocolKeytag, lease: String, request: SignedSquashWire): ProtocolSquashStatus =
+        mutateJson("/ch/squash", keytag, lease, request)
 
     private suspend inline fun <reified Request, reified Response> mutateJson(
         path: String,
@@ -338,13 +341,6 @@ class AdaptorClient(private val http: HttpClient, private val deployment: Networ
         lease: String,
         request: Request,
     ): Response = post(path, keytag, lease, request).boundedJsonBody()
-
-    private suspend inline fun <reified Request> mutateText(
-        path: String,
-        keytag: ProtocolKeytag,
-        lease: String,
-        request: Request,
-    ): String = post(path, keytag, lease, request).boundedTextBody()
 
     private suspend inline fun <reified Request> post(
         path: String,
@@ -378,15 +374,6 @@ private suspend inline fun <reified T> HttpResponse.boundedJsonBody(): T {
     val bytes = boundedBody()
     return try {
         decodeBoundedJson(bytes)
-    } finally {
-        bytes.fill(0)
-    }
-}
-
-private suspend fun HttpResponse.boundedTextBody(): String {
-    val bytes = boundedBody()
-    return try {
-        bytes.decodeToString()
     } finally {
         bytes.fill(0)
     }
