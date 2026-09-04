@@ -5,10 +5,13 @@ import io.riverark.ferret.core.cardano.LedgerSnapshot
 import io.riverark.ferret.core.cardano.LedgerUtxo
 import io.riverark.ferret.core.channel.AdaptorPayRequest
 import io.riverark.ferret.core.channel.Bolt11QuoteRequest
+import io.riverark.ferret.core.channel.ProtocolCrypto
 import io.riverark.ferret.core.channel.ProtocolKeytag
 import io.riverark.ferret.core.channel.ProtocolQuote
 import io.riverark.ferret.core.channel.ProtocolReceipt
 import io.riverark.ferret.core.channel.ProtocolSquashStatus
+import io.riverark.ferret.core.channel.ProtocolTag
+import io.riverark.ferret.core.channel.requireValidSignatures
 import io.riverark.ferret.core.channel.SignedSquashWire
 import io.riverark.ferret.core.model.CardanoNetwork
 import io.riverark.ferret.core.model.Realm
@@ -317,7 +320,11 @@ private fun List<ConnectorAssetDto>.lovelace(): Lovelace {
     return Lovelace(quantity.toLong())
 }
 
-class AdaptorClient(private val http: HttpClient, private val deployment: NetworkDeployment) {
+class AdaptorClient(
+    private val http: HttpClient,
+    private val deployment: NetworkDeployment,
+    private val crypto: ProtocolCrypto,
+) {
     suspend fun info(): AdaptorInfoDto = http.get(deployment.adaptor.value + "/info").boundedJsonBody()
     suspend fun claim(request: SessionClaimRequest): SessionClaimResponse =
         http.post(deployment.adaptor.value + "/session/claim") {
@@ -327,13 +334,16 @@ class AdaptorClient(private val http: HttpClient, private val deployment: Networ
     suspend fun receipt(keytag: ProtocolKeytag): ProtocolReceipt? =
         http.get(deployment.adaptor.value + "/ch/receipt") {
             header("KONDUIT", keytag.value)
-        }.boundedJsonBody()
+        }.boundedJsonBody<ProtocolReceipt?>()?.also {
+            val (verificationKey, tag) = keytag.signatureIdentity()
+            it.requireValidSignatures(verificationKey, tag, crypto)
+        }
     suspend fun quote(keytag: ProtocolKeytag, lease: String, invoice: String): ProtocolQuote =
         mutateJson("/ch/quote", keytag, lease, Bolt11QuoteRequest(invoice))
     suspend fun pay(keytag: ProtocolKeytag, lease: String, request: AdaptorPayRequest): ProtocolSquashStatus =
-        mutateJson("/ch/pay", keytag, lease, request)
+        mutateJson<AdaptorPayRequest, ProtocolSquashStatus>("/ch/pay", keytag, lease, request).verified(keytag)
     suspend fun squash(keytag: ProtocolKeytag, lease: String, request: SignedSquashWire): ProtocolSquashStatus =
-        mutateJson("/ch/squash", keytag, lease, request)
+        mutateJson<SignedSquashWire, ProtocolSquashStatus>("/ch/squash", keytag, lease, request).verified(keytag)
 
     private suspend inline fun <reified Request, reified Response> mutateJson(
         path: String,
@@ -341,6 +351,11 @@ class AdaptorClient(private val http: HttpClient, private val deployment: Networ
         lease: String,
         request: Request,
     ): Response = post(path, keytag, lease, request).boundedJsonBody()
+
+    private fun ProtocolSquashStatus.verified(keytag: ProtocolKeytag): ProtocolSquashStatus = apply {
+        val (verificationKey, tag) = keytag.signatureIdentity()
+        requireValidSignatures(verificationKey, tag, crypto)
+    }
 
     private suspend inline fun <reified Request> post(
         path: String,
@@ -357,6 +372,8 @@ class AdaptorClient(private val http: HttpClient, private val deployment: Networ
         }
     }
 }
+
+private fun ProtocolKeytag.signatureIdentity() = value.take(64) to ProtocolTag(value.drop(64))
 
 internal fun requireBoundedResponse(bytes: ByteArray) {
     require(bytes.size <= MAX_RESPONSE_BYTES) { "response too large" }

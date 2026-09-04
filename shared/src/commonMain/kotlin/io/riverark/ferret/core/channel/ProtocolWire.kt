@@ -130,6 +130,23 @@ data class SquashBodyWire(
         require(exclude.zipWithNext().all { (before, after) -> before < after })
         require(exclude.all { it >= 0 && it < index })
     }
+
+    fun canonicalCbor(): ByteArray = CborWriter().apply {
+        indefiniteArray()
+        unsigned(amount)
+        unsigned(index)
+        indefiniteArray()
+        exclude.forEach(::unsigned)
+        end()
+        end()
+    }.toByteArray()
+
+    fun taggedCbor(tag: ProtocolTag): ByteArray = CborWriter().apply {
+        indefiniteArray()
+        bytes(tag.value.hexBytes())
+        raw(canonicalCbor())
+        end()
+    }.toByteArray()
 }
 
 @Serializable
@@ -165,6 +182,16 @@ data class ProtocolSquashProposal(
         require(unlockeds.size <= MAX_PROTOCOL_CHEQUES)
         require(lockeds.size <= MAX_PROTOCOL_CHEQUES)
     }
+
+    fun requireValidSignatures(
+        walletVerificationKeyHex: String,
+        tag: ProtocolTag,
+        crypto: ProtocolCrypto,
+    ) {
+        current.requireValidSignature(walletVerificationKeyHex, tag, crypto)
+        unlockeds.forEach { it.requireValidUnlockedSignature(walletVerificationKeyHex, tag, crypto) }
+        lockeds.forEach { it.requireValidSignature(walletVerificationKeyHex, tag, crypto) }
+    }
 }
 
 @Serializable(with = ProtocolSquashStatusSerializer::class)
@@ -174,12 +201,40 @@ sealed interface ProtocolSquashStatus {
     data class Stale(val proposal: ProtocolSquashProposal) : ProtocolSquashStatus
 }
 
+fun ProtocolSquashStatus.requireValidSignatures(
+    walletVerificationKeyHex: String,
+    tag: ProtocolTag,
+    crypto: ProtocolCrypto,
+) {
+    when (this) {
+        ProtocolSquashStatus.Complete -> Unit
+        is ProtocolSquashStatus.Incomplete -> proposal.requireValidSignatures(walletVerificationKeyHex, tag, crypto)
+        is ProtocolSquashStatus.Stale -> proposal.requireValidSignatures(walletVerificationKeyHex, tag, crypto)
+    }
+}
+
 @Serializable
 data class ProtocolReceipt(
     val squash: SignedSquashWire,
     val cheques: List<ProtocolCheque>,
 ) {
     init { require(cheques.size <= MAX_PROTOCOL_CHEQUES) }
+
+    fun requireValidSignatures(
+        walletVerificationKeyHex: String,
+        tag: ProtocolTag,
+        crypto: ProtocolCrypto,
+    ) {
+        squash.requireValidSignature(walletVerificationKeyHex, tag, crypto)
+        cheques.forEach { cheque ->
+            when (cheque) {
+                is ProtocolCheque.Locked ->
+                    cheque.value.requireValidSignature(walletVerificationKeyHex, tag, crypto)
+                is ProtocolCheque.Unlocked ->
+                    cheque.value.requireValidUnlockedSignature(walletVerificationKeyHex, tag, crypto)
+            }
+        }
+    }
 }
 
 object ProtocolChequeSerializer : KSerializer<ProtocolCheque> {
@@ -243,6 +298,51 @@ object ProtocolSquashStatusSerializer : KSerializer<ProtocolSquashStatus> {
     }
 }
 
+interface ProtocolCrypto {
+    fun verify(verificationKey: ByteArray, message: ByteArray, signature: ByteArray): Boolean
+    fun sha256(input: ByteArray): ByteArray
+}
+
+fun SignedSquashWire.requireValidSignature(
+    walletVerificationKeyHex: String,
+    tag: ProtocolTag,
+    crypto: ProtocolCrypto,
+) {
+    require(crypto.verify(
+        walletVerificationKeyHex.hexBytes(32),
+        body.taggedCbor(tag),
+        signature.hexBytes(64),
+    )) { "invalid squash signature" }
+}
+
+fun SignedChequeWire.requireValidSignature(
+    walletVerificationKeyHex: String,
+    tag: ProtocolTag,
+    crypto: ProtocolCrypto,
+) {
+    require(crypto.verify(
+        walletVerificationKeyHex.hexBytes(32),
+        body.taggedCbor(tag),
+        signature.hexBytes(64),
+    )) { "invalid cheque signature" }
+}
+
+fun SignedChequeWire.requireValidUnlockedSignature(
+    walletVerificationKeyHex: String,
+    tag: ProtocolTag,
+    crypto: ProtocolCrypto,
+) {
+    val secret = body.latch.value.hexBytes(32)
+    val lock = crypto.sha256(secret)
+    require(lock.size == 32)
+    try {
+        copy(body = body.copy(latch = Hex32(lock.toHex()))).requireValidSignature(walletVerificationKeyHex, tag, crypto)
+    } finally {
+        secret.fill(0)
+        lock.fill(0)
+    }
+}
+
 private const val MAX_PROTOCOL_CHEQUES = 10
 
 interface ProtocolSigner {
@@ -281,4 +381,11 @@ private class CborWriter {
     fun toByteArray() = bytes.toByteArray()
 }
 
-private fun String.hexBytes() = chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+private fun String.hexBytes(expectedSize: Int? = null): ByteArray {
+    require(length % 2 == 0 && all { it in "0123456789abcdef" })
+    return chunked(2).map { it.toInt(16).toByte() }.toByteArray().also {
+        require(expectedSize == null || it.size == expectedSize)
+    }
+}
+
+private fun ByteArray.toHex() = joinToString("") { it.toUByte().toString(16).padStart(2, '0') }

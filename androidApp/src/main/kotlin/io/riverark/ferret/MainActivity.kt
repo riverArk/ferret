@@ -20,6 +20,7 @@ import androidx.lifecycle.Lifecycle
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.android.Android
 import io.riverark.ferret.core.cardano.androidCardanoTransactionEngine
+import io.riverark.ferret.core.cardano.AndroidProtocolCrypto
 import io.riverark.ferret.core.backup.AndroidGoogleOAuthTokenProvider
 import io.riverark.ferret.core.backup.DriveBackupRepository
 import io.riverark.ferret.core.backup.GoogleDriveAppDataClient
@@ -65,7 +66,7 @@ import java.security.GeneralSecurityException
 class MainActivity : FragmentActivity() {
     private val http: HttpClient = ferretHttpClient(Android.create())
     private val connectors = CardanoNetwork.entries.associateWith { ConnectorClient(http, deployment(it)) }
-    private val adaptors = CardanoNetwork.entries.associateWith { AdaptorClient(http, deployment(it)) }
+    private val adaptors = CardanoNetwork.entries.associateWith { AdaptorClient(http, deployment(it), AndroidProtocolCrypto) }
     private val coordinators = CardanoNetwork.entries.associateWith {
         RefreshCoordinator(deployment(it), connectors.getValue(it), adaptors.getValue(it))
     }

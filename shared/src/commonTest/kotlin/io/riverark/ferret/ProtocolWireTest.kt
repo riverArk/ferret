@@ -33,6 +33,12 @@ class ProtocolWireTest {
         assertEquals("9f41aa9f0102035820${"00".repeat(32)}ffff", actual.toHex())
     }
 
+    @Test fun squashSignaturePayloadMatchesPinnedKonduitCbor() {
+        val actual = SquashBodyWire(5, 2, listOf(1))
+            .taggedCbor(ProtocolTag("aa"))
+        assertEquals("9f41aa9f05029f01ffffff", actual.toHex())
+    }
+
     @Test fun adaptorRequestsMatchPinnedKonduitJson() {
         val invoice = "lnbc1fixture"
         val body = ChequeBodyWire(

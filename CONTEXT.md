@@ -90,6 +90,7 @@ Android installation and manual onboarding verification require an API 36 emulat
 - Made the validated writer lease mandatory for every channel mutation and reconciliation; missing ownership now fails before journal or remote side effects.
 - Replaced raw adaptor quote/payment request bodies with pinned-Konduit typed JSON, duration and keytag validation, strict quote decoding, and canonical JSON/CBOR fixtures.
 - Replaced raw adaptor squash/receipt bodies with strict pinned-Konduit response types, bounded cheque/exclusion collections, and fail-closed variant/field decoding.
+- Added fail-closed Ed25519 verification for every signed squash and locked/unlocked cheque returned by adaptor receipt, pay, and squash endpoints.
 
 - Connected native Android Google account selection to the settings backup controls.
 - Wired first encrypted Drive appData backup creation and later read-back/decrypt verification, with the verified sequence projected in Settings.
