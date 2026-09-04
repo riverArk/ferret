@@ -1,8 +1,8 @@
 import java.util.zip.ZipFile
+import org.gradle.api.file.ConfigurableFileCollection
 import org.gradle.api.DefaultTask
-import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.file.RegularFileProperty
-import org.gradle.api.tasks.InputDirectory
+import org.gradle.api.tasks.InputFiles
 import org.gradle.api.tasks.InputFile
 import org.gradle.api.tasks.TaskAction
 
@@ -55,7 +55,7 @@ abstract class VerifyReleaseSecurity : DefaultTask() {
     @get:InputFile abstract val manifestFile: RegularFileProperty
     @get:InputFile abstract val apkFile: RegularFileProperty
     @get:InputFile abstract val mappingFile: RegularFileProperty
-    @get:InputDirectory abstract val sourceDirectory: DirectoryProperty
+    @get:InputFiles abstract val sourceDirectories: ConfigurableFileCollection
 
     @TaskAction
     fun verify() {
@@ -73,7 +73,9 @@ abstract class VerifyReleaseSecurity : DefaultTask() {
         }
         require(mappingFile.get().asFile.length() > 0) { "release APK was not minified" }
 
-        val logging = sourceDirectory.asFile.get().walkTopDown().filter { it.extension == "kt" }.filter {
+        val logging = sourceDirectories.files.asSequence().flatMap { directory ->
+            directory.walkTopDown().filter { it.extension == "kt" }
+        }.filter {
             Regex("""\b(android\.util\.Log|Log\.[dviwe]\(|println\(|System\.out)""").containsMatchIn(it.readText())
         }.toList()
         require(logging.isEmpty()) { "production logging is prohibited: ${logging.joinToString()}" }
@@ -87,9 +89,12 @@ tasks.register<VerifyReleaseSecurity>("verifyReleaseSecurity") {
     ))
     apkFile.set(layout.buildDirectory.file("outputs/apk/release/androidApp-release-unsigned.apk"))
     mappingFile.set(layout.buildDirectory.file("outputs/mapping/release/mapping.txt"))
-    sourceDirectory.set(layout.projectDirectory.dir("src/main"))
+    sourceDirectories.from(
+        layout.projectDirectory.dir("src/main"),
+        project(":shared").layout.projectDirectory.dir("src/commonMain"),
+        project(":shared").layout.projectDirectory.dir("src/androidMain"),
+    )
 }
-
 
 dependencies {
     implementation(project(":shared"))

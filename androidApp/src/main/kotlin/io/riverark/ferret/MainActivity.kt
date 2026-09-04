@@ -222,7 +222,7 @@ class MainActivity : FragmentActivity() {
                                 lockStatus = "unlocked",
                                 version = BuildConfig.VERSION_NAME,
                                 buildCommit = BuildConfig.BUILD_COMMIT,
-                                diagnosticCode = diagnostics.code.value?.name,
+                                diagnosticCode = diagnostics.code.value?.value,
                             )
                         } finally {
                             encrypted.channelRecovery.fill(0)

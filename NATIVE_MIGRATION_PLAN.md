@@ -45,14 +45,13 @@ Status legend: **Complete** means connected behavior exists; **Partial** means r
 
 ### P0.2 — Complete the Android L1 wallet vertical slice
 
-**Current status:** Partial. Home loads the real connector balance and pull-to-refresh is manually confirmed. Top Up is reachable, generates its address QR locally, and uses an explicit sensitive clipboard copy with conditional 60-second clearing. History is reachable, parses the pinned connector transaction contract into immutable records, supports pull-to-refresh, and applies the 5-block confirmed/2160-block settled policy. The Bloxbean `Transfer` intent exists, and the shared transfer boundary exposes only other same-network profiles and rejects self/cross-network destinations before transaction preview. Transfer remains disconnected. There is no transfer screen, ledger-to-build/sign/inspect/submit orchestration, or pending-operation reconciliation.
+**Current status:** Partial. Home loads the real connector balance and immutable history together. Top Up is reachable, generates its address QR locally, and uses explicit sensitive clipboard copy with conditional 60-second clearing. Transfer is registered in the existing `NavHost`, accepts only another same-network profile, previews amount/fee bound/change/recipient/network, inspects unsigned and signed intent semantics, journals before signing/submission, and reconciles a stable operation ID after process death without reposting.
 
 **Missing work:**
 
-1. Register `Transfer` in the existing `NavHost`; preserve the connected Home action precedence: zero L1 balance → top up, funded without an open channel → open-channel remains disabled until P1, open channel → pay remains disabled until P2.
-2. Validate L1 history against a funded low-value Mainnet wallet on the controlled connector; merge verified L2 records in P2.
-3. Transfer: preview amount, fee bound, change, recipient, and network; write the operation journal before signing/submission; use `CardanoTransactionEngine.requireMatches`; reconcile submission by operation ID rather than retrying a mutation.
-4. Keep external-address entry out of normal transfer. It belongs only to wallet removal.
+1. Validate L1 history against a funded low-value Mainnet wallet on the controlled connector; merge verified L2 records in P2.
+2. Verify the controlled Mainnet L1 operation endpoint, idempotent submission, and process-kill reconciliation before setting `l1MutationsAvailable`; Transfer remains unreachable until this deployment gate passes.
+3. Keep external-address entry out of normal transfer. It belongs only to wallet removal.
 
 **Affected files:** `shared/src/commonMain/kotlin/io/riverark/ferret/FerretApp.kt`; `shared/src/commonMain/kotlin/io/riverark/ferret/feature/wallet/WalletScreens.kt`; `shared/src/commonMain/kotlin/io/riverark/ferret/feature/wallet/WalletViewModels.kt`; `shared/src/commonMain/kotlin/io/riverark/ferret/core/network/Clients.kt`; `shared/src/commonMain/kotlin/io/riverark/ferret/core/cardano/CardanoTransactionEngine.kt`; `shared/src/androidMain/kotlin/io/riverark/ferret/core/cardano/AndroidCardanoTransactionEngine.kt`; `androidApp/src/main/kotlin/io/riverark/ferret/MainActivity.kt`.
 
@@ -105,9 +104,9 @@ Preprod and `ferret.channel` availability must not block or satisfy this gate.
 
 ### P0.3 — Finish Android release security for the L1 slice
 
-**Current status:** Partial. Dependency locks/checksums, min/target SDK policy, cleartext denial, SPKI pins, release OAuth configuration gate, encrypted vault, screenshot protection for unlock and mnemonic routes, packaged notices, and release aggregate tasks exist. The minified release was installed on an API 34 emulator: the merged manifest was non-debuggable, cleartext-disabled, and backup-disabled; the unlock window carried `FLAG_SECURE`; startup logs contained no wallet secrets; and the ML Kit registrars survived R8.
+**Current status:** Partial. Dependency locks/checksums, min/target SDK policy, cleartext denial, SPKI pins, release OAuth configuration gate, encrypted vault, packaged notices, minification checks, deterministic version/build diagnostics, stable bounded local diagnostic codes, and release-wide production logging rejection exist. Unlock, mnemonic, transfer confirmation, payment, and removal routes use reference-counted `FLAG_SECURE` protection. An API 36 emulator confirmed the secure window produces a black screenshot and startup logs contain no wallet secrets.
 
-**Missing work:** Protect future transaction confirmation/removal routes when they are added; add deterministic version diagnostics and bounded local error codes; perform secret scanning and the focused MASVS review against the complete L1 slice. Do not add analytics, remote crash reporting, root-detection, or Play Integrity without a consuming policy.
+**Missing work:** Perform the focused MASVS review and repeat the release screenshot/log/file/clipboard checks with the real release OAuth configuration and funded Mainnet wallets. Do not add analytics, remote crash reporting, root-detection, or Play Integrity without a consuming policy.
 
 **Affected files:** `androidApp/build.gradle.kts`; Android manifest/resources/proguard configuration; `MainActivity.kt`; shared settings/diagnostics models; CI/release configuration when present.
 

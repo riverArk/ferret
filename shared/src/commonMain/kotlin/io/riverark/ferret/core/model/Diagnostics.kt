@@ -3,13 +3,13 @@ package io.riverark.ferret.core.model
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-enum class DiagnosticCode {
-    AUTHENTICATION,
-    KEYSTORE,
-    CONNECTIVITY,
-    DEPLOYMENT,
-    BACKUP,
-    OPERATION,
+enum class DiagnosticCode(val value: String) {
+    AUTHENTICATION("FRT-001"),
+    KEYSTORE("FRT-002"),
+    CONNECTIVITY("FRT-003"),
+    DEPLOYMENT("FRT-004"),
+    BACKUP("FRT-005"),
+    OPERATION("FRT-006"),
 }
 
 class RuntimeDiagnostics {
