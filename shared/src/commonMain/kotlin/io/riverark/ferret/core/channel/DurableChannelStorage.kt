@@ -71,12 +71,11 @@ class VaultChannelJournal(
 
 class DriveChannelBackupProtocol(
     private val backups: WalletBackupCoordinator,
-    private val requireWriter: suspend (WalletId, BackupCheckpointV1) -> Unit,
+    private val requireWriter: suspend (WalletId, BackupCheckpointV1) -> WriterLease,
     private val json: Json = Json { ignoreUnknownKeys = false },
 ) : ChannelBackupProtocol {
-    override suspend fun requireVerifiedWriter(walletId: WalletId) {
+    override suspend fun requireVerifiedWriter(walletId: WalletId): WriterLease =
         requireWriter(walletId, requireNotNull(backups.checkpoint(walletId)) { "verified Drive backup is required" })
-    }
 
     override suspend fun writeAhead(walletId: WalletId, snapshot: ChannelSnapshot) = write(walletId, snapshot)
 

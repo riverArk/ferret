@@ -11,7 +11,15 @@ data class WriterLease(
     val backupHashHex: String,
     val devicePublicKeyHex: String,
     val expiresAtEpochMillis: Long,
-)
+) {
+    init {
+        require(Regex("[0-9a-f]{64}").matches(token))
+        require(generation >= 1)
+        require(Regex("[0-9a-f]{64}").matches(backupHashHex))
+        require(Regex("[0-9a-f]{64}").matches(devicePublicKeyHex))
+        require(expiresAtEpochMillis >= 0)
+    }
+}
 
 class SessionLeaseRepository(
     private val adaptor: AdaptorClient,
@@ -43,6 +51,7 @@ class SessionLeaseRepository(
             nowEpochMillis,
             signatureHex,
         ))
+        require(response.expiresAtEpochMillis > nowEpochMillis) { "writer lease already expired" }
         WriterLease(response.lease, generation, backupHashHex, devicePublicKeyHex, response.expiresAtEpochMillis)
             .also { lease = it }
     }

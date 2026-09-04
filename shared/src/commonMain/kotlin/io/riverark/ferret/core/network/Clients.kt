@@ -173,7 +173,7 @@ data class SessionClaimRequest(
 }
 @Serializable data class SessionClaimResponse(val lease: String, val expiresAtEpochMillis: Long) {
     init {
-        require(lease.length in 1..4_096 && lease.all { !it.isWhitespace() && !it.isISOControl() })
+        require(Regex("[0-9a-f]{64}").matches(lease))
         require(expiresAtEpochMillis >= 0)
     }
 }

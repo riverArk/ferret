@@ -30,14 +30,14 @@ interface ChannelJournal {
 }
 
 interface ChannelBackupProtocol {
-    suspend fun requireVerifiedWriter(walletId: WalletId)
+    suspend fun requireVerifiedWriter(walletId: WalletId): WriterLease
     suspend fun writeAhead(walletId: WalletId, snapshot: ChannelSnapshot)
     suspend fun commit(walletId: WalletId, snapshot: ChannelSnapshot)
 }
 
 interface ChannelRemote {
-    suspend fun mutate(walletId: WalletId, operationId: String, action: ChannelAction): MutationResult
-    suspend fun reconcile(walletId: WalletId, operation: PendingOperation): MutationResult?
+    suspend fun mutate(walletId: WalletId, operationId: String, action: ChannelAction, writer: WriterLease): MutationResult
+    suspend fun reconcile(walletId: WalletId, operation: PendingOperation, writer: WriterLease): MutationResult?
 }
 
 class ChannelRepository(
@@ -58,7 +58,7 @@ class ChannelRepository(
             val current = mutableSnapshots.value[walletId] ?: journal.load(walletId)
             require(current.pending == null) { "unresolved operation" }
             requireAllowed(current.state, action)
-            backup.requireVerifiedWriter(walletId)
+            val writer = backup.requireVerifiedWriter(walletId)
             val proposed = current.copy(pending = PendingOperation(operationId, intentHash, OperationState.PROPOSED))
             persist(walletId, proposed)
             backup.writeAhead(walletId, proposed)
@@ -66,7 +66,7 @@ class ChannelRepository(
             persist(walletId, armed)
 
             val result = try {
-                remote.mutate(walletId, operationId, action)
+                remote.mutate(walletId, operationId, action, writer)
             } catch (error: Exception) {
                 withContext(NonCancellable) {
                     persist(walletId, armed.copy(pending = armed.pending!!.copy(state = OperationState.PENDING_RECONCILIATION)))
@@ -94,8 +94,8 @@ class ChannelRepository(
     suspend fun reconcile(walletId: WalletId): MutationResult? = wallets.withWalletLock(walletId) {
         val current = mutableSnapshots.value[walletId] ?: journal.load(walletId)
         val pending = current.pending ?: return@withWalletLock null
-        backup.requireVerifiedWriter(walletId)
-        val result = remote.reconcile(walletId, pending) ?: return@withWalletLock null
+        val writer = backup.requireVerifiedWriter(walletId)
+        val result = remote.reconcile(walletId, pending, writer) ?: return@withWalletLock null
         val terminal = ChannelSnapshot(result.state, null)
         backup.commit(walletId, terminal)
         persist(walletId, terminal)
