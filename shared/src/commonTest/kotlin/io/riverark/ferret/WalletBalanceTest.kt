@@ -1,11 +1,14 @@
 package io.riverark.ferret
 
 import io.riverark.ferret.core.model.Lovelace
+import io.riverark.ferret.core.channel.ChannelSnapshot
 import io.riverark.ferret.core.model.ChannelState
 import io.riverark.ferret.core.model.CardanoNetwork
 import io.riverark.ferret.core.model.Realm
 import io.riverark.ferret.core.model.TransactionRecord
 import io.riverark.ferret.core.model.TransactionState
+import io.riverark.ferret.core.model.OperationState
+import io.riverark.ferret.core.model.PendingOperation
 import io.riverark.ferret.core.model.WalletId
 import io.riverark.ferret.core.model.WalletProfile
 import io.riverark.ferret.core.network.lovelaceBalance
@@ -89,7 +92,7 @@ class WalletBalanceTest {
             record("2".repeat(64), 200),
         )
         var now = 300L
-        val viewModel = HomeViewModel(profile, { balance }, { history }, { now })
+        val viewModel = HomeViewModel(profile, { balance }, { history }, nowEpochMillis = { now })
 
         viewModel.refreshNow()
         assertEquals(balance, viewModel.state.value.balance)
@@ -130,6 +133,37 @@ class WalletBalanceTest {
         assertEquals(2, loads)
         assertEquals(listOf(20_000L), delays)
         assertEquals(TransactionState.CONFIRMED, viewModel.state.value.latestActivity?.state)
+    }
+
+    @Test fun homeProjectsJournalChannelStateAndRefreshesWhileChannelOperationIsPending() = runBlocking {
+        val profile = WalletProfile(
+            WalletId("preprod-${"a".repeat(56)}"),
+            "Primary",
+            CardanoNetwork.PREPROD,
+            "addr_test1primary",
+            "stake_test1primary",
+        )
+        val snapshots = listOf(
+            ChannelSnapshot(
+                ChannelState.Opening("opening"),
+                PendingOperation("operation", "intent", OperationState.PENDING_RECONCILIATION),
+            ),
+            ChannelSnapshot(ChannelState.Open("channel")),
+        )
+        var loads = 0
+        val delays = mutableListOf<Long>()
+        val viewModel = HomeViewModel(
+            profile,
+            { Lovelace(1_000_000) },
+            { emptyList() },
+            { snapshots[minOf(loads++, snapshots.lastIndex)] },
+        )
+
+        viewModel.refreshWhilePending { delays += it }
+
+        assertEquals(2, loads)
+        assertEquals(listOf(20_000L), delays)
+        assertEquals(ChannelState.Open("channel"), viewModel.state.value.profile.channelState)
     }
 
     private fun record(

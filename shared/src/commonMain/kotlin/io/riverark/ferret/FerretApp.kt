@@ -365,7 +365,15 @@ private fun WalletNavigation(
             val ready = state as? AppState.Ready
             val profile = ready?.wallets?.firstOrNull { it.id.value == route.walletId }
             if (profile != null) {
-                val homeViewModel = viewModel { HomeViewModel(profile, loadBalance, loadHistory, nowEpochMillis ?: { 0L }) }
+                val homeViewModel = viewModel {
+                    HomeViewModel(
+                        profile,
+                        loadBalance,
+                        loadHistory,
+                        loadChannel ?: { ChannelSnapshot(profile.channelState) },
+                        nowEpochMillis ?: { 0L },
+                    )
+                }
                 val homeState by homeViewModel.state.collectAsState()
                 LifecycleStartEffect(homeViewModel) {
                     homeViewModel.startRefreshing()
@@ -385,7 +393,7 @@ private fun WalletNavigation(
                     } else {
                         null
                     },
-                    if (loadChannel != null && io.riverark.ferret.feature.wallet.channelRouteAvailable(profile.channelState)) {
+                    if (loadChannel != null && io.riverark.ferret.feature.wallet.channelRouteAvailable(homeState.profile.channelState)) {
                         { navController.navigate(Route.Channel(profile.id.value)) }
                     } else {
                         null

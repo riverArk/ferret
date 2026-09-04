@@ -2,6 +2,7 @@ package io.riverark.ferret.feature.wallet
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import io.riverark.ferret.core.channel.ChannelSnapshot
 import io.riverark.ferret.core.cardano.CardanoIntent
 import io.riverark.ferret.core.cardano.UnsignedTransaction
 import io.riverark.ferret.core.model.CardanoNetwork
@@ -112,6 +113,7 @@ class HomeViewModel(
     private val profile: WalletProfile,
     private val loadBalance: suspend (WalletProfile) -> Lovelace,
     private val loadHistory: suspend (WalletProfile) -> List<TransactionRecord>,
+    private val loadChannel: suspend (WalletId) -> ChannelSnapshot = { ChannelSnapshot(profile.channelState) },
     private val nowEpochMillis: () -> Long = { 0 },
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(HomeUiState(profile))
@@ -145,8 +147,11 @@ class HomeViewModel(
         try {
             val balance = loadBalance(profile)
             val history = mergeTransactionRecords(loadHistory(profile), emptyList())
-            hasPendingActivity = history.any { it.state == io.riverark.ferret.core.model.TransactionState.PENDING }
+            val channel = loadChannel(profile.id)
+            hasPendingActivity = history.any { it.state == io.riverark.ferret.core.model.TransactionState.PENDING } ||
+                channel.pending != null
             mutableState.value = mutableState.value.copy(
+                profile = profile.copy(channelState = channel.state),
                 balance = balance,
                 latestActivity = history.firstOrNull(),
                 loading = false,
