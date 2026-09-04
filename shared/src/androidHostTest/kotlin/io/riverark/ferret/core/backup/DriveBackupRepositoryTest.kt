@@ -16,6 +16,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFails
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class DriveBackupRepositoryTest {
@@ -52,6 +53,32 @@ class DriveBackupRepositoryTest {
         assertEquals(1L, coordinator.initializeOrVerify(walletId, "absent".encodeToByteArray()).sequence)
         assertEquals(1L, coordinator.initializeOrVerify(walletId, "ignored".encodeToByteArray()).sequence)
         assertEquals(1, drive.list("ferret-").size)
+    }
+
+    @Test fun detectsAStaleWriterAndTakesOverFromTheLatestVerifiedState() = runBlocking {
+        val walletId = WalletId("preprod-" + "00".repeat(28))
+        val drive = FakeDrive()
+        val crypto = AndroidBackupCrypto()
+        val seed = ByteArray(32) { it.toByte() }
+        val firstVault = FakeVault(walletId, seed)
+        val first = WalletBackupCoordinator(firstVault, DriveBackupRepository(drive, crypto), crypto) { 1L }
+        first.initialize(walletId, "first".encodeToByteArray())
+
+        val secondVault = FakeVault(walletId, seed)
+        val second = WalletBackupCoordinator(secondVault, DriveBackupRepository(drive, crypto), crypto) { 2L }
+        second.restore(walletId)
+        first.writeNext(walletId, "latest".encodeToByteArray())
+
+        val stale = assertFailsWith<StaleBackupWriterException> { second.verify(walletId) }
+        assertEquals(1L, stale.remoteGeneration)
+        assertEquals(2L, stale.remoteSequence)
+
+        val takeover = second.takeover(walletId)
+        assertEquals(2L, takeover.generation)
+        assertEquals(1L, takeover.sequence)
+        assertContentEquals("latest".encodeToByteArray(), takeover.channelSnapshot)
+        assertEquals(2L, second.verify(walletId).generation)
+        seed.fill(0)
     }
 
     @Test fun restoresEncryptedChannelSnapshotIntoTheLocalJournal() = runBlocking {

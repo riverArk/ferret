@@ -4,8 +4,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -21,12 +23,13 @@ import io.riverark.ferret.ui.FerretSpacing
 import io.riverark.ferret.ui.FerretTextButton
 import io.riverark.ferret.ui.FerretTopBar
 
- data class WalletSettings(
+data class WalletSettings(
     val profile: WalletProfile,
     val paymentCredential: String,
     val stakingCredential: String,
     val adaptorStatus: String,
     val driveAccount: String?,
+    val driveGeneration: Long?,
     val driveSequence: Long?,
     val lockStatus: String,
     val version: String,
@@ -39,13 +42,16 @@ fun SettingsScreen(
     settings: WalletSettings,
     backupBusy: Boolean,
     backupMessage: String?,
+    backupStale: Boolean,
     onBack: () -> Unit,
     onRename: (String) -> Unit,
     onConnectBackup: (() -> Unit)?,
     onVerifyBackup: (() -> Unit)?,
+    onTakeoverBackup: (() -> Unit)?,
     onRemove: () -> Unit,
 ) {
     var name by rememberSaveable(settings.profile.id.value) { mutableStateOf(settings.profile.name) }
+    var confirmTakeover by rememberSaveable(settings.profile.id.value) { mutableStateOf(false) }
     FerretScreen {
         FerretTopBar("Settings", navigation = { FerretTextButton("Back", onBack) })
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(FerretSpacing.sm)) {
@@ -69,8 +75,18 @@ fun SettingsScreen(
             if (settings.driveAccount == null) {
                 item { FerretSecondaryButton("Connect Google Drive", { onConnectBackup?.invoke() }, enabled = !backupBusy && onConnectBackup != null) }
             }
+            settings.driveGeneration?.let { generation -> item { FerretListRow("Backup generation", generation.toString()) } }
             settings.driveSequence?.let { sequence -> item { FerretListRow("Last verified backup sequence", sequence.toString()) } }
             item { FerretSecondaryButton("Verify encrypted backup", { onVerifyBackup?.invoke() }, enabled = !backupBusy && onVerifyBackup != null) }
+            if (backupStale) {
+                item {
+                    FerretDangerButton(
+                        "Take over backup",
+                        { confirmTakeover = true },
+                        enabled = !backupBusy && onTakeoverBackup != null,
+                    )
+                }
+            }
 
             section("Security")
             item { FerretListRow("App lock", settings.lockStatus) }
@@ -80,6 +96,20 @@ fun SettingsScreen(
             settings.diagnosticCode?.let { code -> item { FerretListRow("Diagnostic code", code) } }
             item { FerretDangerButton("Remove wallet", onRemove) }
         }
+    }
+    if (confirmTakeover) {
+        AlertDialog(
+            onDismissRequest = { confirmTakeover = false },
+            title = { Text("Take over this backup?") },
+            text = { Text("Ferret will restore the newest encrypted channel state and start a new backup generation. Other devices must verify again before writing.") },
+            confirmButton = {
+                TextButton({
+                    confirmTakeover = false
+                    onTakeoverBackup?.invoke()
+                }) { Text("Take over") }
+            },
+            dismissButton = { TextButton({ confirmTakeover = false }) { Text("Cancel") } },
+        )
     }
 }
 

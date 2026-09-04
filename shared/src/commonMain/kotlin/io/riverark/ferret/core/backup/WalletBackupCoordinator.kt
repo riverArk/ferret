@@ -16,6 +16,11 @@ data class BackupCheckpointV1(
     val channelSnapshot: ByteArray,
 )
 
+class StaleBackupWriterException(
+    val remoteGeneration: Long,
+    val remoteSequence: Long,
+) : IllegalStateException("a newer encrypted backup exists")
+
 class WalletBackupCoordinator(
     private val vault: SecureVault,
     private val backups: DriveBackupRepository,
@@ -73,9 +78,26 @@ class WalletBackupCoordinator(
                 plaintext.fill(0)
             }
         }
-        require(remote.generation == local.generation && remote.sequence == local.sequence)
-        require(remote.ciphertextHash.contentEquals(local.ciphertextHash) && remote.channelSnapshot.contentEquals(local.channelSnapshot))
-        return remote
+        var verified = false
+        try {
+            if (
+                remote.generation > local.generation ||
+                remote.generation == local.generation && remote.sequence > local.sequence
+            ) {
+                throw StaleBackupWriterException(remote.generation, remote.sequence)
+            }
+            require(remote.generation == local.generation && remote.sequence == local.sequence)
+            require(remote.ciphertextHash.contentEquals(local.ciphertextHash) && remote.channelSnapshot.contentEquals(local.channelSnapshot))
+            verified = true
+            return remote
+        } finally {
+            local.ciphertextHash.fill(0)
+            local.channelSnapshot.fill(0)
+            if (!verified) {
+                remote.ciphertextHash.fill(0)
+                remote.channelSnapshot.fill(0)
+            }
+        }
     }
 
     suspend fun checkpoint(walletId: WalletId): BackupCheckpointV1? {

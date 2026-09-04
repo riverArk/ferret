@@ -18,7 +18,7 @@ Later user sessions additionally required the full visual refresh, documentation
 
 ## Current conclusion
 
-The KMP shell, Android secure onboarding, shared visual system, adaptive icon, validated foreground session, live L1 dashboard, top-up, history, durable transfer orchestration, encrypted channel recovery, native Google account selection, Drive appData backup initialization/verification/restoration, payment reconciliation, settings/diagnostics, and safe removal boundaries are implemented. Mnemonic restore now offers encrypted Drive channel recovery and installs only a fully verified backup into the local journal. Home refreshes the exact connector balance and immutable activity together, showing the latest record and refresh timestamp. Financial mutations remain unreachable until every required Mainnet contract is verified on the controlled `crustypants.com` services. Concrete channel transaction adapters and lifecycle UI remain the next financial functionality.
+The KMP shell, Android secure onboarding, shared visual system, adaptive icon, validated foreground session, live L1 dashboard, top-up, history, durable transfer orchestration, encrypted channel recovery, native Google account selection, Drive appData backup initialization/verification/restoration/takeover, payment reconciliation, settings/diagnostics, and safe removal boundaries are implemented. Mnemonic restore installs only a fully verified encrypted Drive channel backup into the local journal. Settings identifies a newer remote backup as a stale local writer and requires explicit confirmation before restoring it and starting a new generation. Home refreshes the exact connector balance and immutable activity together, showing the latest record and refresh timestamp. Financial mutations remain unreachable until every required Mainnet contract is verified on the controlled `crustypants.com` services. Concrete channel transaction adapters and lifecycle UI remain the next financial functionality.
 
 Status legend: **Complete** means connected behavior exists; **Partial** means reusable code exists but the end-to-end feature does not; **Missing** means no usable implementation exists; **Deferred** is an explicit sequencing decision.
 
@@ -264,9 +264,9 @@ Preprod and `ferret.channel` availability must not block or satisfy this gate.
 
 ### 10. Encrypted Drive recovery and single-writer ownership — Partial
 
-**Current status:** Partial. `FerretChannelBackupV1`, HKDF/AES-GCM/hash-chain repository logic, backup state types, a bounded Drive appData-only REST client, Android crypto, native Google account selection, OAuth scope authorization, encrypted initial backup read-back/decrypt verification, checkpoint persistence, and Settings verification are connected. Mnemonic restoration offers Google Drive recovery, fails closed on missing/conflicting/modified backup data, and installs the verified channel snapshot into the encrypted local journal. Channel mutations still do not consume the backup protocol.
+**Current status:** Partial. `FerretChannelBackupV1`, HKDF/AES-GCM/hash-chain repository logic, backup state types, a bounded Drive appData-only REST client, Android crypto, native Google account selection, OAuth scope authorization, encrypted initial backup read-back/decrypt verification, checkpoint persistence, and Settings verification are connected. Mnemonic restoration offers Google Drive recovery, fails closed on missing/conflicting/modified backup data, and installs the verified channel snapshot into the encrypted local journal. Verification distinguishes a valid newer remote checkpoint from corruption; Settings presents the stale writer and requires confirmation before restoring the newest snapshot and starting a new generation. Channel mutations still do not consume the backup protocol.
 
-**Missing work:** Add takeover UI and stale-writer presentation; connect backup verification to channel creation; wire device-writer identity and the server lease into every channel mutation. Never put wallet identifiers, network, addresses, or credentials in Drive metadata.
+**Missing work:** Connect backup verification to channel creation; wire device-writer identity and the server lease into every channel mutation. Never put wallet identifiers, network, addresses, or credentials in Drive metadata.
 
 **Priority:** P1; hard blocker for channel creation.
 
@@ -280,7 +280,7 @@ Preprod and `ferret.channel` availability must not block or satisfy this gate.
 
 ### 11. Channel protocol and lifecycle — Partial
 
-**Current status:** Protocol wire/signing types, Android signer, session lease repository, channel state machine, per-wallet mutex, local journal/backup/remote interfaces, and tests exist. No concrete encrypted `ChannelJournal`, backup protocol adapter, remote adaptor/connector implementation, balance projection, open/add/close screens, or navigation/composition wiring exists.
+**Current status:** Protocol wire/signing types, Android signer, session lease repository, channel state machine, per-wallet mutex, concrete encrypted `ChannelJournal`, Drive backup protocol adapter, and tests exist. No concrete remote adaptor/connector implementation, balance projection, open/add/close screens, or navigation/composition wiring exists.
 
 **Missing work:** Implement canonical pinned-Konduit fixtures and concrete adapters; verify adaptor signatures/keytags; enforce one unresolved operation maximum; preview dynamic min-ADA/fees; wire open/add/close/squash through local journal → Drive write-ahead → sign/submit/mutate → chain/adaptor reconciliation → terminal Drive snapshot; reconcile from chain, adaptor, local journal, and Drive on launch/resume.
 

@@ -44,7 +44,7 @@ Seed entropy is cleared after derivation and vault callbacks. Mnemonic restore/d
 
 The Refined Ferret theme is light-only: cream canvas, near-white surfaces, charcoal ink, yellow primary, accessible coral secondary, blue tertiary, and dark red errors. Exo 2 headings, Ubuntu Mono body text, rounded outlined surfaces, 48 dp touch targets, edge-to-edge safe drawing insets, bundled ferret art, and bundled Material Symbols are shared across implemented screens.
 
-Home shows the wallet name, network, confirmed on-chain ADA balance, latest immutable activity, refresh timestamp, payment address, and wallet/settings navigation. Pull-to-refresh updates the balance and activity projection together. Validated foreground sessions cancel work on background or connectivity loss. Top-up renders a local address QR with owned sensitive-clipboard expiry. Settings connects a selected Google account and initializes or verifies the wallet's encrypted Drive appData backup with read-back/decrypt verification. Transfer, channel recovery, BOLT11 payment, and removal use encrypted durable journals and reconciliation boundaries; financial mutation entry points remain disabled until the pinned server operation and writer-lease contracts are deployed and verified.
+Home shows the wallet name, network, confirmed on-chain ADA balance, latest immutable activity, refresh timestamp, payment address, and wallet/settings navigation. Pull-to-refresh updates the balance and activity projection together. Validated foreground sessions cancel work on background or connectivity loss. Top-up renders a local address QR with owned sensitive-clipboard expiry. Settings connects a selected Google account, initializes or verifies the wallet's encrypted Drive appData backup, identifies a newer remote generation as a stale local writer, and offers an explicit confirmed takeover that installs the latest verified channel snapshot. Transfer, channel recovery, BOLT11 payment, and removal use encrypted durable journals and reconciliation boundaries; financial mutation entry points remain disabled until the pinned server operation and writer-lease contracts are verified.
 
 ## Known platform gaps
 
@@ -90,6 +90,7 @@ Android installation and manual onboarding verification require an API 36 emulat
 - Connected native Android Google account selection to the settings backup controls.
 - Wired first encrypted Drive appData backup creation and later read-back/decrypt verification, with the verified sequence projected in Settings.
 - Added post-mnemonic encrypted Drive backup recovery. Verified channel snapshots are installed into the local encrypted journal; missing, conflicting, or modified backups fail closed.
+- Added stale Drive writer detection and an explicit Settings takeover flow. Takeover restores the latest verified channel snapshot locally and starts a new backup generation.
 
 ### 2026-09-02
 

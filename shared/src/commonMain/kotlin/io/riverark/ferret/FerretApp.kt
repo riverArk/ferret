@@ -31,6 +31,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import ferret.shared.generated.resources.Res
 import ferret.shared.generated.resources.splash_ferret
+import io.riverark.ferret.core.backup.StaleBackupWriterException
 import io.riverark.ferret.core.channel.PaymentQuote
 import io.riverark.ferret.core.channel.PaymentUiState
 import io.riverark.ferret.core.channel.PaymentViewModel
@@ -96,6 +97,7 @@ data class FerretDependencies(
     val connectDrive: (suspend () -> String)? = null,
     val verifyBackup: (suspend (WalletId) -> Long)? = null,
     val restoreBackup: (suspend (WalletId) -> Long)? = null,
+    val takeoverBackup: (suspend (WalletId) -> Long)? = null,
     val walletRemovalManager: WalletRemovalManager? = null,
 )
 
@@ -143,6 +145,7 @@ fun FerretApp(
             dependencies.connectDrive,
             dependencies.verifyBackup,
             dependencies.restoreBackup,
+            dependencies.takeoverBackup,
             dependencies.walletRemovalManager,
             onUnlock,
             onSensitiveContentChanged,
@@ -170,6 +173,7 @@ private fun WalletNavigation(
     connectDrive: (suspend () -> String)?,
     verifyBackup: (suspend (WalletId) -> Long)?,
     restoreBackup: (suspend (WalletId) -> Long)?,
+    takeoverBackup: (suspend (WalletId) -> Long)?,
     walletRemovalManager: WalletRemovalManager?,
     onUnlock: (() -> Unit)?,
     onSensitiveContentChanged: (Boolean) -> Unit,
@@ -480,12 +484,14 @@ private fun WalletNavigation(
                 var settings by remember(profile) { mutableStateOf<WalletSettings?>(null) }
                 var backupBusy by remember(profile.id) { mutableStateOf(false) }
                 var backupMessage by remember(profile.id) { mutableStateOf<String?>(null) }
+                var backupStale by remember(profile.id) { mutableStateOf(false) }
                 LaunchedEffect(profile) { settings = loadSettings(profile) }
                 settings?.let { current ->
                     SettingsScreen(
                         current,
                         backupBusy,
                         backupMessage,
+                        backupStale,
                         navController::popBackStack,
                         { walletViewModel.rename(profile.id, it) },
                         connectDrive?.let { connect ->
@@ -493,6 +499,7 @@ private fun WalletNavigation(
                                 settingsScope.launch {
                                     backupBusy = true
                                     backupMessage = null
+                                    backupStale = false
                                     try {
                                         connect()
                                         settings = loadSettings(profile)
@@ -514,12 +521,37 @@ private fun WalletNavigation(
                                     backupMessage = null
                                     try {
                                         val sequence = verify(profile.id)
+                                        backupStale = false
                                         settings = loadSettings(profile)
                                         backupMessage = "Encrypted backup verified (sequence $sequence)."
                                     } catch (error: CancellationException) {
                                         throw error
+                                    } catch (error: StaleBackupWriterException) {
+                                        backupStale = true
+                                        backupMessage = "A newer backup exists (generation ${error.remoteGeneration}, sequence ${error.remoteSequence}). Take over to use this device."
                                     } catch (_: Exception) {
-                                        backupMessage = "Encrypted backup verification failed."
+                                        backupStale = false
+                                        backupMessage = "Encrypted backup verification failed because the backup is missing, conflicting, or modified."
+                                    } finally {
+                                        backupBusy = false
+                                    }
+                                }
+                            }
+                        },
+                        takeoverBackup?.takeIf { backupStale }?.let { takeover ->
+                            {
+                                settingsScope.launch {
+                                    backupBusy = true
+                                    backupMessage = null
+                                    try {
+                                        val generation = takeover(profile.id)
+                                        backupStale = false
+                                        settings = loadSettings(profile)
+                                        backupMessage = "Backup takeover complete (generation $generation)."
+                                    } catch (error: CancellationException) {
+                                        throw error
+                                    } catch (_: Exception) {
+                                        backupMessage = "Backup takeover failed."
                                     } finally {
                                         backupBusy = false
                                     }

@@ -212,18 +212,25 @@ class MainActivity : FragmentActivity() {
                     loadSettings = { profile ->
                         val encrypted = vault.walletState(profile.id)
                         try {
-                            WalletSettings(
-                                profile = profile,
-                                paymentCredential = profile.id.value.substringAfter('-'),
-                                stakingCredential = profile.stakeAddress,
-                                adaptorStatus = "validated",
-                                driveAccount = driveTokens.accountName,
-                                driveSequence = backupCoordinator.checkpoint(profile.id)?.sequence,
-                                lockStatus = "unlocked",
-                                version = BuildConfig.VERSION_NAME,
-                                buildCommit = BuildConfig.BUILD_COMMIT,
-                                diagnosticCode = diagnostics.code.value?.value,
-                            )
+                            val checkpoint = backupCoordinator.checkpoint(profile.id)
+                            try {
+                                WalletSettings(
+                                    profile = profile,
+                                    paymentCredential = profile.id.value.substringAfter('-'),
+                                    stakingCredential = profile.stakeAddress,
+                                    adaptorStatus = "validated",
+                                    driveAccount = driveTokens.accountName,
+                                    driveGeneration = checkpoint?.generation,
+                                    driveSequence = checkpoint?.sequence,
+                                    lockStatus = "unlocked",
+                                    version = BuildConfig.VERSION_NAME,
+                                    buildCommit = BuildConfig.BUILD_COMMIT,
+                                    diagnosticCode = diagnostics.code.value?.value,
+                                )
+                            } finally {
+                                checkpoint?.ciphertextHash?.fill(0)
+                                checkpoint?.channelSnapshot?.fill(0)
+                            }
                         } finally {
                             encrypted.channelRecovery.fill(0)
                             encrypted.operationJournal.fill(0)
@@ -233,7 +240,13 @@ class MainActivity : FragmentActivity() {
                     verifyBackup = { walletId ->
                         val snapshot = channelJournal.backupSnapshot(walletId)
                         try {
-                            backupCoordinator.initializeOrVerify(walletId, snapshot).sequence
+                            val checkpoint = backupCoordinator.initializeOrVerify(walletId, snapshot)
+                            try {
+                                checkpoint.sequence
+                            } finally {
+                                checkpoint.ciphertextHash.fill(0)
+                                checkpoint.channelSnapshot.fill(0)
+                            }
                         } catch (error: CancellationException) {
                             throw error
                         } catch (error: Exception) {
@@ -241,6 +254,24 @@ class MainActivity : FragmentActivity() {
                             throw error
                         } finally {
                             snapshot.fill(0)
+                        }
+                    },
+                    takeoverBackup = { walletId ->
+                        val checkpoint = backupCoordinator.takeover(walletId)
+                        try {
+                            val snapshot = channelJournal.restoreFromBackup(walletId, checkpoint.channelSnapshot)
+                            val profile = vault.profiles().single { it.id == walletId }
+                            vault.updateProfile(profile.copy(channelState = snapshot.state))
+                            walletManager.load(walletId)
+                            checkpoint.generation
+                        } catch (error: CancellationException) {
+                            throw error
+                        } catch (error: Exception) {
+                            diagnostics.record(DiagnosticCode.BACKUP)
+                            throw error
+                        } finally {
+                            checkpoint.ciphertextHash.fill(0)
+                            checkpoint.channelSnapshot.fill(0)
                         }
                     },
                     restoreBackup = { walletId ->
