@@ -1,3 +1,11 @@
+import java.util.zip.ZipFile
+import org.gradle.api.DefaultTask
+import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.file.RegularFileProperty
+import org.gradle.api.tasks.InputDirectory
+import org.gradle.api.tasks.InputFile
+import org.gradle.api.tasks.TaskAction
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -41,6 +49,45 @@ android {
     }
     buildFeatures { compose = true; buildConfig = true }
     packaging.resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+}
+
+abstract class VerifyReleaseSecurity : DefaultTask() {
+    @get:InputFile abstract val manifestFile: RegularFileProperty
+    @get:InputFile abstract val apkFile: RegularFileProperty
+    @get:InputFile abstract val mappingFile: RegularFileProperty
+    @get:InputDirectory abstract val sourceDirectory: DirectoryProperty
+
+    @TaskAction
+    fun verify() {
+        val manifest = manifestFile.get().asFile.readText()
+        require("""android:minSdkVersion="28""" in manifest)
+        require("""android:targetSdkVersion="36""" in manifest)
+        require("""android:allowBackup="false""" in manifest)
+        require("""android:fullBackupContent="false""" in manifest)
+        require("""android:usesCleartextTraffic="false""" in manifest)
+        require("""android:debuggable="true""" !in manifest)
+
+        ZipFile(apkFile.get().asFile).use { archive ->
+            require(archive.getEntry("assets/NOTICE") != null) { "release APK is missing third-party notices" }
+            require(archive.getEntry("classes.dex") != null) { "release APK is missing compiled application code" }
+        }
+        require(mappingFile.get().asFile.length() > 0) { "release APK was not minified" }
+
+        val logging = sourceDirectory.asFile.get().walkTopDown().filter { it.extension == "kt" }.filter {
+            Regex("""\b(android\.util\.Log|Log\.[dviwe]\(|println\(|System\.out)""").containsMatchIn(it.readText())
+        }.toList()
+        require(logging.isEmpty()) { "production logging is prohibited: ${logging.joinToString()}" }
+    }
+}
+
+tasks.register<VerifyReleaseSecurity>("verifyReleaseSecurity") {
+    dependsOn("assembleRelease")
+    manifestFile.set(layout.buildDirectory.file(
+        "intermediates/merged_manifest/release/processReleaseMainManifest/AndroidManifest.xml",
+    ))
+    apkFile.set(layout.buildDirectory.file("outputs/apk/release/androidApp-release-unsigned.apk"))
+    mappingFile.set(layout.buildDirectory.file("outputs/mapping/release/mapping.txt"))
+    sourceDirectory.set(layout.projectDirectory.dir("src/main"))
 }
 
 

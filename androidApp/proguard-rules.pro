@@ -6,3 +6,4 @@
     public static *** v(...);
     public static *** i(...);
 }
+-dontwarn lombok.NonNull
