@@ -185,9 +185,9 @@ Preprod and `ferret.channel` availability must not block or satisfy this gate.
 
 ### 5. Deployment validation, transport, refresh, and offline policy — Partial
 
-**Current status:** Immutable deployment tuples, connector/adaptor clients, HTTPS-only Android config, no redirects, strict JSON, timeouts, response-size checks on adaptor mutations, and current/backup SPKI pins exist. Only the controlled Mainnet `crustypants.com` tuple is a supported deployment/test target. Home uses the real connector balance. There is no pending-only 20-second refresh.
+**Current status:** Immutable deployment tuples, connector/adaptor clients, HTTPS-only Android config, no redirects, strict JSON, timeouts, actual-body byte limits across connector/adaptor responses, strict transaction/operation/session/adaptor DTO validation, and current/backup SPKI pins exist. Only the controlled Mainnet `crustypants.com` tuple is a supported deployment/test target. Home uses the real connector balance. There is no pending-only 20-second refresh.
 
-**Missing work:** P0.1 plus strict DTO length/hex/decimal validation and bounded bodies for every endpoint. Confirm external connector/adaptor servers support `/protocol-parameters`, idempotent `/submit`, signed `/session/claim`, operation lookup/reconciliation, and shared lease enforcement before enabling mutations.
+**Missing work:** Confirm the controlled connector/adaptor services support idempotent L1 submission, signed `/session/claim`, operation lookup/reconciliation, and shared lease enforcement before enabling mutations. Add the pending-only 20-second refresh with connected channel operations.
 
 **Priority:** P0; server contract is a blocker for P1/P2.
 

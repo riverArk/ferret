@@ -8,7 +8,8 @@ import io.riverark.ferret.core.model.Realm
 import io.riverark.ferret.core.model.TransactionRecord
 import io.riverark.ferret.core.model.TransactionState
 import io.ktor.client.HttpClient
-import io.ktor.client.call.body
+import io.ktor.client.statement.HttpResponse
+import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.plugins.HttpRequestTimeoutException
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -16,6 +17,7 @@ import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
+import io.ktor.utils.io.readRemaining
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.json.JsonArray
@@ -23,6 +25,8 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.decodeFromString
+import kotlinx.io.readByteArray
 
 @Serializable data class HealthDto(val status: String) {
     init { require(status.length in 1..32) }
@@ -80,7 +84,9 @@ data class SubmitRequest(@SerialName("transaction") val signedCborHex: String) {
         require(signedCborHex.all { it in "0123456789abcdef" })
     }
 }
-@Serializable data class SubmitResponse(@SerialName("transaction_id") val transactionId: String)
+@Serializable data class SubmitResponse(@SerialName("transaction_id") val transactionId: String) {
+    init { require(HEX_64.matches(transactionId)) }
+}
 @Serializable
 data class L1SubmitRequest(
     @SerialName("operation_id") val operationId: String,
@@ -90,7 +96,7 @@ data class L1SubmitRequest(
     init {
         require(UUID.matches(operationId))
         require(HEX_64.matches(expectedTransactionId))
-        require(signedCborHex.length in 2..2_097_152 && signedCborHex.length % 2 == 0)
+        require(signedCborHex.length in 2..1_048_576 && signedCborHex.length % 2 == 0)
         require(signedCborHex.all { it in "0123456789abcdef" })
     }
 }
@@ -165,7 +171,12 @@ data class SessionClaimRequest(
         require(Regex("[0-9a-f]{128}").matches(signatureHex))
     }
 }
-@Serializable data class SessionClaimResponse(val lease: String, val expiresAtEpochMillis: Long)
+@Serializable data class SessionClaimResponse(val lease: String, val expiresAtEpochMillis: Long) {
+    init {
+        require(lease.length in 1..4_096 && lease.all { !it.isWhitespace() && !it.isISOControl() })
+        require(expiresAtEpochMillis >= 0)
+    }
+}
 @Serializable
 data class AdaptorInfoDto(
     val tos: AdaptorTermsDto,
@@ -175,19 +186,33 @@ data class AdaptorInfoDto(
 ) {
     init { require(assetCatalogDigest == null || HEX_64.matches(assetCatalogDigest)) }
 }
-@Serializable data class AdaptorTermsDto(@SerialName("flat_fee") val flatFee: Long)
+@Serializable data class AdaptorTermsDto(@SerialName("flat_fee") val flatFee: Long) {
+    init { require(flatFee >= 0) }
+}
 @Serializable
 data class AdaptorChannelParametersDto(
     @SerialName("adaptor_key") val adaptorKeyHex: String,
     @SerialName("close_period") val closePeriod: AdaptorClosePeriodDto,
     @SerialName("tag_length") val tagLength: Int,
-)
-@Serializable data class AdaptorClosePeriodDto(val secs: Long, val nanos: Int)
+) {
+    init {
+        require(HEX_64.matches(adaptorKeyHex))
+        require(tagLength in 1..128)
+    }
+}
+@Serializable data class AdaptorClosePeriodDto(val secs: Long, val nanos: Int) {
+    init { require(secs > 0 && nanos in 0..999_999_999) }
+}
 @Serializable
 data class AdaptorTransactionHelpDto(
     @SerialName("host_address") val hostAddress: String,
     val validator: String,
-)
+) {
+    init {
+        require(hostAddress.length in 1..256)
+        require(Regex("[0-9a-f]{56}").matches(validator))
+    }
+}
 
 class ConnectorClient(private val http: HttpClient, private val deployment: NetworkDeployment) {
     suspend fun health(): HealthDto = getOnce("/health")
@@ -209,9 +234,9 @@ class ConnectorClient(private val http: HttpClient, private val deployment: Netw
     }
 
     private suspend inline fun <reified T> getOnce(path: String): T = try {
-        http.get(deployment.connector.value + path).body()
+        http.get(deployment.connector.value + path).boundedJsonBody()
     } catch (first: HttpRequestTimeoutException) {
-        http.get(deployment.connector.value + path).body()
+        http.get(deployment.connector.value + path).boundedJsonBody()
     }
 
     private suspend inline fun <reified Request, reified Response> postOnce(path: String, request: Request, lease: String? = null): Response =
@@ -219,7 +244,7 @@ class ConnectorClient(private val http: HttpClient, private val deployment: Netw
             contentType(ContentType.Application.Json)
             lease?.let { header("FERRET-SESSION", it) }
             setBody(request)
-        }.body()
+        }.boundedJsonBody()
 }
 internal fun JsonArray.lovelaceBalance(): Lovelace =
     fold(Lovelace(0)) { total, output ->
@@ -286,13 +311,13 @@ private fun List<ConnectorAssetDto>.lovelace(): Lovelace {
 }
 
 class AdaptorClient(private val http: HttpClient, private val deployment: NetworkDeployment) {
-    suspend fun info(): AdaptorInfoDto = http.get(deployment.adaptor.value + "/info").body()
+    suspend fun info(): AdaptorInfoDto = http.get(deployment.adaptor.value + "/info").boundedJsonBody()
     suspend fun claim(request: SessionClaimRequest): SessionClaimResponse =
         http.post(deployment.adaptor.value + "/session/claim") {
             contentType(ContentType.Application.Json)
             setBody(request)
-        }.body()
-    suspend fun receipt(keytag: String): String = http.get(deployment.adaptor.value + "/ch/receipt") { header("KONDUIT", keytag) }.body()
+        }.boundedJsonBody()
+    suspend fun receipt(keytag: String): String = http.get(deployment.adaptor.value + "/ch/receipt") { header("KONDUIT", keytag) }.boundedTextBody()
     suspend fun quote(keytag: String, lease: String, request: String): String = mutate("/ch/quote", keytag, lease, request)
     suspend fun pay(keytag: String, lease: String, request: String): String = mutate("/ch/pay", keytag, lease, request)
     suspend fun squash(keytag: String, lease: String, request: String): String = mutate("/ch/squash", keytag, lease, request)
@@ -303,7 +328,37 @@ class AdaptorClient(private val http: HttpClient, private val deployment: Networ
             header("KONDUIT", keytag)
             header("FERRET-SESSION", lease)
             setBody(request)
-        }.body<String>().also { require(it.length <= 1_048_576) { "response too large" } }
+        }.boundedTextBody()
+}
+
+internal fun requireBoundedResponse(bytes: ByteArray) {
+    require(bytes.size <= MAX_RESPONSE_BYTES) { "response too large" }
+}
+
+internal inline fun <reified T> decodeBoundedJson(bytes: ByteArray): T {
+    requireBoundedResponse(bytes)
+    return ferretJson.decodeFromString(bytes.decodeToString())
+}
+
+private suspend fun HttpResponse.boundedBody(): ByteArray =
+    bodyAsChannel().readRemaining(MAX_RESPONSE_BYTES + 1).readByteArray().also(::requireBoundedResponse)
+
+private suspend inline fun <reified T> HttpResponse.boundedJsonBody(): T {
+    val bytes = boundedBody()
+    return try {
+        decodeBoundedJson(bytes)
+    } finally {
+        bytes.fill(0)
+    }
+}
+
+private suspend fun HttpResponse.boundedTextBody(): String {
+    val bytes = boundedBody()
+    return try {
+        bytes.decodeToString()
+    } finally {
+        bytes.fill(0)
+    }
 }
 
 private val UUID = Regex("[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")

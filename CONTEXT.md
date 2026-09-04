@@ -82,6 +82,8 @@ Android installation and manual onboarding verification require an API 36 emulat
 
 ### 2026-09-04
 
+- Bounded every connector/adaptor response by its decoded UTF-8 byte count and tightened transaction, operation, session-lease, and adaptor DTO validation before channel adapters are connected.
+
 - Connected native Android Google account selection to the settings backup controls.
 - Wired first encrypted Drive appData backup creation and later read-back/decrypt verification, with the verified sequence projected in Settings.
 - Added post-mnemonic encrypted Drive backup recovery. Verified channel snapshots are installed into the local encrypted journal; missing, conflicting, or modified backups fail closed.

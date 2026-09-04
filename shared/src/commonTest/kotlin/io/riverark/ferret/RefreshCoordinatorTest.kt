@@ -15,6 +15,11 @@ import io.riverark.ferret.core.network.MAINNET
 import io.riverark.ferret.core.network.HealthDto
 import io.riverark.ferret.core.network.NetworkDto
 import io.riverark.ferret.core.network.PREPROD
+import io.riverark.ferret.core.network.L1SubmitRequest
+import io.riverark.ferret.core.network.SessionClaimResponse
+import io.riverark.ferret.core.network.SubmitResponse
+import io.riverark.ferret.core.network.requireBoundedResponse
+import io.riverark.ferret.core.network.decodeBoundedJson
 import io.riverark.ferret.core.network.RefreshCoordinator
 import io.riverark.ferret.core.security.ForegroundLockPolicy
 import kotlinx.serialization.json.Json
@@ -97,6 +102,27 @@ class RefreshCoordinatorTest {
 
         assertTrue(message.decodeToString().startsWith("${MAINNET.adaptorIdentityHex}\n3\n"))
     }
+    @Test
+    fun networkResponsesAreStrictAndByteBounded() {
+        assertFailsWith<IllegalArgumentException> { SubmitResponse("not-a-transaction-id") }
+        assertFailsWith<IllegalArgumentException> { SessionClaimResponse("bad lease", 1) }
+        assertFailsWith<IllegalArgumentException> { AdaptorTermsDto(-1) }
+        assertFailsWith<IllegalArgumentException> {
+            AdaptorChannelParametersDto("a".repeat(64), AdaptorClosePeriodDto(0, 0), 32)
+        }
+        assertFailsWith<IllegalArgumentException> {
+            L1SubmitRequest(
+                "00000000-0000-4000-8000-000000000000",
+                "a".repeat(64),
+                "aa".repeat(524_289),
+            )
+        }
+        assertFailsWith<IllegalArgumentException> { requireBoundedResponse(ByteArray(1_048_577)) }
+        assertFailsWith<kotlinx.serialization.SerializationException> {
+            decodeBoundedJson<HealthDto>("""{"status":"ok","unexpected":true}""".encodeToByteArray())
+        }
+    }
+
 
 
     @Test
