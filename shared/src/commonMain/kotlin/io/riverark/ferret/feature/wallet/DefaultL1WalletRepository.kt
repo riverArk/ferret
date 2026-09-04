@@ -126,7 +126,7 @@ class DefaultL1WalletRepository(
             require(intent.destinationAddress == preview.destination.paymentAddress)
             require(intent.amount == preview.amount && preview.destination.network == profile.network)
             val existing = operation(walletId)
-            require(existing == null || existing.operationId == intent.operationId) { "another wallet operation is unresolved" }
+            require(existing == null || existing.state !in UNRESOLVED_STATES) { "another wallet operation is unresolved" }
             writeOperation(walletId, L1OperationRecord(
                 intent.operationId,
                 destinationWalletId = preview.destination.id,
@@ -159,7 +159,10 @@ class DefaultL1WalletRepository(
 
     suspend fun reconcilePending(walletId: WalletId): L1OperationRecord? = wallets.withWalletLock(walletId) {
         val local = operation(walletId) ?: return@withWalletLock null
-        if (local.state !in setOf(L1OperationState.SUBMITTING, L1OperationState.PENDING)) return@withWalletLock local
+        if (local.state == L1OperationState.PREPARED) {
+            return@withWalletLock local.copy(state = L1OperationState.REJECTED).also { writeOperation(walletId, it) }
+        }
+        if (local.state !in UNRESOLVED_STATES) return@withWalletLock local
         val remote = lookupOperation(profile(walletId), local.operationId)
         require(remote.expectedTransactionId == local.expectedTransactionId)
         remote.record(local.destinationWalletId, local.amount, local.fee, local.createdAtEpochMillis).also {
@@ -231,5 +234,10 @@ class DefaultL1WalletRepository(
 
     private companion object {
         const val TRANSFER_VALIDITY_SLOTS = 3_600L
+        val UNRESOLVED_STATES = setOf(
+            L1OperationState.PREPARED,
+            L1OperationState.SUBMITTING,
+            L1OperationState.PENDING,
+        )
     }
 }

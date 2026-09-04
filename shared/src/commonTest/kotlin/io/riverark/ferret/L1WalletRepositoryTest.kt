@@ -27,6 +27,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertFailsWith
 
 class L1WalletRepositoryTest {
     @Test fun journalsBeforeSubmissionAndReconcilesWithoutResubmitting() = runBlocking {
@@ -59,6 +60,8 @@ class L1WalletRepositoryTest {
         assertEquals(OPERATION_ID, repository.submitTransfer(source.id, preview))
         assertEquals(1, submissions)
         assertEquals(L1OperationState.PENDING, repository.operation(source.id)?.state)
+        assertFailsWith<IllegalArgumentException> { repository.submitTransfer(source.id, preview) }
+        assertEquals(1, submissions)
 
         val restarted = DefaultL1WalletRepository(
             wallets,
@@ -73,6 +76,47 @@ class L1WalletRepositoryTest {
         )
         assertEquals(L1OperationState.CONFIRMED, restarted.reconcilePending(source.id)?.state)
         assertEquals(1, submissions)
+
+        val next = DefaultL1WalletRepository(
+            wallets,
+            vault,
+            { LedgerSnapshot(CardanoNetwork.PREPROD, listOf(LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(10_000_000))), "{}", 200) },
+            { emptyList<TransactionRecord>() },
+            { _, request ->
+                submissions++
+                L1OperationDto(request.operationId, request.expectedTransactionId, request.expectedTransactionId, "pending")
+            },
+            { _, _ -> error("lookup not used") },
+            engine,
+            { NEXT_OPERATION_ID },
+            { 1_000L },
+        )
+        val nextPreview = next.previewTransfer(source.id, destination, Lovelace(4_000_000))
+        assertEquals(NEXT_OPERATION_ID, next.submitTransfer(source.id, nextPreview))
+        assertEquals(2, submissions)
+    }
+
+    @Test fun abandonsPreparedOperationWhenSigningNeverCompleted() = runBlocking {
+        val source = profile('0')
+        val destination = profile('1')
+        val wallets = WalletRepository().apply { publish(source.id, listOf(source, destination)) }
+        val vault = FakeVault(listOf(source, destination))
+        val repository = DefaultL1WalletRepository(
+            wallets,
+            vault,
+            { LedgerSnapshot(CardanoNetwork.PREPROD, listOf(LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(10_000_000))), "{}", 100) },
+            { emptyList<TransactionRecord>() },
+            { _, _ -> error("submission must not start") },
+            { _, _ -> error("lookup must not run") },
+            FakeEngine(failSigning = true),
+            { OPERATION_ID },
+            { 123L },
+        )
+
+        val preview = repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+        assertFailsWith<IllegalStateException> { repository.submitTransfer(source.id, preview) }
+        assertEquals(L1OperationState.PREPARED, repository.operation(source.id)?.state)
+        assertEquals(L1OperationState.REJECTED, repository.reconcilePending(source.id)?.state)
     }
 
     @Test fun parsesOnlyPositiveAdaWithAtMostSixDecimals() {
@@ -83,14 +127,17 @@ class L1WalletRepositoryTest {
         assertNull(parseAdaAmount("-1"))
     }
 
-    private class FakeEngine : CardanoTransactionEngine {
+    private class FakeEngine(private val failSigning: Boolean = false) : CardanoTransactionEngine {
         private lateinit var intent: CardanoIntent.Transfer
         override suspend fun deriveWallet(entropy: ByteArray, network: CardanoNetwork): DerivedWallet = error("not used")
         override suspend fun build(intent: CardanoIntent, ledger: LedgerSnapshot): UnsignedTransaction {
             this.intent = intent as CardanoIntent.Transfer
             return UnsignedTransaction(byteArrayOf(0), intent.operationId, Lovelace(200_000))
         }
-        override fun sign(unsigned: UnsignedTransaction, seed: ByteArray) = SignedTransaction(byteArrayOf(1, 2, 3))
+        override fun sign(unsigned: UnsignedTransaction, seed: ByteArray): SignedTransaction {
+            check(!failSigning)
+            return SignedTransaction(byteArrayOf(1, 2, 3))
+        }
         override fun inspect(signedCbor: ByteArray) = TransactionSummary(
             CardanoNetwork.PREPROD,
             listOf(
@@ -139,6 +186,7 @@ class L1WalletRepositoryTest {
 
     private companion object {
         const val OPERATION_ID = "00000000-0000-4000-8000-000000000001"
+        const val NEXT_OPERATION_ID = "00000000-0000-4000-8000-000000000002"
         val TRANSACTION_ID = "11".repeat(32)
     }
 }
