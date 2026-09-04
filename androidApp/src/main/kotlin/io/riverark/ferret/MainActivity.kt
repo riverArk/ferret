@@ -141,6 +141,20 @@ class MainActivity : FragmentActivity() {
                     coordinators.getValue(profile.network).refresh {
                         val encrypted = vault.walletState(walletId)
                         try {
+                            val driveResolved = if (encrypted.backupGeneration == 0L) {
+                                true
+                            } else {
+                                try {
+                                    val checkpoint = backupCoordinator.verify(walletId)
+                                    checkpoint.ciphertextHash.fill(0)
+                                    checkpoint.channelSnapshot.fill(0)
+                                    true
+                                } catch (error: CancellationException) {
+                                    throw error
+                                } catch (_: Exception) {
+                                    false
+                                }
+                            }
                             val l1Operation = l1WalletRepository.operation(walletId)
                             val channel = channelJournal.load(walletId)
                             val transactions = connectors.getValue(profile.network).transactions(profile.paymentAddress)
@@ -149,7 +163,7 @@ class MainActivity : FragmentActivity() {
                                 connectors.getValue(profile.network).balance(profile.paymentAddress),
                                 l1Operation?.state in setOf(L1OperationState.PREPARED, L1OperationState.SUBMITTING, L1OperationState.PENDING) ||
                                     channel.pending != null || paymentStore.pending(walletId) != null,
-                                encrypted.backupGeneration == 0L,
+                                driveResolved,
                                 if (transactions.none { it.state != TransactionState.SETTLED }) 2_160 else 0,
                             )
                         } finally {
@@ -159,15 +173,7 @@ class MainActivity : FragmentActivity() {
                     }
                 },
                 sweepWallet = { _, _ -> error("L1 sweep deployment is unavailable") },
-                deleteBackup = { walletId ->
-                    val encrypted = vault.walletState(walletId)
-                    try {
-                        require(encrypted.backupGeneration == 0L) { "Drive backup deletion is unavailable" }
-                    } finally {
-                        encrypted.channelRecovery.fill(0)
-                        encrypted.operationJournal.fill(0)
-                    }
-                },
+                deleteBackup = backupCoordinator::delete,
             ),
             vault,
         )

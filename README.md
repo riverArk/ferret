@@ -9,7 +9,7 @@ Android repository-contained wallet flows include:
 - wallet creation or 24-word recovery-phrase restore with random three-word confirmation;
 - immutable Preprod and Mainnet wallet profiles, with deployment and device acceptance testing restricted to Mainnet;
 - validated online-session gating, L1 balance/history, local top-up QR, and durable L1 transfer orchestration;
-- native Google account selection with encrypted Drive appData backup verification, stale-writer detection and confirmed takeover, single-writer channel journaling, QR-only BOLT11 reconciliation, settings, diagnostics, and safe wallet removal boundaries;
+- native Google account selection with encrypted Drive appData backup verification, stale-writer detection and confirmed takeover, single-writer channel journaling, QR-only BOLT11 reconciliation, settings, diagnostics, and verified Drive-first deletion for empty settled wallets;
 - a shared cream, charcoal, yellow, and coral Compose interface.
 
 Financial mutations remain unreachable until the controlled Mainnet connector/adaptor deployment under `crustypants.com` exposes and passes the required operation lookup, protocol-parameter, writer-lease, and reconciliation contracts. Preprod and `ferret.channel` are unsupported and are not test or release targets. The iOS shared target compiles and renders an explicit platform-availability gate; iOS wallet support remains disabled until the adapters and Xcode host in [`IOS_FOLLOW_UP.md`](IOS_FOLLOW_UP.md) are complete.

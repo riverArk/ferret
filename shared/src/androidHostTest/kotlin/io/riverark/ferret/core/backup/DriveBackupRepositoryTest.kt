@@ -58,6 +58,24 @@ class DriveBackupRepositoryTest {
         assertEquals(1, drive.list("ferret-").size)
     }
 
+    @Test fun verifiedDeletionClearsRemoteBackupAndLocalCheckpoint() = runBlocking {
+        val walletId = WalletId("preprod-" + "00".repeat(28))
+        val drive = FakeDrive()
+        val crypto = AndroidBackupCrypto()
+        val coordinator = WalletBackupCoordinator(
+            FakeVault(walletId, ByteArray(32) { it.toByte() }),
+            DriveBackupRepository(drive, crypto),
+            crypto,
+            { 1L },
+        )
+        coordinator.initialize(walletId, "absent".encodeToByteArray())
+
+        coordinator.delete(walletId)
+
+        assertTrue(drive.list("ferret-").isEmpty())
+        assertEquals(null, coordinator.checkpoint(walletId))
+    }
+
     @Test fun detectsAStaleWriterAndTakesOverFromTheLatestVerifiedState() = runBlocking {
         val walletId = WalletId("preprod-" + "00".repeat(28))
         val drive = FakeDrive()

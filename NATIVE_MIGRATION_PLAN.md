@@ -328,9 +328,9 @@ Preprod and `ferret.channel` availability must not block or satisfy this gate.
 
 ### 14. Settings and diagnostics — Partial
 
-**Current status:** A styled `SettingsScreen` and `WalletSettings` projection exist but are unreachable and have no producer. Original placeholder settings were intentionally removed: no custom endpoints, mutable network, fiat, FX, language, raw-key export, or plaintext backup.
+**Current status:** `SettingsScreen` is reachable from Home and projects the selected wallet's credentials, immutable network, channel/adaptor state, Drive account/generation/sequence, lock state, version/build commit, and redacted diagnostic code. Rename, Drive connect/verify/takeover, and Remove Wallet navigation are wired. Original placeholder settings remain removed: no custom endpoints, mutable network, fiat, FX, language, raw-key export, or plaintext backup.
 
-**Missing work:** Wire selected-wallet details, credentials, fixed network, channel/adaptor status, Drive account/sequence/reconnect/verify, lock status, version/build commit, redacted diagnostic code, rename, and Remove Wallet entry. Do not restore removed web settings.
+**Missing work:** Replace the coarse channel/adaptor status with live channel lifecycle state when concrete channel adapters land. Do not restore removed web settings.
 
 **Priority:** P1 backup controls; P3 complete settings.
 
@@ -344,9 +344,9 @@ Preprod and `ferret.channel` availability must not block or satisfy this gate.
 
 ### 15. Safe wallet removal — Partial
 
-**Current status:** `WalletRemovalManager` enforces closed/absent channel, no pending operation, resolved Drive, zero balance, same-network sweep prefix, 2160-depth finality, Drive deletion, and vault deletion. There is no concrete repository, screen/ViewModel, navigation wiring, sweep transaction orchestration, or interruption recovery.
+**Current status:** `WalletRemovalManager`, the protected confirmation screen/ViewModel, typed navigation, and Android readiness producer are connected. Removal checks closed/absent channel state, pending L1/channel/payment journals, live balance, transaction finality, and the encrypted Drive checkpoint. An already empty, settled wallet can delete its verified Drive backup with read-after-delete verification before the local encrypted profile, seed, and journals are deleted. Same-network sweep orchestration remains unavailable.
 
-**Missing work:** Implement readiness from chain/channel/Drive authorities; protected confirmation UI; same-network wallet or validated external sweep; journaled SweepWallet submission/reconciliation; final Drive/local deletion with read-failure verification; clear explanation that mnemonic/provider retention cannot be erased.
+**Missing work:** Add same-network wallet or validated external sweep through journaled `SweepWallet` submission/reconciliation, then perform the funded-device interruption and mnemonic-restore scenario. The UI already explains that mnemonic/provider retention cannot be erased.
 
 **Priority:** P3 after transfer, Drive, and channel lifecycle.
 

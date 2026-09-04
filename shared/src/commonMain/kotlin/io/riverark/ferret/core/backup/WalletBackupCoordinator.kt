@@ -110,6 +110,20 @@ class WalletBackupCoordinator(
         }
     }
 
+    suspend fun delete(walletId: WalletId) {
+        vault.withWalletSeed(walletId) { seed -> backups.deleteAll(walletId, seed) }
+        val current = vault.walletState(walletId)
+        try {
+            vault.updateWalletState(walletId, current.copy(
+                channelRecovery = byteArrayOf(),
+                backupGeneration = 0,
+            ))
+        } finally {
+            current.channelRecovery.fill(0)
+            current.operationJournal.fill(0)
+        }
+    }
+
     private suspend fun write(
         walletId: WalletId,
         generation: Long,
