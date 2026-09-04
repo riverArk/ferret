@@ -16,6 +16,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -72,6 +73,8 @@ import io.riverark.ferret.ui.FerretSpacing
 import io.riverark.ferret.ui.FerretTheme
 import org.jetbrains.compose.resources.painterResource
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
 
 data class FerretDependencies(
     val wallets: WalletRepository,
@@ -89,6 +92,8 @@ data class FerretDependencies(
     val newOperationId: (() -> String)? = null,
     val paymentIntentHash: ((PaymentQuote) -> String)? = null,
     val loadSettings: (suspend (WalletProfile) -> WalletSettings)? = null,
+    val connectDrive: (suspend () -> String)? = null,
+    val verifyBackup: (suspend (WalletId) -> Long)? = null,
     val walletRemovalManager: WalletRemovalManager? = null,
 )
 
@@ -133,6 +138,8 @@ fun FerretApp(
             dependencies.newOperationId,
             dependencies.paymentIntentHash,
             dependencies.loadSettings,
+            dependencies.connectDrive,
+            dependencies.verifyBackup,
             dependencies.walletRemovalManager,
             onUnlock,
             onSensitiveContentChanged,
@@ -157,6 +164,8 @@ private fun WalletNavigation(
     newOperationId: (() -> String)?,
     paymentIntentHash: ((PaymentQuote) -> String)?,
     loadSettings: (suspend (WalletProfile) -> WalletSettings)?,
+    connectDrive: (suspend () -> String)?,
+    verifyBackup: (suspend (WalletId) -> Long)?,
     walletRemovalManager: WalletRemovalManager?,
     onUnlock: (() -> Unit)?,
     onSensitiveContentChanged: (Boolean) -> Unit,
@@ -401,14 +410,56 @@ private fun WalletNavigation(
             val route = backStackEntry.toRoute<Route.Settings>()
             val profile = (state as? AppState.Ready)?.wallets?.firstOrNull { it.id.value == route.walletId }
             if (profile != null && loadSettings != null) {
+                val settingsScope = rememberCoroutineScope()
                 var settings by remember(profile) { mutableStateOf<WalletSettings?>(null) }
+                var backupBusy by remember(profile.id) { mutableStateOf(false) }
+                var backupMessage by remember(profile.id) { mutableStateOf<String?>(null) }
                 LaunchedEffect(profile) { settings = loadSettings(profile) }
                 settings?.let { current ->
                     SettingsScreen(
                         current,
+                        backupBusy,
+                        backupMessage,
                         navController::popBackStack,
                         { walletViewModel.rename(profile.id, it) },
-                        null,
+                        connectDrive?.let { connect ->
+                            {
+                                settingsScope.launch {
+                                    backupBusy = true
+                                    backupMessage = null
+                                    try {
+                                        connect()
+                                        settings = loadSettings(profile)
+                                        backupMessage = "Google Drive connected."
+                                    } catch (error: CancellationException) {
+                                        throw error
+                                    } catch (_: Exception) {
+                                        backupMessage = "Google Drive connection failed."
+                                    } finally {
+                                        backupBusy = false
+                                    }
+                                }
+                            }
+                        },
+                        verifyBackup?.takeIf { current.driveAccount != null }?.let { verify ->
+                            {
+                                settingsScope.launch {
+                                    backupBusy = true
+                                    backupMessage = null
+                                    try {
+                                        val sequence = verify(profile.id)
+                                        settings = loadSettings(profile)
+                                        backupMessage = "Encrypted backup verified (sequence $sequence)."
+                                    } catch (error: CancellationException) {
+                                        throw error
+                                    } catch (_: Exception) {
+                                        backupMessage = "Encrypted backup verification failed."
+                                    } finally {
+                                        backupBusy = false
+                                    }
+                                }
+                            }
+                        },
                         { navController.navigate(Route.RemoveWallet(profile.id.value)) },
                     )
                 } ?: FerretScreen {

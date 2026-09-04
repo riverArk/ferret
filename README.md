@@ -9,7 +9,7 @@ Android repository-contained wallet flows include:
 - wallet creation or 24-word recovery-phrase restore with random three-word confirmation;
 - immutable Preprod and Mainnet selection;
 - validated online-session gating, L1 balance/history, local top-up QR, and durable L1 transfer orchestration;
-- encrypted Drive appData backup primitives, single-writer channel journaling, QR-only BOLT11 reconciliation, settings, diagnostics, and safe wallet removal;
+- native Google account selection with encrypted Drive appData backup initialization/read-back verification, single-writer channel journaling, QR-only BOLT11 reconciliation, settings, diagnostics, and safe wallet removal boundaries;
 - a shared cream, charcoal, yellow, and coral Compose interface.
 
 Financial mutations remain unreachable until the pinned connector/adaptor deployment exposes the required operation lookup, protocol parameters, writer lease, and reconciliation contracts. The iOS shared target compiles and renders an explicit platform-availability gate; iOS wallet support remains disabled until the adapters and Xcode host in [`IOS_FOLLOW_UP.md`](IOS_FOLLOW_UP.md) are complete.

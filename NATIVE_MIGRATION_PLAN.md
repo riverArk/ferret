@@ -16,7 +16,7 @@ Later user sessions additionally required the full visual refresh, documentation
 
 ## Current conclusion
 
-The KMP shell, Android secure onboarding, shared visual system, adaptive icon, validated foreground session, live L1 dashboard, top-up, history, durable transfer orchestration, encrypted channel recovery, payment reconciliation, settings/diagnostics, and safe removal boundaries are implemented. Home now refreshes the exact connector balance and immutable activity together, showing the latest record and refresh timestamp. Financial mutations remain unreachable until the pinned connector/adaptor operation lookup, protocol-parameter, writer-lease, and reconciliation contracts are deployed and verified. Concrete channel transaction adapters and lifecycle UI are the next repository functionality.
+The KMP shell, Android secure onboarding, shared visual system, adaptive icon, validated foreground session, live L1 dashboard, top-up, history, durable transfer orchestration, encrypted channel recovery, native Google account selection, Drive appData backup initialization/verification, payment reconciliation, settings/diagnostics, and safe removal boundaries are implemented. Home refreshes the exact connector balance and immutable activity together, showing the latest record and refresh timestamp. Financial mutations remain unreachable because the Preprod connector still lacks `/protocol-parameters`, operation lookup, writer-lease, and reconciliation contracts. Concrete channel transaction adapters and lifecycle UI remain the next financial functionality.
 
 Status legend: **Complete** means connected behavior exists; **Partial** means reusable code exists but the end-to-end feature does not; **Missing** means no usable implementation exists; **Deferred** is an explicit sequencing decision.
 
@@ -265,9 +265,9 @@ slice before Drive/device-writer identity exists.
 
 ### 10. Encrypted Drive recovery and single-writer ownership — Partial
 
-**Current status:** `FerretChannelBackupV1`, HKDF/AES-GCM/hash-chain repository logic, backup state types, Drive/OAuth interfaces, and Android crypto exist. No Google identity/token implementation, Drive REST client, dependency composition, backup state persistence, restore/takeover flow, writer-lease integration, conflict UI, or tests against Drive are connected.
+**Current status:** Partial. `FerretChannelBackupV1`, HKDF/AES-GCM/hash-chain repository logic, backup state types, a bounded Drive appData-only REST client, Android crypto, native Google account selection, OAuth scope authorization, encrypted initial backup read-back/decrypt verification, checkpoint persistence, and a Settings verification action are connected. Channel mutations still do not consume the backup protocol.
 
-**Missing work:** Implement Android Google Identity/Credential Manager and appData-only Drive client; initial upload/read-back/decrypt verification; generation/sequence/hash-chain persistence; discovery on restore; takeover generation increment; conflict/tamper handling; server writer lease; write-ahead/terminal snapshots around every L2 mutation. Never put wallet identifiers, network, addresses, or credentials in Drive metadata.
+**Missing work:** Add Drive discovery during mnemonic restore, takeover UI, and conflict/tamper presentation; connect backup verification to channel creation; wire device-writer identity and the server lease into every channel mutation. Never put wallet identifiers, network, addresses, or credentials in Drive metadata.
 
 **Priority:** P1; hard blocker for channel creation.
 

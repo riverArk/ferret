@@ -20,6 +20,10 @@ import androidx.lifecycle.Lifecycle
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.android.Android
 import io.riverark.ferret.core.cardano.androidCardanoTransactionEngine
+import io.riverark.ferret.core.backup.AndroidGoogleOAuthTokenProvider
+import io.riverark.ferret.core.backup.DriveBackupRepository
+import io.riverark.ferret.core.backup.GoogleDriveAppDataClient
+import io.riverark.ferret.core.backup.WalletBackupCoordinator
 import io.riverark.ferret.core.cardano.deriveAndroidWallet
 import io.riverark.ferret.core.model.CardanoNetwork
 import io.riverark.ferret.core.model.WalletManager
@@ -43,6 +47,7 @@ import io.riverark.ferret.core.security.AndroidSecureVault
 import io.riverark.ferret.core.security.ForegroundLockPolicy
 import io.riverark.ferret.core.security.SensitiveContentCounter
 import io.riverark.ferret.core.security.AndroidUserAuthenticator
+import io.riverark.ferret.core.security.AndroidBackupCrypto
 import io.riverark.ferret.core.channel.VaultChannelJournal
 import io.riverark.ferret.feature.wallet.L1OperationState
 import io.riverark.ferret.feature.wallet.DefaultL1WalletRepository
@@ -75,6 +80,8 @@ class MainActivity : FragmentActivity() {
     private lateinit var paymentStore: VaultPaymentStore
     private lateinit var l1WalletRepository: DefaultL1WalletRepository
     private lateinit var walletRemovalManager: WalletRemovalManager
+    private lateinit var driveTokens: AndroidGoogleOAuthTokenProvider
+    private lateinit var backupCoordinator: WalletBackupCoordinator
     private var activeWork: Job? = null
     private var backgroundLock: Job? = null
     private var unlocking = false
@@ -108,6 +115,14 @@ class MainActivity : FragmentActivity() {
             AndroidRecoveryPhraseCodec(),
             ::deriveAndroidWallet,
             wallets,
+        )
+        driveTokens = AndroidGoogleOAuthTokenProvider(this)
+        val backupCrypto = AndroidBackupCrypto()
+        backupCoordinator = WalletBackupCoordinator(
+            vault,
+            DriveBackupRepository(GoogleDriveAppDataClient(http, driveTokens), backupCrypto),
+            backupCrypto,
+            System::currentTimeMillis,
         )
         l1WalletRepository = DefaultL1WalletRepository(
             wallets,
@@ -202,8 +217,8 @@ class MainActivity : FragmentActivity() {
                                 paymentCredential = profile.id.value.substringAfter('-'),
                                 stakingCredential = profile.stakeAddress,
                                 adaptorStatus = "validated",
-                                driveAccount = null,
-                                driveSequence = encrypted.backupGeneration.takeIf { it > 0 },
+                                driveAccount = driveTokens.accountName,
+                                driveSequence = backupCoordinator.checkpoint(profile.id)?.sequence,
                                 lockStatus = "unlocked",
                                 version = BuildConfig.VERSION_NAME,
                                 buildCommit = BuildConfig.BUILD_COMMIT,
@@ -212,6 +227,20 @@ class MainActivity : FragmentActivity() {
                         } finally {
                             encrypted.channelRecovery.fill(0)
                             encrypted.operationJournal.fill(0)
+                        }
+                    },
+                    connectDrive = driveTokens::connect,
+                    verifyBackup = { walletId ->
+                        val snapshot = channelJournal.backupSnapshot(walletId)
+                        try {
+                            backupCoordinator.initializeOrVerify(walletId, snapshot).sequence
+                        } catch (error: CancellationException) {
+                            throw error
+                        } catch (error: Exception) {
+                            diagnostics.record(DiagnosticCode.BACKUP)
+                            throw error
+                        } finally {
+                            snapshot.fill(0)
                         }
                     },
                     walletRemovalManager = walletRemovalManager,

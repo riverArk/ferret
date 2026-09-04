@@ -24,6 +24,9 @@ class WalletBackupCoordinator(
 ) {
     private val json = Json { ignoreUnknownKeys = false }
 
+    suspend fun initializeOrVerify(walletId: WalletId, channelSnapshot: ByteArray): BackupCheckpointV1 =
+        if (checkpoint(walletId) == null) initialize(walletId, channelSnapshot) else verify(walletId)
+
     suspend fun initialize(walletId: WalletId, channelSnapshot: ByteArray): BackupCheckpointV1 {
         require(checkpoint(walletId) == null) { "backup is already initialized" }
         return write(walletId, 1, 1, ByteArray(32), channelSnapshot)

@@ -37,8 +37,11 @@ import io.riverark.ferret.ui.FerretTopBar
 @Composable
 fun SettingsScreen(
     settings: WalletSettings,
+    backupBusy: Boolean,
+    backupMessage: String?,
     onBack: () -> Unit,
     onRename: (String) -> Unit,
+    onConnectBackup: (() -> Unit)?,
     onVerifyBackup: (() -> Unit)?,
     onRemove: () -> Unit,
 ) {
@@ -62,8 +65,12 @@ fun SettingsScreen(
 
             section("Backup")
             item { FerretListRow("Drive account", settings.driveAccount ?: "not connected") }
+            backupMessage?.let { message -> item { Text(message, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
+            if (settings.driveAccount == null) {
+                item { FerretSecondaryButton("Connect Google Drive", { onConnectBackup?.invoke() }, enabled = !backupBusy && onConnectBackup != null) }
+            }
             settings.driveSequence?.let { sequence -> item { FerretListRow("Last verified backup sequence", sequence.toString()) } }
-            item { FerretSecondaryButton("Verify encrypted backup", { onVerifyBackup?.invoke() }, enabled = onVerifyBackup != null) }
+            item { FerretSecondaryButton("Verify encrypted backup", { onVerifyBackup?.invoke() }, enabled = !backupBusy && onVerifyBackup != null) }
 
             section("Security")
             item { FerretListRow("App lock", settings.lockStatus) }

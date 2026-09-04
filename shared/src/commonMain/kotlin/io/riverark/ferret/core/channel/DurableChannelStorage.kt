@@ -37,6 +37,8 @@ class VaultChannelJournal(
             journal.payment.fill(0)
         }
     }
+    suspend fun backupSnapshot(walletId: WalletId): ByteArray =
+        json.encodeToString(load(walletId)).encodeToByteArray()
 
     override suspend fun persist(walletId: WalletId, snapshot: ChannelSnapshot) {
         val state = vault.walletState(walletId)
