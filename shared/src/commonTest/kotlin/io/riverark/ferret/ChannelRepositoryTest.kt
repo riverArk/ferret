@@ -116,4 +116,63 @@ class ChannelRepositoryTest {
         repository.reconcile(walletId)
         assertEquals(ChannelSnapshot(ChannelState.Closed), stored)
     }
+
+    @Test fun reclaimsWriteAheadLeaseAndReplaysOneStableOperation() = runBlocking {
+        val action = ChannelAction.Open(3_000_000)
+        val updatedWriter = writer.copy(
+            token = "d".repeat(64),
+            backupHashHex = "e".repeat(64),
+        )
+        var stored = ChannelSnapshot(ChannelState.Absent)
+        var writeAhead: ChannelSnapshot? = null
+        var claims = 0
+        val operationIds = mutableListOf<String>()
+        val mutationWriters = mutableListOf<WriterLease>()
+        val repository = ChannelRepository(
+            WalletRepository(),
+            object : ChannelJournal {
+                override suspend fun load(walletId: WalletId) = stored
+                override suspend fun persist(walletId: WalletId, snapshot: ChannelSnapshot) { stored = snapshot }
+            },
+            object : ChannelBackupProtocol {
+                override suspend fun requireVerifiedWriter(walletId: WalletId) =
+                    if (++claims == 1) writer else updatedWriter
+                override suspend fun writeAhead(walletId: WalletId, snapshot: ChannelSnapshot) {
+                    writeAhead = snapshot
+                }
+                override suspend fun commit(walletId: WalletId, snapshot: ChannelSnapshot) = Unit
+            },
+            object : ChannelRemote {
+                override suspend fun mutate(
+                    walletId: WalletId,
+                    operationId: String,
+                    action: ChannelAction,
+                    writer: WriterLease,
+                ): MutationResult {
+                    operationIds += operationId
+                    mutationWriters += writer
+                    if (operationIds.size == 1) error("response lost")
+                    return MutationResult("remote", ChannelState.Open("channel"))
+                }
+                override suspend fun reconcile(
+                    walletId: WalletId,
+                    operation: PendingOperation,
+                    writer: WriterLease,
+                ) = null
+            },
+        )
+        repository.load(walletId)
+
+        assertFailsWith<IllegalStateException> {
+            repository.mutate(walletId, "operation", "intent", action)
+        }
+        assertEquals(action, assertNotNull(writeAhead).action)
+        assertEquals(OperationState.PENDING_RECONCILIATION, assertNotNull(stored.pending).state)
+
+        repository.reconcile(walletId)
+
+        assertEquals(listOf("operation", "operation"), operationIds)
+        assertEquals(listOf(updatedWriter, updatedWriter), mutationWriters)
+        assertEquals(ChannelSnapshot(ChannelState.Open("channel")), stored)
+    }
 }

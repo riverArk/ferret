@@ -91,6 +91,7 @@ Android installation and manual onboarding verification require an API 36 emulat
 - Replaced raw adaptor quote/payment request bodies with pinned-Konduit typed JSON, duration and keytag validation, strict quote decoding, and canonical JSON/CBOR fixtures.
 - Replaced raw adaptor squash/receipt bodies with strict pinned-Konduit response types, bounded cheque/exclusion collections, and fail-closed variant/field decoding.
 - Added fail-closed Ed25519 verification for every signed squash and locked/unlocked cheque returned by adaptor receipt, pay, and squash endpoints.
+- Channel write-ahead now persists the exact action, reacquires the lease for the newly written Drive checkpoint, and replays an interrupted operation under the same stable operation ID only after remote reconciliation returns no result.
 
 - Connected native Android Google account selection to the settings backup controls.
 - Wired first encrypted Drive appData backup creation and later read-back/decrypt verification, with the verified sequence projected in Settings.
