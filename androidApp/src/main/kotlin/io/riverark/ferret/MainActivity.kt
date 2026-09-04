@@ -224,6 +224,7 @@ class MainActivity : FragmentActivity() {
                     copyAddress = ::copyAddress,
                     l1WalletRepository = l1WalletRepository,
                     l1MutationsAvailable = false,
+                    loadChannel = channelJournal::load,
                     invoiceScanner = { onInvoice, onError -> QrPaymentScannerScreen(onInvoice, onError) },
                     nowEpochMillis = System::currentTimeMillis,
                     loadSettings = { profile ->

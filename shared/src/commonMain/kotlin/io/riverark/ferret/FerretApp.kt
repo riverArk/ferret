@@ -33,6 +33,7 @@ import androidx.navigation.toRoute
 import ferret.shared.generated.resources.Res
 import ferret.shared.generated.resources.splash_ferret
 import io.riverark.ferret.core.backup.StaleBackupWriterException
+import io.riverark.ferret.core.channel.ChannelSnapshot
 import io.riverark.ferret.core.channel.PaymentQuote
 import io.riverark.ferret.core.channel.PaymentUiState
 import io.riverark.ferret.core.channel.PaymentViewModel
@@ -47,6 +48,7 @@ import io.riverark.ferret.core.model.WalletProfile
 import io.riverark.ferret.feature.payment.ConfirmPaymentScreen
 import io.riverark.ferret.feature.payment.PaymentReceiptScreen
 import io.riverark.ferret.feature.wallet.CreateWalletScreen
+import io.riverark.ferret.feature.wallet.ChannelScreen
 import io.riverark.ferret.feature.wallet.HomeScreen
 import io.riverark.ferret.feature.wallet.QrCode
 import io.riverark.ferret.feature.wallet.HomeViewModel
@@ -88,6 +90,7 @@ data class FerretDependencies(
     val copyAddress: ((String) -> Unit)? = null,
     val l1WalletRepository: L1WalletRepository? = null,
     val l1MutationsAvailable: Boolean = false,
+    val loadChannel: (suspend (WalletId) -> ChannelSnapshot)? = null,
     val paymentViewModelFactory: ((WalletId) -> PaymentViewModel)? = null,
     val invoiceScanner: (@Composable ((String) -> Unit, () -> Unit) -> Unit)? = null,
     val paymentActionsAvailable: Boolean = false,
@@ -136,6 +139,7 @@ fun FerretApp(
             copyAddress,
             dependencies.l1WalletRepository,
             dependencies.l1MutationsAvailable,
+            dependencies.loadChannel,
             dependencies.paymentViewModelFactory,
             dependencies.invoiceScanner,
             dependencies.paymentActionsAvailable,
@@ -164,6 +168,7 @@ private fun WalletNavigation(
     copyAddress: (String) -> Unit,
     l1WalletRepository: L1WalletRepository?,
     l1MutationsAvailable: Boolean,
+    loadChannel: (suspend (WalletId) -> ChannelSnapshot)?,
     paymentViewModelFactory: ((WalletId) -> PaymentViewModel)?,
     invoiceScanner: (@Composable ((String) -> Unit, () -> Unit) -> Unit)?,
     paymentActionsAvailable: Boolean,
@@ -380,6 +385,11 @@ private fun WalletNavigation(
                     } else {
                         null
                     },
+                    if (loadChannel != null && io.riverark.ferret.feature.wallet.channelRouteAvailable(profile.channelState)) {
+                        { navController.navigate(Route.Channel(profile.id.value)) }
+                    } else {
+                        null
+                    },
                     { navController.navigate(Route.History(profile.id.value)) },
                     { navController.navigate(Route.WalletPicker) },
                     { navController.navigate(Route.Settings(profile.id.value)) },
@@ -410,6 +420,28 @@ private fun WalletNavigation(
                         transferViewModel::submitAsync,
                         navController::popBackStack,
                     )
+                }
+            }
+        }
+        composable<Route.Channel> { backStackEntry ->
+            val route = backStackEntry.toRoute<Route.Channel>()
+            val profile = (state as? AppState.Ready)?.wallets?.firstOrNull { it.id.value == route.walletId }
+            if (profile != null && loadChannel != null) {
+                var snapshot by remember(profile.id) { mutableStateOf<ChannelSnapshot?>(null) }
+                var error by remember(profile.id) { mutableStateOf<String?>(null) }
+                var reload by remember(profile.id) { mutableStateOf(0) }
+                LaunchedEffect(profile.id, reload) {
+                    try {
+                        error = null
+                        snapshot = loadChannel(profile.id)
+                    } catch (failure: CancellationException) {
+                        throw failure
+                    } catch (_: Exception) {
+                        error = "Channel state is unavailable."
+                    }
+                }
+                SensitiveContent(onSensitiveContentChanged) {
+                    ChannelScreen(profile, snapshot, error, { reload++ }, navController::popBackStack)
                 }
             }
         }

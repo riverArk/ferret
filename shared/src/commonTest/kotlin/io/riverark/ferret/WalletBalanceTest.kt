@@ -1,6 +1,7 @@
 package io.riverark.ferret
 
 import io.riverark.ferret.core.model.Lovelace
+import io.riverark.ferret.core.model.ChannelState
 import io.riverark.ferret.core.model.CardanoNetwork
 import io.riverark.ferret.core.model.Realm
 import io.riverark.ferret.core.model.TransactionRecord
@@ -8,6 +9,8 @@ import io.riverark.ferret.core.model.TransactionState
 import io.riverark.ferret.core.model.WalletId
 import io.riverark.ferret.core.model.WalletProfile
 import io.riverark.ferret.core.network.lovelaceBalance
+import io.riverark.ferret.feature.wallet.channelRouteAvailable
+import io.riverark.ferret.feature.wallet.channelStateLabel
 import io.riverark.ferret.feature.wallet.formatAda
 import io.riverark.ferret.feature.wallet.HomeViewModel
 import kotlinx.serialization.json.Json
@@ -54,6 +57,22 @@ class WalletBalanceTest {
         assertEquals("₳ 1.23", formatAda(Lovelace(1_230_000)))
         assertEquals("₳ 0.000001", formatAda(Lovelace(1)))
         assertEquals("₳ 1.000001", formatAda(Lovelace(1_000_001)))
+    }
+
+    @Test fun activeChannelLifecycleIsReachableAndDescribed() {
+        val active = listOf(
+            ChannelState.Opening("opening") to "Opening",
+            ChannelState.Open("channel") to "Open",
+            ChannelState.Closing("closing") to "Closing",
+            ChannelState.Responded to "Responded",
+            ChannelState.Ending to "Ending",
+        )
+        active.forEach { (state, label) ->
+            assertEquals(true, channelRouteAvailable(state))
+            assertEquals(label, channelStateLabel(state))
+        }
+        assertEquals(false, channelRouteAvailable(ChannelState.Absent))
+        assertEquals(false, channelRouteAvailable(ChannelState.Closed))
     }
 
     @Test fun homeRefreshUpdatesBalanceLatestActivityAndTimestamp() = runBlocking {

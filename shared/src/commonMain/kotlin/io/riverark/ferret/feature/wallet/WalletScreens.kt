@@ -36,6 +36,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -48,7 +49,9 @@ import ferret.shared.generated.resources.empty_activity_ferret
 import ferret.shared.generated.resources.ferret_unpack
 import ferret.shared.generated.resources.splash_ferret
 import io.riverark.ferret.core.model.CardanoNetwork
+import io.riverark.ferret.core.channel.ChannelSnapshot
 import io.riverark.ferret.core.model.ChannelState
+import io.riverark.ferret.core.model.OperationState
 import io.riverark.ferret.core.model.Lovelace
 import io.riverark.ferret.core.model.TransactionRecord
 import io.riverark.ferret.core.model.WalletProfile
@@ -57,6 +60,7 @@ import io.riverark.ferret.ui.FerretDataBlock
 import io.riverark.ferret.ui.FerretEmptyState
 import io.riverark.ferret.ui.FerretErrorState
 import io.riverark.ferret.ui.FerretPrimaryButton
+import io.riverark.ferret.ui.FerretLoadingState
 import io.riverark.ferret.ui.FerretListRow
 import io.riverark.ferret.ui.FerretScreen
 import io.riverark.ferret.ui.FerretSecondaryButton
@@ -267,6 +271,7 @@ fun HomeScreen(
     onTopUp: () -> Unit,
     onPay: (() -> Unit)?,
     onTransfer: (() -> Unit)?,
+    onChannel: (() -> Unit)?,
     onHistory: () -> Unit,
     onWallets: () -> Unit,
     onSettings: () -> Unit,
@@ -316,12 +321,15 @@ fun HomeScreen(
             }
         }
         when {
-            state.balance?.value == 0L -> FerretPrimaryButton("Add ADA", onTopUp)
-            state.profile.channelState is ChannelState.Open -> {
-                FerretPrimaryButton("Pay invoice", { onPay?.invoke() }, enabled = onPay != null)
+            channelRouteAvailable(state.profile.channelState) -> {
+                FerretPrimaryButton("View channel", { onChannel?.invoke() }, enabled = onChannel != null)
+                if (state.profile.channelState is ChannelState.Open) {
+                    FerretSecondaryButton("Pay invoice", { onPay?.invoke() }, enabled = onPay != null)
+                }
                 FerretSecondaryButton("Add ADA", onTopUp)
                 FerretSecondaryButton("Transfer ADA", { onTransfer?.invoke() }, enabled = onTransfer != null)
             }
+            state.balance?.value == 0L -> FerretPrimaryButton("Add ADA", onTopUp)
             state.balance != null -> {
                 FerretPrimaryButton("Open channel", {}, enabled = false)
                 FerretSecondaryButton("Add ADA", onTopUp)
@@ -333,6 +341,62 @@ fun HomeScreen(
         FerretSecondaryButton("Settings", onSettings)
     }
 }
+
+internal fun channelRouteAvailable(state: ChannelState) =
+    state != ChannelState.Absent && state != ChannelState.Closed
+
+internal fun channelStateLabel(state: ChannelState) = when (state) {
+    ChannelState.Absent -> "Not opened"
+    is ChannelState.Opening -> "Opening"
+    is ChannelState.Open -> "Open"
+    is ChannelState.Closing -> "Closing"
+    ChannelState.Closed -> "Closed"
+    ChannelState.Responded -> "Responded"
+    ChannelState.Ending -> "Ending"
+}
+
+@Composable
+fun ChannelScreen(
+    profile: WalletProfile,
+    snapshot: ChannelSnapshot?,
+    error: String?,
+    onRetry: () -> Unit,
+    onBack: () -> Unit,
+) {
+    FerretScreen {
+        FerretTopBar("Channel", navigation = { io.riverark.ferret.ui.FerretTextButton("Back", onBack) })
+        FerretStatusChip(profile.network.name)
+        when {
+            error != null -> FerretErrorState(error, "Retry", onRetry)
+            snapshot == null -> FerretLoadingState("Loading channel")
+            else -> {
+                val status = channelStateLabel(snapshot.state)
+                FerretCard(Modifier.fillMaxWidth().semantics { stateDescription = status }) {
+                    FerretDataBlock("Status", status)
+                    when (val state = snapshot.state) {
+                        is ChannelState.Opening -> FerretDataBlock("Opening transaction", state.txId)
+                        is ChannelState.Open -> FerretDataBlock("Channel", state.channelId)
+                        is ChannelState.Closing -> FerretDataBlock("Closing transaction", state.txId)
+                        else -> Unit
+                    }
+                }
+                snapshot.pending?.let { pending ->
+                    FerretCard(Modifier.fillMaxWidth()) {
+                        FerretDataBlock("Pending operation", pending.id)
+                        FerretDataBlock("Reconciliation", pending.state.label())
+                    }
+                }
+                Text(
+                    "Channel transactions remain unavailable until the controlled Mainnet deployment passes its mutation and reconciliation checks.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Box(Modifier.weight(1f))
+    }
+}
+
+private fun OperationState.label() = name.lowercase().replace('_', ' ').replaceFirstChar(Char::uppercase)
 
 @Composable
 fun TransferScreen(
