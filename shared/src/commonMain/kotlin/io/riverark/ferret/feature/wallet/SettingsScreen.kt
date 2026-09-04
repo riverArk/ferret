@@ -14,6 +14,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import io.riverark.ferret.core.channel.ChannelSnapshot
 import io.riverark.ferret.core.model.WalletProfile
 import io.riverark.ferret.ui.FerretDangerButton
 import io.riverark.ferret.ui.FerretListRow
@@ -27,6 +28,7 @@ data class WalletSettings(
     val profile: WalletProfile,
     val paymentCredential: String,
     val stakingCredential: String,
+    val channel: ChannelSnapshot,
     val adaptorStatus: String,
     val driveAccount: String?,
     val driveGeneration: Long?,
@@ -66,7 +68,10 @@ fun SettingsScreen(
 
             section("Network and channel")
             item { FerretListRow("Network", settings.profile.network.name) }
-            item { FerretListRow("Channel", settings.profile.channelState.toString()) }
+            item { FerretListRow("Channel", channelStateLabel(settings.channel.state)) }
+            settings.channel.pending?.let { pending ->
+                item { FerretListRow("Channel operation", pending.state.label()) }
+            }
             item { FerretListRow("Adaptor", settings.adaptorStatus) }
 
             section("Backup")

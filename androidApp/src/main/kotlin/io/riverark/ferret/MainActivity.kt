@@ -236,6 +236,7 @@ class MainActivity : FragmentActivity() {
                                     profile = profile,
                                     paymentCredential = profile.id.value.substringAfter('-'),
                                     stakingCredential = profile.stakeAddress,
+                                    channel = channelJournal.load(profile.id),
                                     adaptorStatus = "validated",
                                     driveAccount = driveTokens.accountName,
                                     driveGeneration = checkpoint?.generation,

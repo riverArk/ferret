@@ -326,13 +326,13 @@ Preprod and `ferret.channel` availability must not block or satisfy this gate.
 
 **Verification:** Shared ordering/status tests; funded low-value Mainnet transfer/channel/payment scenario; compare displayed IDs/statuses to connector/adaptor responses.
 
-### 14. Settings and diagnostics — Partial
+### 14. Settings and diagnostics — Complete
 
-**Current status:** `SettingsScreen` is reachable from Home and projects the selected wallet's credentials, immutable network, channel/adaptor state, Drive account/generation/sequence, lock state, version/build commit, and redacted diagnostic code. Rename, Drive connect/verify/takeover, and Remove Wallet navigation are wired. Original placeholder settings remain removed: no custom endpoints, mutable network, fiat, FX, language, raw-key export, or plaintext backup.
+**Current status:** `SettingsScreen` is reachable from Home and projects the selected wallet's credentials, immutable network, live encrypted-journal channel lifecycle and pending-operation state, validated-session adaptor status, Drive account/generation/sequence, lock state, version/build commit, and redacted diagnostic code. Rename, Drive connect/verify/takeover, and Remove Wallet navigation are wired. Original placeholder settings remain removed: no custom endpoints, mutable network, fiat, FX, language, raw-key export, or plaintext backup.
 
-**Missing work:** Replace the coarse channel/adaptor status with live channel lifecycle state when concrete channel adapters land. Do not restore removed web settings.
+**Missing work:** None. Keep the channel projection backed by the runtime journal as concrete adapters land, and do not restore removed web settings.
 
-**Priority:** P1 backup controls; P3 complete settings.
+**Priority:** Done.
 
 **Affected files:** `SettingsScreen.kt`, wallet/backup/channel repositories, build metadata, `FerretApp.kt`, Android composition root.
 

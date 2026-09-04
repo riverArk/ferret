@@ -396,7 +396,7 @@ fun ChannelScreen(
     }
 }
 
-private fun OperationState.label() = name.lowercase().replace('_', ' ').replaceFirstChar(Char::uppercase)
+internal fun OperationState.label() = name.lowercase().replace('_', ' ').replaceFirstChar(Char::uppercase)
 
 @Composable
 fun TransferScreen(
