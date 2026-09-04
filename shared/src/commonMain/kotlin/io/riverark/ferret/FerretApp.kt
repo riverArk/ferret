@@ -22,6 +22,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavDestination
 import androidx.navigation.compose.NavHost
@@ -361,7 +362,10 @@ private fun WalletNavigation(
             if (profile != null) {
                 val homeViewModel = viewModel { HomeViewModel(profile, loadBalance, loadHistory, nowEpochMillis ?: { 0L }) }
                 val homeState by homeViewModel.state.collectAsState()
-                LaunchedEffect(homeViewModel) { homeViewModel.refresh() }
+                LifecycleStartEffect(homeViewModel) {
+                    homeViewModel.startRefreshing()
+                    onStopOrDispose { homeViewModel.stopRefreshing() }
+                }
                 HomeScreen(
                     homeState,
                     homeViewModel::refresh,

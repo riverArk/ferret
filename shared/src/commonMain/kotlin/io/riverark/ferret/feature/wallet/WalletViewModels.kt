@@ -13,6 +13,8 @@ import io.riverark.ferret.core.model.WalletId
 import io.riverark.ferret.core.model.WalletManager
 import io.riverark.ferret.core.model.WalletProfile
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -113,18 +115,40 @@ class HomeViewModel(
     private val nowEpochMillis: () -> Long = { 0 },
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(HomeUiState(profile))
+    private var automaticRefresh: Job? = null
+    private var hasPendingActivity = false
     val state = mutableState.asStateFlow()
+
+    fun startRefreshing() {
+        if (automaticRefresh?.isActive == true) return
+        automaticRefresh = viewModelScope.launch { refreshWhilePending() }
+    }
+
+    fun stopRefreshing() {
+        automaticRefresh?.cancel()
+        automaticRefresh = null
+    }
 
     fun refresh() {
         viewModelScope.launch { refreshNow() }
     }
 
+    internal suspend fun refreshWhilePending(wait: suspend (Long) -> Unit = { delay(it) }) {
+        do {
+            refreshNow()
+            if (hasPendingActivity) wait(PENDING_REFRESH_MILLIS)
+        } while (hasPendingActivity)
+    }
+
     suspend fun refreshNow() {
         mutableState.value = mutableState.value.copy(loading = true, error = null)
         try {
+            val balance = loadBalance(profile)
+            val history = mergeTransactionRecords(loadHistory(profile), emptyList())
+            hasPendingActivity = history.any { it.state == io.riverark.ferret.core.model.TransactionState.PENDING }
             mutableState.value = mutableState.value.copy(
-                balance = loadBalance(profile),
-                latestActivity = mergeTransactionRecords(loadHistory(profile), emptyList()).firstOrNull(),
+                balance = balance,
+                latestActivity = history.firstOrNull(),
                 loading = false,
                 lastRefreshEpochMillis = nowEpochMillis().takeIf { it > 0 },
             )
@@ -136,6 +160,10 @@ class HomeViewModel(
                 error = "Unable to refresh wallet. Check your connection and try again.",
             )
         }
+    }
+
+    private companion object {
+        const val PENDING_REFRESH_MILLIS = 20_000L
     }
 }
 

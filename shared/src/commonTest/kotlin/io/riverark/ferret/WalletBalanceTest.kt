@@ -86,13 +86,44 @@ class WalletBalanceTest {
         assertEquals(now, viewModel.state.value.lastRefreshEpochMillis)
     }
 
-    private fun record(id: String, timestamp: Long) = TransactionRecord(
+    @Test fun homeAutoRefreshRepeatsOnlyWhilePending() = runBlocking {
+        val profile = WalletProfile(
+            WalletId("preprod-${"a".repeat(56)}"),
+            "Primary",
+            CardanoNetwork.PREPROD,
+            "addr_test1primary",
+            "stake_test1primary",
+        )
+        val histories = listOf(
+            listOf(record("1".repeat(64), 100, TransactionState.PENDING)),
+            listOf(record("1".repeat(64), 100, TransactionState.CONFIRMED)),
+        )
+        var loads = 0
+        val delays = mutableListOf<Long>()
+        val viewModel = HomeViewModel(
+            profile,
+            { Lovelace(1_000_000) },
+            { histories[minOf(loads++, histories.lastIndex)] },
+        )
+
+        viewModel.refreshWhilePending { delays += it }
+
+        assertEquals(2, loads)
+        assertEquals(listOf(20_000L), delays)
+        assertEquals(TransactionState.CONFIRMED, viewModel.state.value.latestActivity?.state)
+    }
+
+    private fun record(
+        id: String,
+        timestamp: Long,
+        state: TransactionState = TransactionState.CONFIRMED,
+    ) = TransactionRecord(
         id,
         timestamp,
         Lovelace(1),
         Lovelace(0),
         Realm.L1,
-        TransactionState.CONFIRMED,
+        state,
     )
 
     private fun balance(response: String) = Json.parseToJsonElement(response).jsonArray.lovelaceBalance()

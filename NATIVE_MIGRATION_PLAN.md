@@ -18,7 +18,7 @@ Later user sessions additionally required the full visual refresh, documentation
 
 ## Current conclusion
 
-The KMP shell, Android secure onboarding, shared visual system, adaptive icon, validated foreground session, live L1 dashboard, top-up, history, durable transfer orchestration, encrypted channel recovery, native Google account selection, Drive appData backup initialization/verification/restoration/takeover, payment reconciliation, settings/diagnostics, and safe removal boundaries are implemented. Mnemonic restore installs only a fully verified encrypted Drive channel backup into the local journal. Settings identifies a newer remote backup as a stale local writer and requires explicit confirmation before restoring it and starting a new generation. Home refreshes the exact connector balance and immutable activity together, showing the latest record and refresh timestamp. Financial mutations remain unreachable until every required Mainnet contract is verified on the controlled `crustypants.com` services. Concrete channel transaction adapters and lifecycle UI remain the next financial functionality.
+The KMP shell, Android secure onboarding, shared visual system, adaptive icon, validated foreground session, live L1 dashboard, top-up, history, durable transfer orchestration, encrypted channel recovery, native Google account selection, Drive appData backup initialization/verification/restoration/takeover, payment reconciliation, settings/diagnostics, and safe removal boundaries are implemented. Mnemonic restore installs only a fully verified encrypted Drive channel backup into the local journal. Settings identifies a newer remote backup as a stale local writer and requires explicit confirmation before restoring it and starting a new generation. Home refreshes the exact connector balance and immutable activity together, showing the latest record and refresh timestamp, and repeats that refresh every 20 seconds only while activity is pending and the Home lifecycle is started. Financial mutations remain unreachable until every required Mainnet contract is verified on the controlled `crustypants.com` services. Concrete channel transaction adapters and lifecycle UI remain the next financial functionality.
 
 Status legend: **Complete** means connected behavior exists; **Partial** means reusable code exists but the end-to-end feature does not; **Missing** means no usable implementation exists; **Deferred** is an explicit sequencing decision.
 
@@ -184,9 +184,9 @@ Preprod and `ferret.channel` availability must not block or satisfy this gate.
 
 ### 5. Deployment validation, transport, refresh, and offline policy — Partial
 
-**Current status:** Immutable deployment tuples, connector/adaptor clients, HTTPS-only Android config, no redirects, strict JSON, timeouts, actual-body byte limits across connector/adaptor responses, strict transaction/operation/session/adaptor DTO validation, and current/backup SPKI pins exist. Only the controlled Mainnet `crustypants.com` tuple is a supported deployment/test target. Home uses the real connector balance. There is no pending-only 20-second refresh.
+**Current status:** Immutable deployment tuples, connector/adaptor clients, HTTPS-only Android config, no redirects, strict JSON, timeouts, actual-body byte limits across connector/adaptor responses, strict transaction/operation/session/adaptor DTO validation, and current/backup SPKI pins exist. Only the controlled Mainnet `crustypants.com` tuple is a supported deployment/test target. Home uses the real connector balance and repeats coordinated balance/history refresh every 20 seconds only while an L1 or journal-backed payment record is pending and the Home lifecycle is started.
 
-**Missing work:** Confirm the controlled connector/adaptor services support idempotent L1 submission, signed `/session/claim`, operation lookup/reconciliation, and shared lease enforcement before enabling mutations. Add the pending-only 20-second refresh with connected channel operations.
+**Missing work:** Confirm the controlled connector/adaptor services support idempotent L1 submission, signed `/session/claim`, operation lookup/reconciliation, and shared lease enforcement before enabling mutations. Extend the pending refresh inputs with verified channel operations when the channel repository is connected.
 
 **Priority:** P0; server contract is a blocker for P1/P2.
 
@@ -216,9 +216,9 @@ Preprod and `ferret.channel` availability must not block or satisfy this gate.
 
 ### 7. Home balance and pull-to-refresh — Complete for the connected L1 dashboard
 
-**Current status:** The selected profile’s connector balance, immutable unified history, latest activity, and refresh timestamp update together on initial load and pull-to-refresh. The primary action follows wallet state: zero L1 balance offers top-up, a funded wallet without an open channel keeps channel opening disabled, and an open channel keeps payment disabled until its deployment gate passes. No fiat value is shown.
+**Current status:** The selected profile’s connector balance, immutable unified history, latest activity, and refresh timestamp update together on initial load and pull-to-refresh. While an L1 or journal-backed payment record is pending, Home repeats the same coordinated refresh every 20 seconds and stops when the record becomes terminal or Home leaves the started lifecycle. The primary action follows wallet state: zero L1 balance offers top-up, a funded wallet without an open channel keeps channel opening disabled, and an open channel keeps payment disabled until its deployment gate passes. No fiat value is shown.
 
-**Missing work:** Add the L2 balance projection and pending-operation 20-second cadence with the connected channel repository in P1.
+**Missing work:** Add the L2 balance projection and verified channel-operation records to the existing pending cadence in P1.
 
 **Priority:** P1 extension.
 

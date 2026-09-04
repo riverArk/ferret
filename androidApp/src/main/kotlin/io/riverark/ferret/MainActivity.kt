@@ -193,6 +193,7 @@ class MainActivity : FragmentActivity() {
                     loadHistory = { profile ->
                         try {
                             coordinators.getValue(profile.network).refresh {
+                                l1WalletRepository.reconcilePending(profile.id)
                                 (l1WalletRepository.history(profile.id) + paymentStore.history(profile.id))
                                     .sortedWith(compareByDescending<io.riverark.ferret.core.model.TransactionRecord> { it.timestampEpochMillis }.thenByDescending { it.id })
                             }
