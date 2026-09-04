@@ -82,6 +82,10 @@ Android installation and manual onboarding verification require an API 36 emulat
 
 - Removed `ferret.channel` and Preprod from the deployment and device acceptance-test plan; controlled low-value Mainnet scenarios against `crustypants.com` are the only release evidence.
 
+### 2026-09-04 — Channel mutation lifecycle
+
+- Channel write-ahead now exposes `Opening` and `Closing` from the encrypted journal, so interrupted open/close operations remain reachable and visible while reconciliation is pending.
+
 ### 2026-09-04
 
 - Added stable redacted diagnostic identifiers (`FRT-001` through `FRT-006`) and expanded the release logging scan across Android and shared production Kotlin.

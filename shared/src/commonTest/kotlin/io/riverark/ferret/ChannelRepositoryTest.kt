@@ -109,7 +109,7 @@ class ChannelRepositoryTest {
         assertFailsWith<IllegalStateException> {
             repository.mutate(walletId, "operation", "intent", ChannelAction.Close)
         }
-        assertEquals(ChannelState.Open("channel"), stored.state)
+        assertEquals(ChannelState.Closing("operation"), stored.state)
         assertEquals(OperationState.PENDING_RECONCILIATION, assertNotNull(stored.pending).state)
 
         failCommit = false
@@ -167,7 +167,9 @@ class ChannelRepositoryTest {
             repository.mutate(walletId, "operation", "intent", action)
         }
         assertEquals(action, assertNotNull(writeAhead).action)
+        assertEquals(ChannelState.Opening("operation"), assertNotNull(writeAhead).state)
         assertEquals(OperationState.PENDING_RECONCILIATION, assertNotNull(stored.pending).state)
+        assertEquals(ChannelState.Opening("operation"), stored.state)
 
         repository.reconcile(walletId)
 

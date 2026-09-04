@@ -67,6 +67,11 @@ class ChannelRepository(
             val proposed = current.copy(
                 pending = PendingOperation(operationId, intentHash, OperationState.PROPOSED),
                 action = action,
+                state = when (action) {
+                    is ChannelAction.Open -> ChannelState.Opening(operationId)
+                    ChannelAction.Close -> ChannelState.Closing(operationId)
+                    else -> current.state
+                },
             )
             persist(walletId, proposed)
             backup.writeAhead(walletId, proposed)
