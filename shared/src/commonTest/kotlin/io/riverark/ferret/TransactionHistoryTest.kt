@@ -6,6 +6,7 @@ import io.riverark.ferret.core.model.TransactionRecord
 import io.riverark.ferret.core.model.TransactionState
 import io.riverark.ferret.core.network.ConnectorTransactionDto
 import io.riverark.ferret.core.network.transactionRecords
+import io.riverark.ferret.core.network.validatedFor
 import io.riverark.ferret.feature.wallet.mergeTransactionRecords
 import kotlinx.serialization.json.Json
 import kotlin.test.Test
@@ -87,6 +88,14 @@ class TransactionHistoryTest {
             .copy(id = "not-a-transaction-id")
 
         assertFails { listOf(malformed).transactionRecords(wallet) }
+    }
+
+    @Test fun transactionLookupRejectsMismatchedOrMalformedResponses() {
+        val transaction = Json.decodeFromString<List<ConnectorTransactionDto>>(response).single()
+
+        assertEquals(transaction, transaction.validatedFor(transaction.id))
+        assertFails { transaction.validatedFor("b".repeat(64)) }
+        assertFails { transaction.copy(inputs = transaction.inputs.map { it.copy(transactionId = "bad") }).validatedFor(transaction.id) }
     }
 
     private fun record(id: String, timestamp: Long) = TransactionRecord(

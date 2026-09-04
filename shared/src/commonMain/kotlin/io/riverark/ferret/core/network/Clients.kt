@@ -14,6 +14,7 @@ import io.riverark.ferret.core.channel.ProtocolTag
 import io.riverark.ferret.core.channel.requireValidSignatures
 import io.riverark.ferret.core.channel.SignedSquashWire
 import io.riverark.ferret.core.model.CardanoNetwork
+import io.riverark.ferret.core.channel.WriterLease
 import io.riverark.ferret.core.model.Realm
 import io.riverark.ferret.core.model.TransactionRecord
 import io.riverark.ferret.core.model.TransactionState
@@ -232,7 +233,12 @@ class ConnectorClient(private val http: HttpClient, private val deployment: Netw
     suspend fun utxos(address: String): List<ConnectorUtxoDto> = getOnce("/utxos_at/${path(address)}")
     suspend fun transactions(address: String): List<TransactionRecord> =
         getOnce<List<ConnectorTransactionDto>>("/transactions/${path(address)}").transactionRecords(address)
-    suspend fun submit(request: SubmitRequest): SubmitResponse = postOnce("/submit", request)
+    suspend fun submitChannel(request: SubmitRequest, writer: WriterLease): SubmitResponse =
+        postOnce("/submit", request, writer.token)
+    suspend fun transaction(transactionId: String): ConnectorTransactionDto? {
+        require(HEX_64.matches(transactionId))
+        return getOnce<ConnectorTransactionDto?>("/transaction/$transactionId").validatedFor(transactionId)
+    }
     suspend fun ledger(address: String, network: CardanoNetwork): LedgerSnapshot {
         val parameters = protocolParameters()
         return LedgerSnapshot(network, utxos(address).map(ConnectorUtxoDto::ledger), parameters.payload.toString(), parameters.slot)
@@ -270,21 +276,7 @@ internal fun JsonArray.lovelaceBalance(): Lovelace =
 internal fun List<ConnectorTransactionDto>.transactionRecords(address: String): List<TransactionRecord> =
     also { require(size <= 1_000) { "too many transactions" } }.
     map { transaction ->
-        require(Regex("[0-9a-f]{64}").matches(transaction.id)) { "invalid transaction id" }
-        require(transaction.index >= 0 && transaction.depth >= 0) { "invalid transaction position" }
-        require(transaction.timestamp in 0..Long.MAX_VALUE / 1_000) { "invalid transaction timestamp" }
-        require(transaction.inputs.size <= 1_000 && transaction.outputs.size <= 1_000) { "transaction is too large" }
-        require(listOfNotNull(transaction.invalidBefore, transaction.invalidAfter).all { it >= 0 }) { "invalid validity interval" }
-        transaction.inputs.forEach {
-            require(Regex("[0-9a-f]{64}").matches(it.transactionId) && it.outputIndex >= 0) { "invalid transaction input" }
-        }
-        (transaction.inputs.map { Triple(it.address, it.value, listOfNotNull(it.datumHash, it.datumInline, it.referenceScriptHash, it.consumedBy)) } +
-            transaction.outputs.map { Triple(it.address, it.value, listOfNotNull(it.datumHash, it.datumInline, it.referenceScriptHash, it.consumedBy)) })
-            .forEach { (outputAddress, value, hexFields) ->
-                require(outputAddress.length in 1..256)
-                require(value.size in 1..100 && value.map(ConnectorAssetDto::unit).distinct().size == value.size)
-                require(hexFields.all { it.length in 2..2_097_152 && it.length % 2 == 0 && it.all { char -> char in "0123456789abcdef" } })
-            }
+        transaction.requireValid()
         val inputs = transaction.inputs.map { it.address to it.value.lovelace() }
         val outputs = transaction.outputs.map { it.address to it.value.lovelace() }
         val totalInput = inputs.fold(Lovelace(0)) { total, (_, amount) -> total + amount }
@@ -313,6 +305,28 @@ internal fun List<ConnectorTransactionDto>.transactionRecords(address: String): 
         )
     }.sortedWith(compareByDescending<TransactionRecord> { it.timestampEpochMillis }.thenByDescending { it.id })
 
+internal fun ConnectorTransactionDto?.validatedFor(transactionId: String): ConnectorTransactionDto? = this?.also {
+    it.requireValid()
+    require(it.id == transactionId) { "transaction lookup returned a different transaction" }
+}
+
+internal fun ConnectorTransactionDto.requireValid() {
+    require(HEX_64.matches(id)) { "invalid transaction id" }
+    require(index >= 0 && depth >= 0) { "invalid transaction position" }
+    require(timestamp in 0..Long.MAX_VALUE / 1_000) { "invalid transaction timestamp" }
+    require(inputs.size <= 1_000 && outputs.size <= 1_000) { "transaction is too large" }
+    require(listOfNotNull(invalidBefore, invalidAfter).all { it >= 0 }) { "invalid validity interval" }
+    inputs.forEach {
+        require(HEX_64.matches(it.transactionId) && it.outputIndex >= 0) { "invalid transaction input" }
+    }
+    (inputs.map { Triple(it.address, it.value, listOfNotNull(it.datumHash, it.datumInline, it.referenceScriptHash, it.consumedBy)) } +
+        outputs.map { Triple(it.address, it.value, listOfNotNull(it.datumHash, it.datumInline, it.referenceScriptHash, it.consumedBy)) })
+        .forEach { (outputAddress, value, hexFields) ->
+            require(outputAddress.length in 1..256)
+            require(value.size in 1..100 && value.map(ConnectorAssetDto::unit).distinct().size == value.size)
+            require(hexFields.all { it.length in 2..2_097_152 && it.length % 2 == 0 && it.all { char -> char in "0123456789abcdef" } })
+        }
+}
 private fun List<ConnectorAssetDto>.lovelace(): Lovelace {
     val quantity = singleOrNull { it.unit == "lovelace" }?.quantity
         ?: throw IllegalArgumentException("output must contain one lovelace value")
