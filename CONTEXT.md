@@ -30,7 +30,7 @@ Seed entropy is cleared after derivation and vault callbacks. Mnemonic restore/d
 ## Wallet onboarding
 
 - Empty state offers Create wallet and Restore wallet.
-- Both flows require a name and support Preprod or Mainnet; Preprod is the default and Mainnet shows `Mainnet uses real ADA.`
+- Wallet creation and restore still expose the existing Preprod/Mainnet model, but deployment and device acceptance testing use Mainnet only. Preprod is unsupported because its `ferret.channel` services are not controlled by this project.
 - Create generates 32-byte entropy, derives a wallet without constructing a transaction engine, persists `recoveryPhraseConfirmed = false`, and publishes it as active.
 - Recovery displays the 24 words without clipboard support, then verifies words 4, 12, and 21.
 - Confirmation atomically updates only the encrypted wallet index and republishes the confirmed wallet.
@@ -49,7 +49,7 @@ Home shows the wallet name, network, confirmed on-chain ADA balance, latest immu
 ## Known platform gaps
 
 - iOS wallet setup and runtime integrations are unavailable; see `IOS_FOLLOW_UP.md`.
-- The Preprod connector deployment still returns 404 for `/protocol-parameters` and lacks the verified L1 operation lookup and writer-lease contracts required to enable transfer, channel, and payment mutations.
+- Only the Mainnet connector/adaptor services under `crustypants.com` are supported for deployment and device acceptance testing. Do not gate work on or test against `ferret.channel`.
 - Live Google Drive verification requires a Google account and OAuth authorization on the Android device; release checks remain credential-gated.
 - No dark theme is implemented.
 
@@ -59,7 +59,7 @@ Home shows the wallet name, network, confirmed on-chain ADA balance, latest immu
 - Shared Compose owns platform-independent UI and navigation.
 - `WalletManager`, `WalletRepository`, `SecureVault`, and `Route` remain the existing boundaries.
 - Newly created wallets must confirm backup before Home; restored wallets are already confirmed.
-- Preprod is the default, but Mainnet remains an explicit user choice with a warning.
+- Mainnet is the sole deployment and device acceptance-test target. Preprod remains in the current model but is unsupported and must not be used as release evidence.
 - Do not expose unfinished transaction or channel actions.
 
 ## Verification
@@ -72,9 +72,13 @@ Primary commands:
 ./gradlew :shared:compileKotlinIosSimulatorArm64
 ```
 
-Android installation and manual onboarding verification require an API 36 emulator or device. Release checks require `FERRET_GOOGLE_SERVER_CLIENT_ID`.
+Android installation and manual onboarding verification require an API 36 emulator or device. Networked scenarios use low-value Mainnet wallets against the controlled `crustypants.com` services only. Release checks require `FERRET_GOOGLE_SERVER_CLIENT_ID`.
 
 ## Session log
+
+### 2026-09-04 — Mainnet-only test decision
+
+- Removed `ferret.channel` and Preprod from the deployment and device acceptance-test plan; controlled low-value Mainnet scenarios against `crustypants.com` are the only release evidence.
 
 ### 2026-09-04
 

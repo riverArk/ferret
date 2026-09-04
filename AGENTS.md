@@ -9,6 +9,7 @@ Read `CONTEXT.md` first, then verify statements against the live repository.
 - Android: minSdk 28, compile/target SDK 36, Java 17.
 - Primary verification: `./gradlew androidCheck`.
 - Release verification: `FERRET_GOOGLE_SERVER_CLIENT_ID='<client-id>' ./gradlew androidReleaseCheck`.
+- Deployment and device acceptance testing use only the controlled Mainnet services under `crustypants.com`. Do not depend on or test against `ferret.channel`.
 - iOS remains compile-gated until `IOS_FOLLOW_UP.md` is complete.
 
 ## Architecture boundaries

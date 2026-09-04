@@ -5,7 +5,7 @@
 The original migration contract is the greenfield plan preserved in the prior agent artifact `kotlin-multiplatform-wallet-plan.md`, corroborated by the `SecurityBoundaryMap`, `UxBehaviorMap`, `DomainRuntimeMap`, and `BuildTestMap` session reports. The product is:
 
 - one shared Compose UI for Android and iOS, with Android completed and hardened first;
-- independent 24-word wallets on Preprod and Mainnet;
+- independent 24-word wallet profiles for the existing networks, with supported deployment and all device acceptance testing restricted to Mainnet;
 - Cardano L1 funding, same-network transfers, balances, and history;
 - one Konduit L2 channel per wallet, encrypted Google Drive channel recovery, and one active writer device;
 - QR-only BOLT11 payments with durable reconciliation;
@@ -14,9 +14,11 @@ The original migration contract is the greenfield plan preserved in the prior ag
 
 Later user sessions additionally required the full visual refresh, documentation refresh, a proper adaptive Android icon, random recovery-word verification positions, live ADA balance, and pull-to-refresh. Those requirements are included below.
 
+**Deployment decision (2026-09-04):** Preprod and all `ferret.channel` services are out of scope because they are not controlled by this project. Networked development, device acceptance, and release evidence use low-value Mainnet wallets against the controlled `crustypants.com` connector/adaptor services only. Existing Preprod model support is not release evidence.
+
 ## Current conclusion
 
-The KMP shell, Android secure onboarding, shared visual system, adaptive icon, validated foreground session, live L1 dashboard, top-up, history, durable transfer orchestration, encrypted channel recovery, native Google account selection, Drive appData backup initialization/verification, payment reconciliation, settings/diagnostics, and safe removal boundaries are implemented. Home refreshes the exact connector balance and immutable activity together, showing the latest record and refresh timestamp. Financial mutations remain unreachable because the Preprod connector still lacks `/protocol-parameters`, operation lookup, writer-lease, and reconciliation contracts. Concrete channel transaction adapters and lifecycle UI remain the next financial functionality.
+The KMP shell, Android secure onboarding, shared visual system, adaptive icon, validated foreground session, live L1 dashboard, top-up, history, durable transfer orchestration, encrypted channel recovery, native Google account selection, Drive appData backup initialization/verification, payment reconciliation, settings/diagnostics, and safe removal boundaries are implemented. Home refreshes the exact connector balance and immutable activity together, showing the latest record and refresh timestamp. Financial mutations remain unreachable until every required Mainnet contract is verified on the controlled `crustypants.com` services. Concrete channel transaction adapters and lifecycle UI remain the next financial functionality.
 
 Status legend: **Complete** means connected behavior exists; **Partial** means reusable code exists but the end-to-end feature does not; **Missing** means no usable implementation exists; **Deferred** is an explicit sequencing decision.
 
@@ -48,7 +50,7 @@ Status legend: **Complete** means connected behavior exists; **Partial** means r
 **Missing work:**
 
 1. Register `Transfer` in the existing `NavHost`; preserve the connected Home action precedence: zero L1 balance → top up, funded without an open channel → open-channel remains disabled until P1, open channel → pay remains disabled until P2.
-2. Validate L1 history against a funded Preprod wallet once the connector deployment is available; merge verified L2 records in P2.
+2. Validate L1 history against a funded low-value Mainnet wallet on the controlled connector; merge verified L2 records in P2.
 3. Transfer: preview amount, fee bound, change, recipient, and network; write the operation journal before signing/submission; use `CardanoTransactionEngine.requireMatches`; reconcile submission by operation ID rather than retrying a mutation.
 4. Keep external-address entry out of normal transfer. It belongs only to wallet removal.
 
@@ -56,13 +58,11 @@ Status legend: **Complete** means connected behavior exists; **Partial** means r
 
 **Dependencies:** P0.1 validated online session; existing vault, wallet mutex, connector, deployment, and Android Cardano engine. Use an already installed local QR library only if present; otherwise prefer the smallest platform implementation and add no general image framework.
 
-**Connector prerequisite discovered 2026-08-25:** Konduit commit `7675e86` adds
-`/protocol-parameters`, lease-gated idempotent `/submit`, and `/session/claim`,
-but that revision is not deployed at `preprod-cardano.ferret.channel`.
-The deployed OpenAPI contract still accepts only `{transaction}` at `/submit`
-and returns 404 for `/protocol-parameters`. Konduit also has no public operation
-lookup endpoint, and its backup-generation lease cannot be created by the P0 L1
-slice before Drive/device-writer identity exists.
+**Controlled deployment prerequisite:** Only the Mainnet connector/adaptor services
+under `crustypants.com` are in scope. `/protocol-parameters` is deployed there.
+Before enabling a financial mutation, verify its operation lookup, idempotent
+submission, writer-lease, and reconciliation contracts on those owned services.
+Preprod and `ferret.channel` availability must not block or satisfy this gate.
 
 **Minimal cross-repository unblock plan:**
 
@@ -79,29 +79,29 @@ slice before Drive/device-writer identity exists.
    or substitutes a different transaction.
 3. Add Konduit contract tests for exact UUID/hex validation, conflicting reuse,
    concurrent duplicate submission, lookup before/after upstream acceptance,
-   and lookup after client disconnect. Update OpenAPI, deploy Preprod, and
-   verify `/protocol-parameters`, L1 submission, and operation lookup against
-   the deployed URL before changing Ferret reachability.
+   and lookup after client disconnect. Update OpenAPI, deploy to the controlled
+   Mainnet services, and verify `/protocol-parameters`, L1 submission, and
+   operation lookup there before changing Ferret reachability.
 4. In Ferret, add strict typed UTxO/protocol/operation DTOs and response bounds;
    an encrypted atomic L1 journal in the existing wallet secret; one
    `L1WalletRepository` using the existing per-wallet mutex and Android
    transaction engine; and Transfer screen/ViewModel/navigation wiring.
    Journal before signing/submission, inspect with `requireMatches`, and on
    restart reconcile the stored operation ID instead of posting again.
-5. Verify with shared boundary tests, Android semantic tests,
-   `./gradlew androidCheck`, then a funded two-wallet Preprod device run with a
-   process kill after submit. Only after one operation ID resolves to one
-   transaction through confirmed/settled may Transfer become reachable.
+5. Verify with shared boundary tests, Android semantic tests, and
+   `./gradlew androidCheck`, then run two funded low-value Mainnet wallets on a
+   device with a process kill after submit. Only after one operation ID resolves
+   to one transaction through confirmed/settled may Transfer become reachable.
 
 **Acceptance criteria:**
 
-- A funded Preprod wallet shows the exact connector balance and refreshed immutable history after pull-to-refresh.
+- A funded low-value Mainnet wallet shows the exact connector balance and refreshed immutable history after pull-to-refresh.
 - Top-up QR payload equals the full selected wallet address; copy occurs only on explicit action and is cleared after 60 seconds when still owned.
 - Transfer destinations contain same-network profiles only. Cross-network transfer fails before transaction building.
 - One submitted transfer has one stable operation ID, passes signed-intent inspection, appears pending, and reconciles to confirmed/settled without duplicate submission after process death.
 - Top-up, Transfer, and History are reachable through the single `Route`/`NavHost` model.
 
-**Verification:** `./gradlew androidCheck`; run the existing Android transaction semantic tests plus new shared transfer/history contract tests; on a funded Preprod device, top up, copy/scan the QR, transfer between two Preprod profiles, kill after submit, relaunch, and observe one transaction ID and updated balances/history.
+**Verification:** `./gradlew androidCheck`; run the existing Android transaction semantic tests plus new shared transfer/history contract tests; on funded low-value Mainnet wallets, top up, copy/scan the QR, transfer between profiles, kill after submit, relaunch, and observe one transaction ID and updated balances/history.
 
 ### P0.3 — Finish Android release security for the L1 slice
 
@@ -115,7 +115,7 @@ slice before Drive/device-writer identity exists.
 
 **Acceptance criteria:** Release build is non-debuggable, cleartext-disabled, backup-disabled, minified, dependency-verified, and contains required notices. Sensitive routes never appear in screenshots/app switcher. App-private files, clipboard, and captured logs contain no mnemonic, entropy, private key, invoice, signed CBOR, or decrypted channel state.
 
-**Verification:** `FERRET_GOOGLE_SERVER_CLIENT_ID='<client-id>' ./gradlew androidReleaseCheck`; inspect the release APK manifest with Android Studio APK Analyzer; execute the sensitive-route screenshot/log/file/clipboard checks on a release build; record the MASVS checklist result before enabling Mainnet financial actions.
+**Verification:** `FERRET_GOOGLE_SERVER_CLIENT_ID='<client-id>' ./gradlew androidReleaseCheck`; inspect the release APK manifest with Android Studio APK Analyzer; execute the sensitive-route screenshot/log/file/clipboard checks on a release build; record the MASVS checklist result before enabling financial actions.
 
 ## Full original-scope coverage map
 
@@ -153,7 +153,7 @@ slice before Drive/device-writer identity exists.
 
 ### 3. Android custody, multi-wallet onboarding, and recovery — Partial
 
-**Current status:** Android biometric/device-credential unlock, StrongBox-with-fallback Keystore wrapping, encrypted atomic profile/seed files, 32-byte entropy, BIP-39 create/restore, Preprod/Mainnet profiles, duplicate credential rejection, secure mnemonic routes, resumable confirmation, and random three-position verification are implemented. Old raw-key/Svelte backups are unsupported as required.
+**Current status:** Android biometric/device-credential unlock, StrongBox-with-fallback Keystore wrapping, encrypted atomic profile/seed files, 32-byte entropy, BIP-39 create/restore, existing Preprod/Mainnet profiles, duplicate credential rejection, secure mnemonic routes, resumable confirmation, and random three-position verification are implemented. Deployment and device acceptance testing are Mainnet-only. Old raw-key/Svelte backups are unsupported as required.
 
 **Missing work:** Five-minute background lock and key-invalidation-to-restore handling from P0.1; Drive backup discovery offer during restore after item 10. Rename exists in the ViewModel but is not exposed. Confirm the encrypted index retains network-independent duplicate detection across networks.
 
@@ -185,7 +185,7 @@ slice before Drive/device-writer identity exists.
 
 ### 5. Deployment validation, transport, refresh, and offline policy — Partial
 
-**Current status:** Immutable Preprod/Mainnet deployment tuples, connector/adaptor clients, HTTPS-only Android config, no redirects, strict JSON, timeouts, response-size checks on adaptor mutations, and current/backup SPKI pins exist. Home uses the real connector balance. There is no end-to-end deployment tuple validation, response bounds on all endpoints, `RefreshCoordinator`, pending-only 20-second refresh, or lifecycle/offline integration.
+**Current status:** Immutable deployment tuples, connector/adaptor clients, HTTPS-only Android config, no redirects, strict JSON, timeouts, response-size checks on adaptor mutations, and current/backup SPKI pins exist. Only the controlled Mainnet `crustypants.com` tuple is a supported deployment/test target. Home uses the real connector balance. There is no pending-only 20-second refresh.
 
 **Missing work:** P0.1 plus strict DTO length/hex/decimal validation and bounded bodies for every endpoint. Confirm external connector/adaptor servers support `/protocol-parameters`, idempotent `/submit`, signed `/session/claim`, operation lookup/reconciliation, and shared lease enforcement before enabling mutations.
 
@@ -211,9 +211,9 @@ slice before Drive/device-writer identity exists.
 
 **Dependencies:** Current protocol parameters/UTxOs from validated connector; pinned Konduit fixtures.
 
-**Acceptance criteria:** All five intents conserve value and match expected outputs, scripts/datums/redeemers, signer set, validity, and fee bounds; mutated intent semantics are rejected; controlled Preprod node evaluates each transaction successfully.
+**Acceptance criteria:** All five intents conserve value and match expected outputs, scripts/datums/redeemers, signer set, validity, and fee bounds; mutated intent semantics are rejected; a controlled Mainnet node evaluates each transaction successfully.
 
-**Verification:** `./gradlew :shared:testAndroidHostTest`; run the five fixture evaluations against a controlled Preprod node; include exact decoded summaries in test artifacts.
+**Verification:** `./gradlew :shared:testAndroidHostTest`; run the five fixture evaluations against a controlled Mainnet node; include exact decoded summaries in test artifacts.
 
 ### 7. Home balance and pull-to-refresh — Complete for the connected L1 dashboard
 
@@ -245,7 +245,7 @@ slice before Drive/device-writer identity exists.
 
 **Acceptance criteria:** QR and clipboard contain exactly the full selected network address; ordinary address screen remains shareable; mnemonic/invoice/signed payload copy actions do not exist.
 
-**Verification:** Android host decoding verifies the exact Preprod address payload. On a Pixel 8a, the rendered Mainnet QR decoded to the full displayed address, explicit copy produced the same address, and the owned clip cleared after the 60-second timeout when Ferret resumed; replacement clips are protected by the unique-label/address ownership check.
+**Verification:** Android host decoding verifies exact address payloads. On a Pixel 8a, the rendered Mainnet QR decoded to the full displayed address, explicit copy produced the same address, and the owned clip cleared after the 60-second timeout when Ferret resumed; replacement clips are protected by the unique-label/address ownership check.
 
 ### 9. Same-network L1 transfer — Partial
 
@@ -261,7 +261,7 @@ slice before Drive/device-writer identity exists.
 
 **Acceptance criteria:** Only available L1 funds and same-network profiles are selectable; preview shows amount/fee/change/network; one process-death-safe operation is submitted; active channel UTxOs are never selected.
 
-**Verification:** Shared boundary tests plus funded Preprod two-wallet device scenario and process-kill reconciliation.
+**Verification:** Shared boundary tests plus a funded low-value Mainnet two-wallet device scenario and process-kill reconciliation.
 
 ### 10. Encrypted Drive recovery and single-writer ownership — Partial
 
@@ -289,11 +289,11 @@ slice before Drive/device-writer identity exists.
 
 **Affected files:** `ProtocolWire.kt`, `AndroidProtocolSigner.kt`, `SessionLeaseRepository.kt`, `ChannelRepository.kt`, secure vault schema, network clients, new channel screens/ViewModels, `FerretApp.kt`, Android composition root.
 
-**Dependencies:** Items 5, 6, and 10; controlled Preprod services; server operation IDs and writer lease.
+**Dependencies:** Items 5, 6, and 10; controlled Mainnet `crustypants.com` services; server operation IDs and writer lease.
 
 **Acceptance criteria:** Repository rejects illegal/concurrent actions independent of UI; open/add/close survive process death at every external-side-effect boundary with one reconciled result; missing/conflicting backup blocks mutation; channel balance excludes exact protocol-required min-ADA from transaction preview, not a fixed UI constant.
 
-**Verification:** `./gradlew androidCheck`; pinned wire/conformance vectors; kill-before-submit, kill-after-submit, and kill-after-adaptor-acceptance scenarios for open/add/close; controlled Preprod chain/adaptor reconciliation.
+**Verification:** `./gradlew androidCheck`; pinned wire/conformance vectors; kill-before-submit, kill-after-submit, and kill-after-adaptor-acceptance scenarios for open/add/close; controlled Mainnet chain/adaptor reconciliation.
 
 ### 12. BOLT11 QR payment — Partial
 
@@ -315,7 +315,7 @@ slice before Drive/device-writer identity exists.
 
 **Current status:** L1 connector parsing, immutable ordering/merge policy, deterministic finality states, pull-to-refresh, typed History navigation, expandable detail, refresh timestamp, and Home’s latest-activity projection are connected. Journal-backed payment records are merged into history. Verified channel activity is not connected.
 
-**Missing work:** Validate the L1 response against a funded Preprod wallet, then merge verified journal/adaptor activity in P2. Preserve immutable ordering, status semantics, amount, fee, realm, ID, and last refresh.
+**Missing work:** Validate the L1 response against a funded low-value Mainnet wallet, then merge verified journal/adaptor activity in P2. Preserve immutable ordering, status semantics, amount, fee, realm, ID, and last refresh.
 
 **Priority:** P0 for L1; P2 for L2.
 
@@ -325,7 +325,7 @@ slice before Drive/device-writer identity exists.
 
 **Acceptance criteria:** L1 and L2 records are merged by immutable timestamp without source mutation; 5-block confirmed and 2160-block settled labels are deterministic; pending/failed survive refresh and process interruption through their journals.
 
-**Verification:** Shared ordering/status tests; funded Preprod transfer/channel/payment scenario; compare displayed IDs/statuses to connector/adaptor responses.
+**Verification:** Shared ordering/status tests; funded low-value Mainnet transfer/channel/payment scenario; compare displayed IDs/statuses to connector/adaptor responses.
 
 ### 14. Settings and diagnostics — Partial
 
@@ -387,7 +387,7 @@ slice before Drive/device-writer identity exists.
 
 **Dependencies:** All Android features and external production services.
 
-**Acceptance criteria:** Every financial action uses the selected immutable Mainnet deployment and passes the same semantic/recovery checks as Preprod; no Preprod success substitutes for Mainnet evidence.
+**Acceptance criteria:** Every financial action uses the selected immutable Mainnet deployment and passes the semantic, recovery, interruption, and security checks against the controlled `crustypants.com` services.
 
 **Verification:** `FERRET_GOOGLE_SERVER_CLIENT_ID='<client-id>' ./gradlew androidReleaseCheck`; documented controlled low-value Mainnet scenario covering all actions and interruption boundaries.
 
@@ -422,7 +422,7 @@ A phase does not open the next financial action merely because UI exists. Its ac
 The coverage map accounts for every product capability and constraint in the original migration plan and prior agent reports:
 
 - build/cutover, shared Compose, manual dependencies, state/navigation/coroutines;
-- Android custody, biometric/device credential, multi-wallet 24-word create/restore, random verification, process-death recovery, fixed Preprod/Mainnet profiles;
+- Android custody, biometric/device credential, multi-wallet 24-word create/restore, random verification, process-death recovery, and Mainnet-only deployment acceptance;
 - visual system, resources, accessibility, adaptive icon, and documentation;
 - immutable deployments, connector/adaptor transport, TLS pins, offline policy, refresh behavior;
 - Bloxbean Cardano intents and conformance;

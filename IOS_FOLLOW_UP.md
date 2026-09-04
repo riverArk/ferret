@@ -17,7 +17,7 @@ The shared Kotlin Multiplatform theme, typed onboarding navigation, and explicit
 3. Install Rust and the pinned toolchain declared by `native/cardano-ios-bridge/rust-toolchain.toml` once that file is added.
 4. Configure an Apple development team and signing identity.
 5. Create the iOS Google OAuth client and URL scheme. Keep client IDs and signing data outside source control.
-6. Provision a dedicated Google Drive test account and funded preprod wallets for recovery and payment tests.
+6. Provision a dedicated Google Drive test account and funded low-value Mainnet wallets for recovery and payment tests.
 
 ## 1. Create the Xcode Host
 
@@ -52,7 +52,7 @@ Requirements:
 - Never pass mnemonic strings, arbitrary callbacks, or untyped transaction-builder input through the ABI.
 - Implement `IosCardanoTransactionEngine` against the existing common `CardanoTransactionEngine` interface.
 - Run the same semantic fixtures used by `AndroidCardanoTransactionEngine`: inputs, outputs, value conservation, datum/redeemer/script hashes, signer set, validity bounds, and fee bounds must match. CBOR byte ordering and transaction IDs may differ.
-- Require controlled-node ledger evaluation for all five intents before enabling mainnet.
+- Require controlled Mainnet-node ledger evaluation for all five intents before enabling financial actions.
 
 ## 3. Implement iOS Secret Custody and App Lock
 
@@ -150,7 +150,7 @@ xcodebuild \
 
 Then verify on an iOS 17 physical device:
 
-1. Create and restore independent preprod and mainnet wallets.
+1. Create and restore independent Mainnet wallets against the controlled `crustypants.com` services; do not use Preprod or `ferret.channel` as test evidence.
 2. Confirm unlock remains active at 4:59 background time and locks at 5:00.
 3. Inspect app files, pasteboard, unified logs, and app-switcher snapshots for secret leakage.
 4. Compare CSL and Bloxbean semantics for all five Cardano intents.
@@ -159,7 +159,7 @@ Then verify on an iOS 17 physical device:
 7. Verify camera permission denial, lifecycle stop, valid BOLT11 payment, malformed/expired/wrong-network rejection, and durable receipt behavior.
 8. Verify offline lockout and cancellation of refresh/camera work.
 9. Verify sweep, 2160-block finality gate, local deletion, Drive deletion, and mnemonic restoration after wallet removal.
-10. Repeat the controlled release scenario with low-value mainnet fixtures before App Store submission.
+10. Repeat the complete controlled scenario with low-value Mainnet fixtures before App Store submission.
 
 ## Completion Gate
 
