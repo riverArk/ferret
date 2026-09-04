@@ -1,5 +1,6 @@
 package io.riverark.ferret.core.channel
 
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlin.jvm.JvmInline
 
@@ -15,6 +16,43 @@ value class ProtocolTag(val value: String) {
     init { require(value.length >= 2 && value.length % 2 == 0 && value.all { it in "0123456789abcdef" }) }
 }
 
+@JvmInline
+@Serializable
+value class ProtocolKeytag(val value: String) {
+    init {
+        require(value.length in 66..320 && value.length % 2 == 0)
+        require(value.all { it in "0123456789abcdef" })
+    }
+
+    companion object {
+        fun from(walletVerificationKeyHex: String, tag: ProtocolTag, expectedTagBytes: Int): ProtocolKeytag {
+            require(Regex("[0-9a-f]{64}").matches(walletVerificationKeyHex))
+            require(tag.value.length == expectedTagBytes * 2)
+            return ProtocolKeytag(walletVerificationKeyHex + tag.value)
+        }
+    }
+}
+
+@Serializable
+data class ProtocolDurationWire(val secs: Long, val nanos: Int) {
+    init { require(secs >= 0 && nanos in 0..999_999_999) }
+
+    fun millis(): Long {
+        require(secs <= Long.MAX_VALUE / 1_000)
+        val whole = secs * 1_000
+        val fractional = nanos / 1_000_000
+        require(whole <= Long.MAX_VALUE - fractional)
+        return whole + fractional
+    }
+
+    companion object {
+        fun fromMillis(millis: Long): ProtocolDurationWire {
+            require(millis >= 0)
+            return ProtocolDurationWire(millis / 1_000, ((millis % 1_000) * 1_000_000).toInt())
+        }
+    }
+}
+
 @Serializable
 data class ProtocolQuote(
     val index: Long,
@@ -26,15 +64,25 @@ data class ProtocolQuote(
 }
 
 @Serializable
-data class ChequeBodyWire(val index: Long, val amount: Long, val timeoutMillis: Long, val lock: Hex32) {
-    init { require(index >= 0 && amount >= 0 && timeoutMillis > 0) }
+data class Bolt11QuoteRequest(@SerialName("Bolt11") val invoice: String) {
+    init { require(invoice.length in 1..10_000 && invoice.startsWith("ln", ignoreCase = true)) }
+}
+
+@Serializable
+data class ChequeBodyWire(
+    val index: Long,
+    val amount: Long,
+    val timeout: ProtocolDurationWire,
+    val latch: Hex32,
+) {
+    init { require(index >= 0 && amount >= 0) }
 
     fun canonicalCbor(): ByteArray = CborWriter().apply {
         indefiniteArray()
         unsigned(index)
         unsigned(amount)
-        unsigned(timeoutMillis)
-        bytes(lock.value.hexBytes())
+        unsigned(timeout.millis())
+        bytes(latch.value.hexBytes())
         end()
     }.toByteArray()
 
@@ -46,14 +94,21 @@ data class ChequeBodyWire(val index: Long, val amount: Long, val timeoutMillis: 
     }.toByteArray()
 }
 
+@Serializable
+data class AdaptorPayRequest(
+    @SerialName("cheque_body") val chequeBody: ChequeBodyWire,
+    val signature: String,
+    val invoice: String,
+) {
+    init {
+        require(Regex("[0-9a-f]{128}").matches(signature))
+        require(invoice.length in 1..10_000 && invoice.startsWith("ln", ignoreCase = true))
+    }
+}
+
 interface ProtocolSigner {
     suspend fun verificationKeyHex(): String
     suspend fun sign(message: ByteArray): ByteArray
-}
-
-@Serializable
-data class SignedChequeWire(val body: ChequeBodyWire, val signature: String) {
-    init { require(Regex("[0-9a-f]{128}").matches(signature)) }
 }
 
 private class CborWriter {

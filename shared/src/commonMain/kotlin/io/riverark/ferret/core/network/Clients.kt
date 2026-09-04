@@ -3,6 +3,10 @@ package io.riverark.ferret.core.network
 import io.riverark.ferret.core.model.Lovelace
 import io.riverark.ferret.core.cardano.LedgerSnapshot
 import io.riverark.ferret.core.cardano.LedgerUtxo
+import io.riverark.ferret.core.channel.AdaptorPayRequest
+import io.riverark.ferret.core.channel.Bolt11QuoteRequest
+import io.riverark.ferret.core.channel.ProtocolKeytag
+import io.riverark.ferret.core.channel.ProtocolQuote
 import io.riverark.ferret.core.model.CardanoNetwork
 import io.riverark.ferret.core.model.Realm
 import io.riverark.ferret.core.model.TransactionRecord
@@ -317,18 +321,45 @@ class AdaptorClient(private val http: HttpClient, private val deployment: Networ
             contentType(ContentType.Application.Json)
             setBody(request)
         }.boundedJsonBody()
-    suspend fun receipt(keytag: String): String = http.get(deployment.adaptor.value + "/ch/receipt") { header("KONDUIT", keytag) }.boundedTextBody()
-    suspend fun quote(keytag: String, lease: String, request: String): String = mutate("/ch/quote", keytag, lease, request)
-    suspend fun pay(keytag: String, lease: String, request: String): String = mutate("/ch/pay", keytag, lease, request)
-    suspend fun squash(keytag: String, lease: String, request: String): String = mutate("/ch/squash", keytag, lease, request)
+    suspend fun receipt(keytag: ProtocolKeytag): String =
+        http.get(deployment.adaptor.value + "/ch/receipt") {
+            header("KONDUIT", keytag.value)
+        }.boundedTextBody()
+    suspend fun quote(keytag: ProtocolKeytag, lease: String, invoice: String): ProtocolQuote =
+        mutateJson("/ch/quote", keytag, lease, Bolt11QuoteRequest(invoice))
+    suspend fun pay(keytag: ProtocolKeytag, lease: String, request: AdaptorPayRequest): String =
+        mutateText("/ch/pay", keytag, lease, request)
+    suspend fun squash(keytag: ProtocolKeytag, lease: String, request: String): String =
+        mutateText("/ch/squash", keytag, lease, request)
 
-    private suspend fun mutate(path: String, keytag: String, lease: String, request: String): String =
-        http.post(deployment.adaptor.value + path) {
+    private suspend inline fun <reified Request, reified Response> mutateJson(
+        path: String,
+        keytag: ProtocolKeytag,
+        lease: String,
+        request: Request,
+    ): Response = post(path, keytag, lease, request).boundedJsonBody()
+
+    private suspend inline fun <reified Request> mutateText(
+        path: String,
+        keytag: ProtocolKeytag,
+        lease: String,
+        request: Request,
+    ): String = post(path, keytag, lease, request).boundedTextBody()
+
+    private suspend inline fun <reified Request> post(
+        path: String,
+        keytag: ProtocolKeytag,
+        lease: String,
+        request: Request,
+    ): HttpResponse {
+        require(HEX_64.matches(lease))
+        return http.post(deployment.adaptor.value + path) {
             contentType(ContentType.Application.Json)
-            header("KONDUIT", keytag)
+            header("KONDUIT", keytag.value)
             header("FERRET-SESSION", lease)
             setBody(request)
-        }.boundedTextBody()
+        }
+    }
 }
 
 internal fun requireBoundedResponse(bytes: ByteArray) {
