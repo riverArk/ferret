@@ -1,5 +1,8 @@
 package io.riverark.ferret.core.backup
 
+import io.riverark.ferret.core.channel.ChannelSnapshot
+import io.riverark.ferret.core.channel.VaultChannelJournal
+import io.riverark.ferret.core.model.ChannelState
 import io.riverark.ferret.core.model.WalletId
 import io.riverark.ferret.core.model.WalletProfile
 import io.riverark.ferret.core.security.AndroidBackupCrypto
@@ -7,6 +10,8 @@ import io.riverark.ferret.core.security.SecureVault
 import io.riverark.ferret.core.security.WalletEncryptedStateV1
 import io.riverark.ferret.core.security.WalletSecretV1
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -47,6 +52,32 @@ class DriveBackupRepositoryTest {
         assertEquals(1L, coordinator.initializeOrVerify(walletId, "absent".encodeToByteArray()).sequence)
         assertEquals(1L, coordinator.initializeOrVerify(walletId, "ignored".encodeToByteArray()).sequence)
         assertEquals(1, drive.list("ferret-").size)
+    }
+
+    @Test fun restoresEncryptedChannelSnapshotIntoTheLocalJournal() = runBlocking {
+        val walletId = WalletId("preprod-" + "00".repeat(28))
+        val drive = FakeDrive()
+        val crypto = AndroidBackupCrypto()
+        val snapshot = ChannelSnapshot(ChannelState.Open("channel-1"))
+        WalletBackupCoordinator(
+            FakeVault(walletId, ByteArray(32) { it.toByte() }),
+            DriveBackupRepository(drive, crypto),
+            crypto,
+            { 1L },
+        ).initialize(walletId, Json.encodeToString(snapshot).encodeToByteArray())
+        val restoredVault = FakeVault(walletId, ByteArray(32) { it.toByte() })
+        val checkpoint = WalletBackupCoordinator(
+            restoredVault,
+            DriveBackupRepository(drive, crypto),
+            crypto,
+            { 2L },
+        ).restore(walletId)
+
+        val journal = VaultChannelJournal(restoredVault)
+        assertEquals(snapshot, journal.restoreFromBackup(walletId, checkpoint.channelSnapshot))
+        assertEquals(snapshot, journal.load(walletId))
+        checkpoint.ciphertextHash.fill(0)
+        checkpoint.channelSnapshot.fill(0)
     }
 
 

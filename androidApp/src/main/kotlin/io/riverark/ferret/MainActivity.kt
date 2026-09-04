@@ -243,6 +243,24 @@ class MainActivity : FragmentActivity() {
                             snapshot.fill(0)
                         }
                     },
+                    restoreBackup = { walletId ->
+                        val checkpoint = backupCoordinator.restore(walletId)
+                        try {
+                            val snapshot = channelJournal.restoreFromBackup(walletId, checkpoint.channelSnapshot)
+                            val profile = vault.profiles().single { it.id == walletId }
+                            vault.updateProfile(profile.copy(channelState = snapshot.state))
+                            walletManager.load(walletId)
+                            checkpoint.sequence
+                        } catch (error: CancellationException) {
+                            throw error
+                        } catch (error: Exception) {
+                            diagnostics.record(DiagnosticCode.BACKUP)
+                            throw error
+                        } finally {
+                            checkpoint.ciphertextHash.fill(0)
+                            checkpoint.channelSnapshot.fill(0)
+                        }
+                    },
                     walletRemovalManager = walletRemovalManager,
                     paymentActionsAvailable = false,
                 ),

@@ -55,6 +55,7 @@ import io.riverark.ferret.feature.wallet.RecoveryPhraseScreen
 import io.riverark.ferret.feature.wallet.SettingsScreen
 import io.riverark.ferret.feature.wallet.WalletSettings
 import io.riverark.ferret.feature.wallet.RestoreWalletScreen
+import io.riverark.ferret.feature.wallet.RestoreBackupScreen
 import io.riverark.ferret.feature.wallet.VerifyRecoveryScreen
 import io.riverark.ferret.feature.wallet.TopUpScreen
 import io.riverark.ferret.feature.wallet.TransferScreen
@@ -94,6 +95,7 @@ data class FerretDependencies(
     val loadSettings: (suspend (WalletProfile) -> WalletSettings)? = null,
     val connectDrive: (suspend () -> String)? = null,
     val verifyBackup: (suspend (WalletId) -> Long)? = null,
+    val restoreBackup: (suspend (WalletId) -> Long)? = null,
     val walletRemovalManager: WalletRemovalManager? = null,
 )
 
@@ -140,6 +142,7 @@ fun FerretApp(
             dependencies.loadSettings,
             dependencies.connectDrive,
             dependencies.verifyBackup,
+            dependencies.restoreBackup,
             dependencies.walletRemovalManager,
             onUnlock,
             onSensitiveContentChanged,
@@ -166,6 +169,7 @@ private fun WalletNavigation(
     loadSettings: (suspend (WalletProfile) -> WalletSettings)?,
     connectDrive: (suspend () -> String)?,
     verifyBackup: (suspend (WalletId) -> Long)?,
+    restoreBackup: (suspend (WalletId) -> Long)?,
     walletRemovalManager: WalletRemovalManager?,
     onUnlock: (() -> Unit)?,
     onSensitiveContentChanged: (Boolean) -> Unit,
@@ -255,12 +259,67 @@ private fun WalletNavigation(
                     { navController.popBackStack() },
                     { name, network, words ->
                         walletViewModel.restore(name, network, words) { profile ->
-                            navController.navigate(Route.Home(profile.id.value)) {
+                            navController.navigate(Route.RestoreBackup(profile.id.value)) {
                                 launchSingleTop = true
                                 popUpTo(navController.graph.startDestinationId) { inclusive = true }
                             }
                         }
                     },
+                )
+            }
+        }
+        composable<Route.RestoreBackup> { backStackEntry ->
+            val route = backStackEntry.toRoute<Route.RestoreBackup>()
+            val profile = (state as? AppState.Ready)?.wallets?.firstOrNull { it.id.value == route.walletId }
+            if (profile != null && connectDrive != null && restoreBackup != null) {
+                val recoveryScope = rememberCoroutineScope()
+                var accountConnected by remember(profile.id) { mutableStateOf(false) }
+                var busy by remember(profile.id) { mutableStateOf(false) }
+                var message by remember(profile.id) { mutableStateOf<String?>(null) }
+                val continueToWallet = {
+                    navController.navigate(Route.Home(profile.id.value)) {
+                        launchSingleTop = true
+                        popUpTo(navController.graph.startDestinationId) { inclusive = true }
+                    }
+                }
+                RestoreBackupScreen(
+                    profile,
+                    accountConnected,
+                    busy,
+                    message,
+                    {
+                        recoveryScope.launch {
+                            busy = true
+                            message = null
+                            try {
+                                connectDrive()
+                                accountConnected = true
+                            } catch (error: CancellationException) {
+                                throw error
+                            } catch (_: Exception) {
+                                message = "Google Drive connection failed."
+                            } finally {
+                                busy = false
+                            }
+                        }
+                    },
+                    {
+                        recoveryScope.launch {
+                            busy = true
+                            message = null
+                            try {
+                                restoreBackup(profile.id)
+                                continueToWallet()
+                            } catch (error: CancellationException) {
+                                throw error
+                            } catch (_: Exception) {
+                                message = "No usable backup was found. A missing, conflicting, or modified backup is never restored."
+                            } finally {
+                                busy = false
+                            }
+                        }
+                    },
+                    continueToWallet,
                 )
             }
         }

@@ -9,6 +9,7 @@ import kotlinx.serialization.Serializable
     @Serializable data object WalletPicker : Route
     @Serializable data object CreateWallet : Route
     @Serializable data object RestoreWallet : Route
+    @Serializable data class RestoreBackup(val walletId: String) : Route
     @Serializable data class RecoveryPhrase(val walletId: String) : Route
     @Serializable data class VerifyRecovery(val walletId: String) : Route
     @Serializable data class Home(val walletId: String) : Route

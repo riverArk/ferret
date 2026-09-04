@@ -40,7 +40,7 @@ Seed entropy is cleared after derivation and vault callbacks. Mnemonic restore/d
 
 ## Navigation and UI
 
-`Route` is the single typed navigation model. Repository states map to Unlock, connectivity progress, Offline, WalletPicker, RecoveryPhrase, or Home. Root navigation uses single-top replacement so repository emissions do not stack destinations. Unconfirmed wallets cannot navigate around recovery confirmation.
+`Route` is the single typed navigation model. Repository states map to Unlock, connectivity progress, Offline, WalletPicker, RecoveryPhrase, RestoreBackup, or Home. Root navigation uses single-top replacement so repository emissions do not stack destinations. Unconfirmed wallets cannot navigate around recovery confirmation. A mnemonic-restored wallet offers Google Drive channel recovery before Home; skipping remains explicit.
 
 The Refined Ferret theme is light-only: cream canvas, near-white surfaces, charcoal ink, yellow primary, accessible coral secondary, blue tertiary, and dark red errors. Exo 2 headings, Ubuntu Mono body text, rounded outlined surfaces, 48 dp touch targets, edge-to-edge safe drawing insets, bundled ferret art, and bundled Material Symbols are shared across implemented screens.
 
@@ -84,6 +84,7 @@ Android installation and manual onboarding verification require an API 36 emulat
 
 - Connected native Android Google account selection to the settings backup controls.
 - Wired first encrypted Drive appData backup creation and later read-back/decrypt verification, with the verified sequence projected in Settings.
+- Added post-mnemonic encrypted Drive backup recovery. Verified channel snapshots are installed into the local encrypted journal; missing, conflicting, or modified backups fail closed.
 
 ### 2026-09-02
 

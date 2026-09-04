@@ -152,6 +152,35 @@ fun RestoreWalletScreen(
     }
 }
 
+@Composable
+fun RestoreBackupScreen(
+    profile: WalletProfile,
+    accountConnected: Boolean,
+    busy: Boolean,
+    message: String?,
+    onConnect: () -> Unit,
+    onRestore: () -> Unit,
+    onSkip: () -> Unit,
+) {
+    FerretScreen {
+        FerretTopBar("Recover channel")
+        FerretStatusChip(profile.network.name)
+        Text(
+            "Connect the Google Drive account used by this wallet to recover its encrypted channel backup.",
+            style = MaterialTheme.typography.titleMedium,
+        )
+        Text("Only encrypted app data is read. Your recovery phrase never leaves this device. You can retry later from Settings.")
+        message?.let { FerretErrorState(it) }
+        Box(Modifier.weight(1f))
+        if (!accountConnected) {
+            FerretPrimaryButton("Connect Google Drive", onConnect, enabled = !busy)
+        } else {
+            FerretPrimaryButton("Restore encrypted backup", onRestore, enabled = !busy)
+        }
+        FerretSecondaryButton("Continue without channel recovery", onSkip, enabled = !busy)
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun WalletForm(
