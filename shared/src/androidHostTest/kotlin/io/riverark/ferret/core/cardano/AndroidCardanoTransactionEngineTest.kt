@@ -4,6 +4,11 @@ import com.bloxbean.cardano.client.api.TransactionProcessor
 import com.bloxbean.cardano.client.api.model.EvaluationResult
 import com.bloxbean.cardano.client.api.model.Result
 import com.bloxbean.cardano.client.api.model.Utxo
+import com.bloxbean.cardano.client.transaction.spec.Transaction
+import com.bloxbean.cardano.client.transaction.spec.TransactionInput
+import com.bloxbean.cardano.client.transaction.spec.TransactionOutput
+import com.bloxbean.cardano.client.transaction.spec.Value
+import java.math.BigInteger
 import io.riverark.ferret.core.model.CardanoNetwork
 import io.riverark.ferret.core.model.Lovelace
 import io.riverark.ferret.core.model.InvalidRecoveryPhraseException
@@ -12,6 +17,7 @@ import java.util.Collections
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 import kotlinx.coroutines.runBlocking
 
@@ -73,6 +79,42 @@ class AndroidCardanoTransactionEngineTest {
 
         val unsigned = engine.build(intent, ledger)
         engine.inspect(unsigned.cbor).requireMatches(intent, CardanoNetwork.PREPROD, unsigned.feeBound)
+    }
+
+    @Test fun signingPreservesOriginalBodyHashAndBodyMutationsAreDetected() = runBlocking<Unit> {
+        val engine = AndroidCardanoTransactionEngine(processor)
+        val entropy = ByteArray(32) { it.toByte() }
+        val source = engine.deriveWallet(entropy, CardanoNetwork.MAINNET)
+        val destination = engine.deriveWallet(ByteArray(32) { (it + 1).toByte() }, CardanoNetwork.MAINNET)
+        val intent = CardanoIntent.Transfer(
+            source.paymentAddress, destination.paymentAddress, Lovelace(5_000_000),
+            "00000000-0000-4000-8000-000000000001", 100, 200,
+        )
+        val unsigned = engine.build(intent, LedgerSnapshot(
+            CardanoNetwork.MAINNET,
+            listOf(LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000))),
+            PROTOCOL_PARAMETERS, 100,
+        ))
+        val signed = try { engine.sign(unsigned, entropy) } finally { entropy.fill(0) }
+        try {
+            val summary = engine.inspect(unsigned.cbor)
+            summary.requireMatches(intent, CardanoNetwork.MAINNET, unsigned.feeBound)
+            engine.inspect(signed.cbor).requireMatches(intent, CardanoNetwork.MAINNET, unsigned.feeBound)
+            assertEquals(engine.transactionId(unsigned.cbor), engine.transactionId(signed.cbor))
+            val changedInput = Transaction.deserialize(signed.cbor)
+            changedInput.body.inputs = listOf(TransactionInput.builder().transactionId("11".repeat(32)).index(0).build())
+            val changedBytes = changedInput.serialize()
+            assertEquals(summary, engine.inspect(changedBytes))
+            assertNotEquals(engine.transactionId(unsigned.cbor), engine.transactionId(changedBytes))
+            val extraOutput = Transaction.deserialize(unsigned.cbor)
+            extraOutput.body.outputs = extraOutput.body.outputs + TransactionOutput.builder()
+                .address(destination.paymentAddress).value(Value(BigInteger.valueOf(1_000_000), emptyList())).build()
+            assertFailsWith<IllegalArgumentException> {
+                engine.inspect(extraOutput.serialize()).requireMatches(intent, CardanoNetwork.MAINNET, unsigned.feeBound)
+            }
+        } finally {
+            signed.cbor.fill(0)
+        }
     }
 
     companion object {

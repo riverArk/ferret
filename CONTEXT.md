@@ -78,6 +78,13 @@ Android installation and manual onboarding verification require an API 36 emulat
 
 ## Session log
 
+### 2026-09-05 — Transfer preview integrity
+
+- Transfer previews resolve recipients from the vault, display decoded change rather than total-wallet arithmetic, and retain the unsigned transaction body hash in memory.
+- Submission revalidates current wallet identity, preview metadata, unsigned semantics and body identity before journaling or seed access. Signing must preserve that body hash; a mismatch remains PREPARED and rejects through lookup-free restart reconciliation.
+- Shared output checks permit exactly one designated output and at most one source change output; L1 outputs are ADA-only. Real Android host construction/signing proves witness-independent body identity and detects input-only mutations.
+- Focused regressions, `androidCheck`, and the shared iOS compile gate passed. Transfer remains deployment-gated; channel script/signer conformance, datum-aware input selection, funded Mainnet/device acceptance, and release OAuth/MASVS remain outstanding.
+
 ### 2026-09-05 — Durable L1 reconciliation
 
 - L1 submission preserves one preparation timestamp and local transfer details; remote responses must match both the durable operation UUID and expected transaction hash.

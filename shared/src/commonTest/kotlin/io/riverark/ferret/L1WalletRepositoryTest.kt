@@ -29,6 +29,115 @@ import kotlin.test.assertNull
 import kotlin.test.assertFailsWith
 
 class L1WalletRepositoryTest {
+    @Test fun previewUsesSelectedInputsAndAllowsExactSpend() = runBlocking {
+        val source = profile('0')
+        val destination = profile('1')
+        val vault = FakeVault(listOf(source, destination))
+        val engine = FakeEngine()
+        val repository = previewRepository(vault, engine)
+        assertEquals(Lovelace(4_800_000), repository.previewTransfer(source.id, destination, Lovelace(5_000_000)).change)
+        engine.change = null
+        assertEquals(Lovelace(0), repository.previewTransfer(source.id, destination, Lovelace(5_000_000)).change)
+    }
+
+    @Test fun previewRejectsDestinationsOutsideVaultIdentity() = runBlocking {
+        val source = profile('0')
+        val destination = profile('1')
+        val vault = FakeVault(listOf(source, destination))
+        val engine = FakeEngine()
+        val repository = previewRepository(vault, engine)
+        for (invalid in listOf(profile('2'), source, destination.copy(network = CardanoNetwork.MAINNET),
+            destination.copy(paymentAddress = "addr_test1forged"))) {
+            assertFailsWith<RuntimeException> { repository.previewTransfer(source.id, invalid, Lovelace(5_000_000)) }
+        }
+        vault.storedProfiles = listOf(source, destination.copy(network = CardanoNetwork.MAINNET))
+        assertFailsWith<IllegalArgumentException> { repository.previewTransfer(source.id, destination, Lovelace(5_000_000)) }
+        vault.storedProfiles = listOf(source, destination.copy(paymentAddress = source.paymentAddress))
+        assertFailsWith<IllegalArgumentException> {
+            repository.previewTransfer(source.id, vault.storedProfiles.last(), Lovelace(5_000_000))
+        }
+        assertEquals(0, engine.builds)
+        assertEquals(0, vault.seedRequests)
+        assertNull(repository.operation(source.id))
+    }
+
+    @Test fun submissionRejectsAlteredPreviewBeforeAnySideEffect() = runBlocking {
+        val source = profile('0')
+        val destination = profile('1')
+        val vault = FakeVault(listOf(source, destination))
+        val engine = FakeEngine()
+        val repository = previewRepository(vault, engine)
+        val preview = repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+        for (altered in listOf(
+            preview.copy(intent = preview.intent!!.copy(sourceAddress = "addr_test1forged")),
+            preview.copy(feeBound = Lovelace(300_000)),
+            preview.copy(change = Lovelace(94_800_000)),
+            preview.copy(amount = Lovelace(0)),
+            preview.copy(transactionId = null),
+            preview.copy(unsigned = preview.unsigned!!.copy(operationId = NEXT_OPERATION_ID)),
+            preview.copy(destination = destination.copy(paymentAddress = "addr_test1forged")),
+            preview.copy(destination = source),
+        )) {
+            assertFailsWith<IllegalArgumentException> { repository.submitTransfer(source.id, altered) }
+            assertEquals(0, vault.writes)
+            assertEquals(0, vault.seedRequests)
+            assertEquals(0, engine.signs)
+        }
+        val before = engine.inspect(preview.unsigned.cbor)
+        preview.unsigned.cbor[0] = 9
+        assertEquals(before, engine.inspect(preview.unsigned.cbor))
+        assertFailsWith<IllegalArgumentException> { repository.submitTransfer(source.id, preview) }
+        assertEquals(0, vault.writes)
+        assertEquals(0, vault.seedRequests)
+        assertEquals(0, engine.signs)
+        assertNull(repository.operation(source.id))
+    }
+
+    @Test fun submissionRevalidatesCurrentVaultMembershipAndAddresses() = runBlocking {
+        val source = profile('0')
+        val destination = profile('1')
+        val vault = FakeVault(listOf(source, destination))
+        val engine = FakeEngine()
+        val repository = previewRepository(vault, engine)
+        val preview = repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+        for (profiles in listOf(
+            listOf(source),
+            listOf(source, destination.copy(network = CardanoNetwork.MAINNET)),
+            listOf(source, destination.copy(paymentAddress = "addr_test1changed")),
+            listOf(source.copy(paymentAddress = "addr_test1changed"), destination),
+        )) {
+            vault.storedProfiles = profiles
+            assertFailsWith<RuntimeException> { repository.submitTransfer(source.id, preview) }
+            assertEquals(0, vault.writes)
+            assertEquals(0, vault.seedRequests)
+            assertEquals(0, engine.signs)
+        }
+    }
+
+    @Test fun signedBodyMismatchRemainsPreparedAndRejectsAfterRestartWithoutLookup() = runBlocking {
+        val source = profile('0')
+        val destination = profile('1')
+        val vault = FakeVault(listOf(source, destination))
+        val engine = FakeEngine().apply { changeSignedBody = true }
+        val repository = previewRepository(vault, engine)
+        val preview = repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+        assertFailsWith<IllegalArgumentException> { repository.submitTransfer(source.id, preview) }
+        assertEquals(L1OperationState.PREPARED, repository.operation(source.id)?.state)
+        assertNull(repository.operation(source.id)?.expectedTransactionId)
+        val restarted = previewRepository(vault, engine)
+        assertEquals(L1OperationState.REJECTED, restarted.reconcilePending(source.id)?.state)
+        assertNull(restarted.operation(source.id)?.expectedTransactionId)
+    }
+
+    private fun previewRepository(vault: FakeVault, engine: FakeEngine) = DefaultL1WalletRepository(
+        WalletRepository(), vault,
+        { LedgerSnapshot(CardanoNetwork.PREPROD, listOf(LedgerUtxo("00".repeat(32), 0, it.paymentAddress, Lovelace(100_000_000))), "{}", 100) },
+        { emptyList() },
+        { _, _ -> error("submission must not start") },
+        { _, _ -> error("lookup must not run") },
+        engine, { OPERATION_ID }, { 123L },
+    )
+
     @Test fun rejectsDuplicateInFlightButAllowsNewTransferAfterConfirmation() = runBlocking {
         val source = profile('0')
         val destination = profile('1')
@@ -337,8 +446,7 @@ class L1WalletRepositoryTest {
             { 123L },
         )
         val preview = repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
-        val failure = assertFailsWith<IllegalArgumentException> { repository.submitTransfer(source.id, preview) }
-        assertEquals("operation identity mismatch", failure.message)
+        assertFailsWith<IllegalArgumentException> { repository.submitTransfer(source.id, preview) }
 
         val restarted = DefaultL1WalletRepository(
             wallets, vault,
@@ -372,8 +480,7 @@ class L1WalletRepositoryTest {
             { 123L },
         )
         val preview = repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
-        val failure = assertFailsWith<IllegalArgumentException> { repository.submitTransfer(source.id, preview) }
-        assertEquals("operation identity mismatch", failure.message)
+        assertFailsWith<IllegalArgumentException> { repository.submitTransfer(source.id, preview) }
 
         val restarted = DefaultL1WalletRepository(
             wallets, vault,
@@ -408,8 +515,7 @@ class L1WalletRepositoryTest {
         )
         val preview = repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
         repository.submitTransfer(source.id, preview)
-        val failure = assertFailsWith<IllegalArgumentException> { repository.reconcilePending(source.id) }
-        assertEquals("operation identity mismatch", failure.message)
+        assertFailsWith<IllegalArgumentException> { repository.reconcilePending(source.id) }
 
         val restarted = DefaultL1WalletRepository(
             wallets, vault,
@@ -444,8 +550,7 @@ class L1WalletRepositoryTest {
         )
         val preview = repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
         repository.submitTransfer(source.id, preview)
-        val failure = assertFailsWith<IllegalArgumentException> { repository.reconcilePending(source.id) }
-        assertEquals("operation identity mismatch", failure.message)
+        assertFailsWith<IllegalArgumentException> { repository.reconcilePending(source.id) }
 
         val restarted = DefaultL1WalletRepository(
             wallets, vault,
@@ -494,30 +599,38 @@ class L1WalletRepositoryTest {
 
     private class FakeEngine(private val failSigning: Boolean = false) : CardanoTransactionEngine {
         private lateinit var intent: CardanoIntent.Transfer
+        var change: Lovelace? = Lovelace(4_800_000)
+        var builds = 0
+        var signs = 0
+        var changeSignedBody = false
         override suspend fun deriveWallet(entropy: ByteArray, network: CardanoNetwork): DerivedWallet = error("not used")
         override suspend fun build(intent: CardanoIntent, ledger: LedgerSnapshot): UnsignedTransaction {
+            builds++
             this.intent = intent as CardanoIntent.Transfer
             return UnsignedTransaction(byteArrayOf(0), intent.operationId, Lovelace(200_000))
         }
         override fun sign(unsigned: UnsignedTransaction, seed: ByteArray): SignedTransaction {
+            signs++
             check(!failSigning)
-            return SignedTransaction(byteArrayOf(1, 2, 3))
+            return SignedTransaction(byteArrayOf(if (changeSignedBody) 9 else 0, 2, 3))
         }
         override fun inspect(signedCbor: ByteArray) = TransactionSummary(
             CardanoNetwork.PREPROD,
-            listOf(
+            listOfNotNull(
                 TransactionOutputSummary(intent.destinationAddress, intent.amount, emptyMap()),
-                TransactionOutputSummary(intent.sourceAddress, Lovelace(4_800_000), emptyMap()),
+                change?.let { TransactionOutputSummary(intent.sourceAddress, it, emptyMap()) },
             ),
             Lovelace(200_000),
             emptySet(),
             intent.validFrom,
             intent.validUntil,
         )
-        override fun transactionId(signedCbor: ByteArray) = TRANSACTION_ID
+        override fun transactionId(signedCbor: ByteArray) = if (signedCbor[0] == 0.toByte()) TRANSACTION_ID else OTHER_TRANSACTION_ID
     }
 
-    private class FakeVault(private val storedProfiles: List<WalletProfile>) : SecureVault {
+    private class FakeVault(var storedProfiles: List<WalletProfile>) : SecureVault {
+        var seedRequests = 0
+        var writes = 0
         private val states = storedProfiles.associate { it.id to WalletEncryptedStateV1() }.toMutableMap()
         override val isUnlocked = true
         override suspend fun unlock(wrappedDataKey: ByteArray) = Unit
@@ -527,13 +640,16 @@ class L1WalletRepositoryTest {
         override suspend fun updateProfile(profile: WalletProfile) = error("not used")
         override suspend fun renameWallet(walletId: WalletId, name: String) = error("not used")
         override suspend fun deleteWallet(walletId: WalletId) = error("not used")
-        override suspend fun <T> withWalletSeed(walletId: WalletId, action: suspend (ByteArray) -> T): T =
-            action(ByteArray(32))
+        override suspend fun <T> withWalletSeed(walletId: WalletId, action: suspend (ByteArray) -> T): T {
+            seedRequests++
+            return action(ByteArray(32))
+        }
         override suspend fun walletState(walletId: WalletId): WalletEncryptedStateV1 = states.getValue(walletId).copy(
             channelRecovery = states.getValue(walletId).channelRecovery.copyOf(),
             operationJournal = states.getValue(walletId).operationJournal.copyOf(),
         )
         override suspend fun updateWalletState(walletId: WalletId, state: WalletEncryptedStateV1) {
+            writes++
             states[walletId] = state.copy(
                 channelRecovery = state.channelRecovery.copyOf(),
                 operationJournal = state.operationJournal.copyOf(),

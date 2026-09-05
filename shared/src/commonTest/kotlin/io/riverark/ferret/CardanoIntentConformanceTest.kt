@@ -38,6 +38,40 @@ class CardanoIntentConformanceTest {
         }
     }
 
+    @Test fun onlyOneDesignatedOutputAndOneSourceChangeAreAllowed() {
+        intents.forEach { intent ->
+            val original = summary(intent)
+            val change = TransactionOutputSummary(source, Lovelace(123), emptyMap())
+            original.copy(outputs = original.outputs + change).requireMatches(intent, CardanoNetwork.PREPROD, Lovelace(200_000))
+            assertFailsWith<IllegalArgumentException> {
+                original.copy(outputs = original.outputs + change + change).requireMatches(intent, CardanoNetwork.PREPROD, Lovelace(200_000))
+            }
+            if (intent !is CardanoIntent.CloseChannel) {
+                assertFailsWith<IllegalArgumentException> {
+                    original.copy(outputs = original.outputs + original.outputs.single().copy(lovelace = Lovelace(123)))
+                        .requireMatches(intent, CardanoNetwork.PREPROD, Lovelace(200_000))
+                }
+            }
+        }
+    }
+
+    @Test fun l1OutputsAreAdaOnlyAndCannotPaySelf() {
+        intents.filter { it is CardanoIntent.Transfer || it is CardanoIntent.SweepWallet }.forEach { intent ->
+            assertFailsWith<IllegalArgumentException> {
+                summary(intent).copy(outputs = summary(intent).outputs + TransactionOutputSummary(source, Lovelace(123), channel.assets))
+                    .requireMatches(intent, CardanoNetwork.PREPROD, Lovelace(200_000))
+            }
+            val self = when (intent) {
+                is CardanoIntent.Transfer -> intent.copy(destinationAddress = source)
+                is CardanoIntent.SweepWallet -> intent.copy(destinationAddress = source)
+                else -> error("not L1")
+            }
+            assertFailsWith<IllegalArgumentException> {
+                summary(self).requireMatches(self, CardanoNetwork.PREPROD, Lovelace(200_000))
+            }
+        }
+    }
+
     private fun summary(intent: CardanoIntent): TransactionSummary {
         val output = when (intent) {
             is CardanoIntent.Transfer -> TransactionOutputSummary(intent.destinationAddress, intent.amount, emptyMap())

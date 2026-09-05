@@ -107,7 +107,7 @@ class AndroidCardanoTransactionEngine(
     }
 
     override fun transactionId(signedCbor: ByteArray): String =
-        TransactionUtil.getTxHash(Transaction.deserialize(signedCbor))
+        TransactionUtil.getTxHash(signedCbor)
 
     private fun inferNetwork(transaction: Transaction) = Address(transaction.body.outputs.firstOrNull()?.address ?: error("transaction has no outputs")).network
     private fun plutus(hex: String) = PlutusData.deserialize(HexUtil.decodeHexString(hex))

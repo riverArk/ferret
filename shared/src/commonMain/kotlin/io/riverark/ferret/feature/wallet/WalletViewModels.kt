@@ -84,6 +84,7 @@ data class TransferPreview(
     val change: Lovelace,
     val intent: CardanoIntent.Transfer? = null,
     val unsigned: UnsignedTransaction? = null,
+    val transactionId: String? = null,
 )
 
 data class TransferUiState(

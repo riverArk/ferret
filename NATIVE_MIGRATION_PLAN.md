@@ -49,6 +49,8 @@ Status legend: **Complete** means connected behavior exists; **Partial** means r
 
 The encrypted L1 record preserves its preparation timestamp and local transfer details across submission and restart. Submit/lookup responses must match both the operation UUID and expected transaction hash. Foreground/pull refresh reconciles confirmed records through settlement at depth 2160, including rollback before settlement; confirmed transfers still permit a subsequent transfer. Strict operation DTOs require depth and consistent status/transaction identity. Deterministic recovery and wire-boundary checks pass; funded Mainnet deployment acceptance remains outstanding.
 
+Transfer previews now resolve destination identity from the vault, display actual decoded change, and bind the unsigned body hash to pre-sign revalidation and post-sign submission. Altered metadata or unsigned bytes fail before journal/seed/sign/POST; a signed-body mismatch remains PREPARED for lookup-free rejection after restart. Offline repository and real Android-engine host regressions pass; this does not enable Transfer.
+
 **Missing work:**
 
 1. Validate L1 history against a funded low-value Mainnet wallet on the controlled connector; merge verified L2 records in P2.
@@ -202,9 +204,9 @@ Preprod and `ferret.channel` availability must not block or satisfy this gate.
 
 ### 6. Android Cardano engine and semantic conformance — Partial
 
-**Current status:** Common typed intents and Android Bloxbean derivation/build/sign/inspect implementations exist for Transfer, OpenChannel, AddChannelFunds, CloseChannel, and SweepWallet. Android semantic tests exist. No connected feature currently builds/signs/submits an intent, and controlled-node evaluation/golden equivalence to pinned Konduit is not evidenced.
+**Current status:** Common typed intents and Android Bloxbean derivation/build/sign/inspect implementations exist for Transfer, OpenChannel, AddChannelFunds, CloseChannel, and SweepWallet. Shared validation rejects extra designated-destination outputs, foreign outputs, multiple change outputs, and native assets on L1 outputs. Transfer preview/submission binds the original unsigned body hash across signing; real Android host tests detect input-only body changes with unchanged output summaries. Transfer composition remains disabled, and controlled-node evaluation/golden equivalence to pinned Konduit is not evidenced.
 
-**Missing work:** Wire P0 transfer first, then channel/removal intents. Add golden semantic fixtures from pinned Konduit commit `a68cfedd4a0188ef9adad970e89c12b2b805b678`, controlled-node ledger evaluation, exact fee/value/script/signer/validity checks, and mutation tests proving `requireMatches` rejects extra or altered outputs.
+**Missing work:** Complete datum-aware input-selection hardening and funded P0 transfer acceptance, then channel/removal intents. Add golden semantic fixtures from pinned Konduit commit `a68cfedd4a0188ef9adad970e89c12b2b805b678`, controlled-node ledger evaluation, and exact fee/value/script/datum/redeemer/signer/validity conformance for all five intents. Preview body identity prevents signing-time changes; it does not establish the initial body's signer/script correctness against Konduit.
 
 **Priority:** P0 transfer; P1 channel; P3 removal; Mainnet release blocker.
 

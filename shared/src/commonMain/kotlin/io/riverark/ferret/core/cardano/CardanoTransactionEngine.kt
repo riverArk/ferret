@@ -68,5 +68,11 @@ fun TransactionSummary.requireMatches(intent: CardanoIntent, network: CardanoNet
         is CardanoIntent.CloseChannel -> Triple(intent.sourceAddress, intent.amount, intent.channelInput.assets)
     }
     require(outputs.count { it.address == destination && it.lovelace == expectedAmount && it.assets == expectedAssets } == 1)
-    require(outputs.all { it.address == destination || it.address == intent.sourceAddress })
+    require(outputs.size in 1..2)
+    val designated = outputs.indexOfFirst { it.address == destination && it.lovelace == expectedAmount && it.assets == expectedAssets }
+    require(outputs.withIndex().all { (index, output) -> index == designated || output.address == intent.sourceAddress })
+    if (intent is CardanoIntent.Transfer || intent is CardanoIntent.SweepWallet) {
+        require(destination != intent.sourceAddress)
+        require(outputs.all { it.assets.isEmpty() })
+    }
 }
