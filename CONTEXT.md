@@ -78,6 +78,13 @@ Android installation and manual onboarding verification require an API 36 emulat
 
 ## Session log
 
+### 2026-09-05 — Durable L1 reconciliation
+
+- L1 submission preserves one preparation timestamp and local transfer details; remote responses must match both the durable operation UUID and expected transaction hash.
+- Confirmed operations reconcile through depth-2160 settlement on existing refresh calls and can roll back before settlement. Confirmation still permits a subsequent transfer; the journal remains a single current-operation slot.
+- Operation responses require depth and consistent status/transaction identity. Lost-response restart, immutable fallback history, identity rejection, rollback, and finality boundaries have deterministic regression coverage.
+- Focused host tests, `androidCheck`, and `:shared:compileKotlinIosSimulatorArm64` passed. iOS simulator execution is unavailable on Linux. Financial actions remain gated; funded Mainnet and release acceptance were not performed.
+
 ### 2026-09-04 — Mainnet-only test decision
 
 - Removed `ferret.channel` and Preprod from the deployment and device acceptance-test plan; controlled low-value Mainnet scenarios against `crustypants.com` are the only release evidence.

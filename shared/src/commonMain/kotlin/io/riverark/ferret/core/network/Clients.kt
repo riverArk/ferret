@@ -117,14 +117,22 @@ data class L1OperationDto(
     @SerialName("expected_transaction_id") val expectedTransactionId: String,
     @SerialName("transaction_id") val transactionId: String? = null,
     val status: String,
-    val depth: Long? = null,
+    val depth: Long,
 ) {
     init {
         require(UUID.matches(operationId))
         require(HEX_64.matches(expectedTransactionId))
         require(transactionId == null || transactionId == expectedTransactionId)
         require(status in setOf("pending", "accepted", "confirmed", "settled", "rejected"))
-        require(depth == null || depth >= 0)
+        require(depth >= 0)
+        require(when (status) {
+            "pending", "rejected" -> depth == 0L
+            "accepted" -> depth < 5
+            "confirmed" -> depth in 5..2_159
+            "settled" -> depth >= 2_160
+            else -> false
+        })
+        require(status == "pending" || status == "rejected" || transactionId != null)
     }
 }
 @Serializable

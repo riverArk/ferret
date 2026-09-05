@@ -25,12 +25,11 @@ import io.riverark.ferret.feature.wallet.parseAdaAmount
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertFailsWith
 
 class L1WalletRepositoryTest {
-    @Test fun journalsBeforeSubmissionAndReconcilesWithoutResubmitting() = runBlocking {
+    @Test fun rejectsDuplicateInFlightButAllowsNewTransferAfterConfirmation() = runBlocking {
         val source = profile('0')
         val destination = profile('1')
         val wallets = WalletRepository().apply { publish(source.id, listOf(source, destination)) }
@@ -44,9 +43,7 @@ class L1WalletRepositoryTest {
             { emptyList<TransactionRecord>() },
             { _, request ->
                 submissions++
-                val persisted = vault.walletState(source.id).operationJournal.decodeToString()
-                assertFalse(persisted.contains("010203"))
-                L1OperationDto(request.operationId, request.expectedTransactionId, request.expectedTransactionId, "pending")
+                L1OperationDto(request.operationId, request.expectedTransactionId, request.expectedTransactionId, "accepted", 0)
             },
             { _, _ -> error("lookup not used") },
             engine,
@@ -58,7 +55,6 @@ class L1WalletRepositoryTest {
         assertEquals(Lovelace(200_000), preview.feeBound)
         assertEquals(Lovelace(4_800_000), preview.change)
         assertEquals(OPERATION_ID, repository.submitTransfer(source.id, preview))
-        assertEquals(1, submissions)
         assertEquals(L1OperationState.PENDING, repository.operation(source.id)?.state)
         assertFailsWith<IllegalArgumentException> { repository.submitTransfer(source.id, preview) }
         assertEquals(1, submissions)
@@ -75,7 +71,6 @@ class L1WalletRepositoryTest {
             { 999L },
         )
         assertEquals(L1OperationState.CONFIRMED, restarted.reconcilePending(source.id)?.state)
-        assertEquals(1, submissions)
 
         val next = DefaultL1WalletRepository(
             wallets,
@@ -84,7 +79,7 @@ class L1WalletRepositoryTest {
             { emptyList<TransactionRecord>() },
             { _, request ->
                 submissions++
-                L1OperationDto(request.operationId, request.expectedTransactionId, request.expectedTransactionId, "pending")
+                L1OperationDto(request.operationId, request.expectedTransactionId, request.expectedTransactionId, "accepted", 0)
             },
             { _, _ -> error("lookup not used") },
             engine,
@@ -94,6 +89,376 @@ class L1WalletRepositoryTest {
         val nextPreview = next.previewTransfer(source.id, destination, Lovelace(4_000_000))
         assertEquals(NEXT_OPERATION_ID, next.submitTransfer(source.id, nextPreview))
         assertEquals(2, submissions)
+    }
+
+    @Test fun successfulSubmissionKeepsPreparationTimeAndLocalMetadata() = runBlocking {
+        val source = profile('0')
+        val destination = profile('1')
+        val wallets = WalletRepository().apply { publish(source.id, listOf(source, destination)) }
+        val vault = FakeVault(listOf(source, destination))
+        var clock = 99L
+        val repository = DefaultL1WalletRepository(
+            wallets,
+            vault,
+            { LedgerSnapshot(CardanoNetwork.PREPROD, listOf(LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(10_000_000))), "{}", 100) },
+            { emptyList<TransactionRecord>() },
+            { _, request -> L1OperationDto(request.operationId, request.expectedTransactionId, request.expectedTransactionId, "accepted", 0) },
+            { _, _ -> error("lookup not used") },
+            FakeEngine(),
+            { OPERATION_ID },
+            { ++clock },
+        )
+        val preview = repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+        repository.submitTransfer(source.id, preview)
+
+        val accepted = repository.operation(source.id)!!
+        assertEquals(OPERATION_ID, accepted.operationId)
+        assertEquals(TRANSACTION_ID, accepted.expectedTransactionId)
+        assertEquals(destination.id, accepted.destinationWalletId)
+        assertEquals(Lovelace(5_000_000), accepted.amount)
+        assertEquals(Lovelace(200_000), accepted.fee)
+        assertEquals(100L, accepted.createdAtEpochMillis)
+        assertEquals(L1OperationState.PENDING, accepted.state)
+    }
+
+    @Test fun lostSubmissionResponseReconcilesAcrossRestartsWithImmutableLocalDetails() = runBlocking {
+        val source = profile('0')
+        val destination = profile('1')
+        val wallets = WalletRepository().apply { publish(source.id, listOf(source, destination)) }
+        val vault = FakeVault(listOf(source, destination))
+        val engine = FakeEngine()
+        var submissions = 0
+        var lookups = 0
+        var clock = 99L
+        var remote: L1OperationDto? = null
+        val repository = DefaultL1WalletRepository(
+            wallets,
+            vault,
+            { LedgerSnapshot(CardanoNetwork.PREPROD, listOf(LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(10_000_000))), "{}", 100) },
+            { emptyList<TransactionRecord>() },
+            { _, request ->
+                submissions++
+                remote = L1OperationDto(request.operationId, request.expectedTransactionId, request.expectedTransactionId, "accepted", 0)
+                error("response lost after acceptance")
+            },
+            { _, _ -> error("lookup not used before restart") },
+            engine,
+            { OPERATION_ID },
+            { ++clock },
+        )
+        val preview = repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+
+        assertFailsWith<IllegalStateException> { repository.submitTransfer(source.id, preview) }
+        val submitting = repository.operation(source.id)!!
+        assertEquals(L1OperationState.SUBMITTING, submitting.state)
+        assertEquals(OPERATION_ID, submitting.operationId)
+        assertEquals(TRANSACTION_ID, submitting.expectedTransactionId)
+        assertEquals(destination.id, submitting.destinationWalletId)
+        assertEquals(Lovelace(5_000_000), submitting.amount)
+        assertEquals(Lovelace(200_000), submitting.fee)
+        assertEquals(100L, submitting.createdAtEpochMillis)
+
+        val accepted = DefaultL1WalletRepository(
+            wallets, vault,
+            { error("ledger must not reload during reconciliation") },
+            { emptyList<TransactionRecord>() },
+            { _, _ -> error("a mutation must not be retried") },
+            { _, _ ->
+                lookups++
+                requireNotNull(remote).copy(depth = 4)
+            },
+            engine, { error("operation id must remain stable") }, { ++clock },
+        )
+        val pending = accepted.reconcilePending(source.id)!!
+        assertEquals(L1OperationState.PENDING, pending.state)
+        assertEquals(100L, pending.createdAtEpochMillis)
+        assertEquals(io.riverark.ferret.core.model.TransactionState.PENDING, accepted.history(source.id).single().state)
+
+        val confirmedAtFive = DefaultL1WalletRepository(
+            wallets, vault,
+            { error("ledger must not reload during reconciliation") },
+            { emptyList<TransactionRecord>() },
+            { _, _ -> error("a mutation must not be retried") },
+            { _, operationId ->
+                lookups++
+                L1OperationDto(operationId, TRANSACTION_ID, TRANSACTION_ID, "confirmed", 5)
+            },
+            engine, { error("operation id must remain stable") }, { ++clock },
+        )
+        assertEquals(L1OperationState.CONFIRMED, confirmedAtFive.reconcilePending(source.id)?.state)
+        assertEquals(io.riverark.ferret.core.model.TransactionState.CONFIRMED, confirmedAtFive.history(source.id).single().state)
+
+        val confirmedAt2159 = DefaultL1WalletRepository(
+            wallets, vault,
+            { error("ledger must not reload during reconciliation") },
+            { emptyList<TransactionRecord>() },
+            { _, _ -> error("a mutation must not be retried") },
+            { _, operationId ->
+                lookups++
+                L1OperationDto(operationId, TRANSACTION_ID, TRANSACTION_ID, "confirmed", 2_159)
+            },
+            engine, { error("operation id must remain stable") }, { ++clock },
+        )
+        val deeplyConfirmed = confirmedAt2159.reconcilePending(source.id)!!
+        assertEquals(L1OperationState.CONFIRMED, deeplyConfirmed.state)
+        assertEquals(100L, deeplyConfirmed.createdAtEpochMillis)
+        assertEquals(io.riverark.ferret.core.model.TransactionState.CONFIRMED, confirmedAt2159.history(source.id).single().state)
+
+        val settledAt2160 = DefaultL1WalletRepository(
+            wallets, vault,
+            { error("ledger must not reload during reconciliation") },
+            { emptyList<TransactionRecord>() },
+            { _, _ -> error("a mutation must not be retried") },
+            { _, operationId ->
+                lookups++
+                L1OperationDto(operationId, TRANSACTION_ID, TRANSACTION_ID, "settled", 2_160)
+            },
+            engine, { error("operation id must remain stable") }, { ++clock },
+        )
+        val settled = settledAt2160.reconcilePending(source.id)!!
+        assertEquals(L1OperationState.SETTLED, settled.state)
+        assertEquals(OPERATION_ID, settled.operationId)
+        assertEquals(TRANSACTION_ID, settled.expectedTransactionId)
+        assertEquals(destination.id, settled.destinationWalletId)
+        assertEquals(Lovelace(5_000_000), settled.amount)
+        assertEquals(Lovelace(200_000), settled.fee)
+        assertEquals(100L, settled.createdAtEpochMillis)
+        val history = settledAt2160.history(source.id).single()
+        assertEquals(TRANSACTION_ID, history.id)
+        assertEquals(100L, history.timestampEpochMillis)
+        assertEquals(Lovelace(5_000_000), history.amount)
+        assertEquals(Lovelace(200_000), history.fee)
+        assertEquals(io.riverark.ferret.core.model.TransactionState.SETTLED, history.state)
+
+        val terminal = DefaultL1WalletRepository(
+            wallets, vault,
+            { error("ledger must not reload during reconciliation") },
+            { emptyList<TransactionRecord>() },
+            { _, _ -> error("a mutation must not be retried") },
+            { _, _ -> error("settled operation must not be looked up") },
+            engine, { error("operation id must remain stable") }, { ++clock },
+        )
+        assertEquals(L1OperationState.SETTLED, terminal.reconcilePending(source.id)?.state)
+        assertEquals(1, submissions)
+        assertEquals(4, lookups)
+    }
+
+    @Test fun confirmedOperationContinuesReconcilingUntilSettlement() = runBlocking {
+        val source = profile('0')
+        val destination = profile('1')
+        val wallets = WalletRepository().apply { publish(source.id, listOf(source, destination)) }
+        val vault = FakeVault(listOf(source, destination))
+        val engine = FakeEngine()
+        val repository = DefaultL1WalletRepository(
+            wallets,
+            vault,
+            { LedgerSnapshot(CardanoNetwork.PREPROD, listOf(LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(10_000_000))), "{}", 100) },
+            { emptyList<TransactionRecord>() },
+            { _, request -> L1OperationDto(request.operationId, request.expectedTransactionId, request.expectedTransactionId, "accepted", 0) },
+            { _, operationId -> L1OperationDto(operationId, TRANSACTION_ID, TRANSACTION_ID, "confirmed", 5) },
+            engine,
+            { OPERATION_ID },
+            { 123L },
+        )
+        val preview = repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+        repository.submitTransfer(source.id, preview)
+        assertEquals(L1OperationState.CONFIRMED, repository.reconcilePending(source.id)?.state)
+
+        val restarted = DefaultL1WalletRepository(
+            wallets, vault,
+            { error("ledger must not reload during reconciliation") },
+            { emptyList<TransactionRecord>() },
+            { _, _ -> error("a mutation must not be retried") },
+            { _, operationId -> L1OperationDto(operationId, TRANSACTION_ID, TRANSACTION_ID, "settled", 2_160) },
+            engine, { error("operation id must remain stable") }, { 999L },
+        )
+        assertEquals(L1OperationState.SETTLED, restarted.reconcilePending(source.id)?.state)
+    }
+
+    @Test fun confirmedOperationCanRollBackAndBeConfirmedAgainWithoutResubmission() = runBlocking {
+        val source = profile('0')
+        val destination = profile('1')
+        val wallets = WalletRepository().apply { publish(source.id, listOf(source, destination)) }
+        val vault = FakeVault(listOf(source, destination))
+        val engine = FakeEngine()
+        var submissions = 0
+        var lookup = L1OperationDto(OPERATION_ID, TRANSACTION_ID, TRANSACTION_ID, "confirmed", 5)
+        val repository = DefaultL1WalletRepository(
+            wallets,
+            vault,
+            { LedgerSnapshot(CardanoNetwork.PREPROD, listOf(LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(10_000_000))), "{}", 100) },
+            { emptyList<TransactionRecord>() },
+            { _, request ->
+                submissions++
+                L1OperationDto(request.operationId, request.expectedTransactionId, request.expectedTransactionId, "accepted", 0)
+            },
+            { _, _ -> lookup },
+            engine,
+            { OPERATION_ID },
+            { 123L },
+        )
+        val preview = repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+        repository.submitTransfer(source.id, preview)
+        assertEquals(L1OperationState.CONFIRMED, repository.reconcilePending(source.id)?.state)
+
+        val confirmed = repository.operation(source.id)!!
+        for (rolledBack in listOf(
+            L1OperationDto(OPERATION_ID, TRANSACTION_ID, TRANSACTION_ID, "accepted", 4),
+            L1OperationDto(OPERATION_ID, TRANSACTION_ID, status = "pending", depth = 0),
+        )) {
+            lookup = rolledBack
+            assertEquals(confirmed.copy(state = L1OperationState.PENDING), repository.reconcilePending(source.id))
+            lookup = L1OperationDto(OPERATION_ID, TRANSACTION_ID, TRANSACTION_ID, "confirmed", 5)
+            assertEquals(confirmed, repository.reconcilePending(source.id))
+        }
+        lookup = L1OperationDto(OPERATION_ID, TRANSACTION_ID, status = "rejected", depth = 0)
+        val rejected = repository.reconcilePending(source.id)
+        assertEquals(confirmed.copy(state = L1OperationState.REJECTED), rejected)
+        lookup = L1OperationDto(OPERATION_ID, TRANSACTION_ID, TRANSACTION_ID, "confirmed", 5)
+        assertEquals(rejected, repository.reconcilePending(source.id))
+        assertEquals(1, submissions)
+    }
+
+    @Test fun submissionRejectsWrongOperationIdentityWithoutOverwritingDurableRecord() = runBlocking {
+        val source = profile('0')
+        val destination = profile('1')
+        val wallets = WalletRepository().apply { publish(source.id, listOf(source, destination)) }
+        val vault = FakeVault(listOf(source, destination))
+        val engine = FakeEngine()
+        val repository = DefaultL1WalletRepository(
+            wallets,
+            vault,
+            { LedgerSnapshot(CardanoNetwork.PREPROD, listOf(LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(10_000_000))), "{}", 100) },
+            { emptyList<TransactionRecord>() },
+            { _, request -> L1OperationDto(NEXT_OPERATION_ID, request.expectedTransactionId, request.expectedTransactionId, "accepted", 0) },
+            { _, _ -> error("lookup not used") },
+            engine,
+            { OPERATION_ID },
+            { 123L },
+        )
+        val preview = repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+        val failure = assertFailsWith<IllegalArgumentException> { repository.submitTransfer(source.id, preview) }
+        assertEquals("operation identity mismatch", failure.message)
+
+        val restarted = DefaultL1WalletRepository(
+            wallets, vault,
+            { error("ledger not used") },
+            { emptyList<TransactionRecord>() },
+            { _, _ -> error("submission not used") },
+            { _, _ -> error("lookup not used") },
+            engine, { error("operation id not used") }, { 999L },
+        )
+        val durable = restarted.operation(source.id)!!
+        assertEquals(OPERATION_ID, durable.operationId)
+        assertEquals(TRANSACTION_ID, durable.expectedTransactionId)
+        assertEquals(L1OperationState.SUBMITTING, durable.state)
+    }
+
+    @Test fun submissionRejectsWrongExpectedHashWithoutOverwritingDurableRecord() = runBlocking {
+        val source = profile('0')
+        val destination = profile('1')
+        val wallets = WalletRepository().apply { publish(source.id, listOf(source, destination)) }
+        val vault = FakeVault(listOf(source, destination))
+        val engine = FakeEngine()
+        val repository = DefaultL1WalletRepository(
+            wallets,
+            vault,
+            { LedgerSnapshot(CardanoNetwork.PREPROD, listOf(LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(10_000_000))), "{}", 100) },
+            { emptyList<TransactionRecord>() },
+            { _, request -> L1OperationDto(request.operationId, OTHER_TRANSACTION_ID, OTHER_TRANSACTION_ID, "accepted", 0) },
+            { _, _ -> error("lookup not used") },
+            engine,
+            { OPERATION_ID },
+            { 123L },
+        )
+        val preview = repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+        val failure = assertFailsWith<IllegalArgumentException> { repository.submitTransfer(source.id, preview) }
+        assertEquals("operation identity mismatch", failure.message)
+
+        val restarted = DefaultL1WalletRepository(
+            wallets, vault,
+            { error("ledger not used") },
+            { emptyList<TransactionRecord>() },
+            { _, _ -> error("submission not used") },
+            { _, _ -> error("lookup not used") },
+            engine, { error("operation id not used") }, { 999L },
+        )
+        val durable = restarted.operation(source.id)!!
+        assertEquals(OPERATION_ID, durable.operationId)
+        assertEquals(TRANSACTION_ID, durable.expectedTransactionId)
+        assertEquals(L1OperationState.SUBMITTING, durable.state)
+    }
+
+    @Test fun reconciliationRejectsWrongOperationIdentityWithoutOverwritingDurableRecord() = runBlocking {
+        val source = profile('0')
+        val destination = profile('1')
+        val wallets = WalletRepository().apply { publish(source.id, listOf(source, destination)) }
+        val vault = FakeVault(listOf(source, destination))
+        val engine = FakeEngine()
+        val repository = DefaultL1WalletRepository(
+            wallets,
+            vault,
+            { LedgerSnapshot(CardanoNetwork.PREPROD, listOf(LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(10_000_000))), "{}", 100) },
+            { emptyList<TransactionRecord>() },
+            { _, request -> L1OperationDto(request.operationId, request.expectedTransactionId, request.expectedTransactionId, "accepted", 0) },
+            { _, _ -> L1OperationDto(NEXT_OPERATION_ID, TRANSACTION_ID, TRANSACTION_ID, "confirmed", 5) },
+            engine,
+            { OPERATION_ID },
+            { 123L },
+        )
+        val preview = repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+        repository.submitTransfer(source.id, preview)
+        val failure = assertFailsWith<IllegalArgumentException> { repository.reconcilePending(source.id) }
+        assertEquals("operation identity mismatch", failure.message)
+
+        val restarted = DefaultL1WalletRepository(
+            wallets, vault,
+            { error("ledger not used") },
+            { emptyList<TransactionRecord>() },
+            { _, _ -> error("submission not used") },
+            { _, _ -> error("lookup not used") },
+            engine, { error("operation id not used") }, { 999L },
+        )
+        val durable = restarted.operation(source.id)!!
+        assertEquals(OPERATION_ID, durable.operationId)
+        assertEquals(TRANSACTION_ID, durable.expectedTransactionId)
+        assertEquals(L1OperationState.PENDING, durable.state)
+    }
+
+    @Test fun reconciliationRejectsWrongExpectedHashWithoutOverwritingDurableRecord() = runBlocking {
+        val source = profile('0')
+        val destination = profile('1')
+        val wallets = WalletRepository().apply { publish(source.id, listOf(source, destination)) }
+        val vault = FakeVault(listOf(source, destination))
+        val engine = FakeEngine()
+        val repository = DefaultL1WalletRepository(
+            wallets,
+            vault,
+            { LedgerSnapshot(CardanoNetwork.PREPROD, listOf(LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(10_000_000))), "{}", 100) },
+            { emptyList<TransactionRecord>() },
+            { _, request -> L1OperationDto(request.operationId, request.expectedTransactionId, request.expectedTransactionId, "accepted", 0) },
+            { _, operationId -> L1OperationDto(operationId, OTHER_TRANSACTION_ID, OTHER_TRANSACTION_ID, "confirmed", 5) },
+            engine,
+            { OPERATION_ID },
+            { 123L },
+        )
+        val preview = repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+        repository.submitTransfer(source.id, preview)
+        val failure = assertFailsWith<IllegalArgumentException> { repository.reconcilePending(source.id) }
+        assertEquals("operation identity mismatch", failure.message)
+
+        val restarted = DefaultL1WalletRepository(
+            wallets, vault,
+            { error("ledger not used") },
+            { emptyList<TransactionRecord>() },
+            { _, _ -> error("submission not used") },
+            { _, _ -> error("lookup not used") },
+            engine, { error("operation id not used") }, { 999L },
+        )
+        val durable = restarted.operation(source.id)!!
+        assertEquals(OPERATION_ID, durable.operationId)
+        assertEquals(TRANSACTION_ID, durable.expectedTransactionId)
+        assertEquals(L1OperationState.PENDING, durable.state)
     }
 
     @Test fun abandonsPreparedOperationWhenSigningNeverCompleted() = runBlocking {
@@ -188,5 +553,6 @@ class L1WalletRepositoryTest {
         const val OPERATION_ID = "00000000-0000-4000-8000-000000000001"
         const val NEXT_OPERATION_ID = "00000000-0000-4000-8000-000000000002"
         val TRANSACTION_ID = "11".repeat(32)
+        val OTHER_TRANSACTION_ID = "22".repeat(32)
     }
 }

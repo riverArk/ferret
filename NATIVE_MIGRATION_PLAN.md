@@ -47,6 +47,8 @@ Status legend: **Complete** means connected behavior exists; **Partial** means r
 
 **Current status:** Partial. Home loads the real connector balance and immutable history together. Top Up is reachable, generates its address QR locally, and uses explicit sensitive clipboard copy with conditional 60-second clearing. Transfer is registered in the existing `NavHost`, accepts only another same-network profile, previews amount/fee bound/change/recipient/network, inspects unsigned and signed intent semantics, journals before signing/submission, and reconciles a stable operation ID after process death without reposting.
 
+The encrypted L1 record preserves its preparation timestamp and local transfer details across submission and restart. Submit/lookup responses must match both the operation UUID and expected transaction hash. Foreground/pull refresh reconciles confirmed records through settlement at depth 2160, including rollback before settlement; confirmed transfers still permit a subsequent transfer. Strict operation DTOs require depth and consistent status/transaction identity. Deterministic recovery and wire-boundary checks pass; funded Mainnet deployment acceptance remains outstanding.
+
 **Missing work:**
 
 1. Validate L1 history against a funded low-value Mainnet wallet on the controlled connector; merge verified L2 records in P2.
@@ -136,9 +138,9 @@ Preprod and `ferret.channel` availability must not block or satisfy this gate.
 
 ### 2. Shared state, typed navigation, and coroutine ownership — Partial
 
-**Current status:** Immutable domain types, `WalletRepository`, per-wallet mutexes, shared ViewModels, serializable `Route`, and one root `NavHost` exist. Only Unlock, connectivity, wallet lifecycle, recovery, and Home routes are registered. Operation journaling exists only inside channel scaffolding; no common L1 operation journal is connected.
+**Current status:** Immutable domain types, `WalletRepository`, per-wallet mutexes, shared ViewModels, serializable `Route`, and one root `NavHost` exist. Implemented onboarding, wallet, Transfer, History, and read-only Channel destinations use this navigation model. Durable L1 records share the encrypted wallet operation journal with channel/payment records; reconciliation uses the existing wallet mutex and foreground refresh ownership.
 
-**Missing work:** Register every implemented product destination as its feature lands; keep all actions in the existing repository/ViewModel boundaries; add durable L1 operation records; keep cancellation lifecycle-owned and errors redacted. Do not introduce MVI, reducers, generic use cases, a DI framework, or a second navigator.
+**Missing work:** Register remaining product destinations as their integrations land; keep all actions in the existing repository/ViewModel boundaries, cancellation lifecycle-owned, and errors redacted. Do not introduce MVI, reducers, generic use cases, a DI framework, or a second navigator.
 
 **Priority:** P0 through P2, incrementally.
 
@@ -248,9 +250,9 @@ Preprod and `ferret.channel` availability must not block or satisfy this gate.
 
 ### 9. Same-network L1 transfer — Partial
 
-**Current status:** Typed `Route.Transfer`, `CardanoIntent.Transfer`, Android transaction builder, and a shared same-network destination boundary exist. Normal transfer cannot accept an external address. No screen, repository orchestration, journal, or submission wiring exists.
+**Current status:** Typed `Route.Transfer`, shared screen/ViewModel, `DefaultL1WalletRepository`, Android transaction builder, encrypted write-ahead journal, and Android composition are connected behind `l1MutationsAvailable = false`. Normal transfer accepts only another same-network profile. Durable operation identity, immutable activity time, lookup-only restart recovery, rollback, and confirmation-to-settlement reconciliation have deterministic regression coverage.
 
-**Missing work:** P0.2 transfer vertical slice.
+**Missing work:** Funded low-value Mainnet two-wallet submission and process-kill acceptance on the controlled connector before enabling Transfer. P0.2 is not deployment-complete.
 
 **Priority:** P0.
 

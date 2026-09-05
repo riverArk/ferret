@@ -127,30 +127,26 @@ class DefaultL1WalletRepository(
             require(intent.amount == preview.amount && preview.destination.network == profile.network)
             val existing = operation(walletId)
             require(existing == null || existing.state !in UNRESOLVED_STATES) { "another wallet operation is unresolved" }
-            writeOperation(walletId, L1OperationRecord(
+            val prepared = L1OperationRecord(
                 intent.operationId,
                 destinationWalletId = preview.destination.id,
                 amount = preview.amount,
                 fee = preview.feeBound,
                 createdAtEpochMillis = nowEpochMillis(),
                 state = L1OperationState.PREPARED,
-            ))
+            )
+            writeOperation(walletId, prepared)
             val signed = vault.withWalletSeed(walletId) { engine.sign(unsigned, it) }
             try {
                 engine.inspect(signed.cbor).requireMatches(intent, profile.network, preview.feeBound)
                 val transactionId = engine.transactionId(signed.cbor)
-                writeOperation(walletId, L1OperationRecord(
-                    intent.operationId,
-                    transactionId,
-                    preview.destination.id,
-                    preview.amount,
-                    preview.feeBound,
-                    nowEpochMillis(),
-                    L1OperationState.SUBMITTING,
-                ))
+                val submitting = prepared.copy(
+                    expectedTransactionId = transactionId,
+                    state = L1OperationState.SUBMITTING,
+                )
+                writeOperation(walletId, submitting)
                 val remote = submitOperation(profile, L1SubmitRequest(intent.operationId, transactionId, signed.cbor.hex()))
-                require(remote.operationId == intent.operationId && remote.expectedTransactionId == transactionId)
-                writeOperation(walletId, remote.record(preview.destination.id, preview.amount, preview.feeBound, nowEpochMillis()))
+                writeOperation(walletId, submitting.withRemote(remote))
                 intent.operationId
             } finally {
                 signed.cbor.fill(0)
@@ -162,10 +158,9 @@ class DefaultL1WalletRepository(
         if (local.state == L1OperationState.PREPARED) {
             return@withWalletLock local.copy(state = L1OperationState.REJECTED).also { writeOperation(walletId, it) }
         }
-        if (local.state !in UNRESOLVED_STATES) return@withWalletLock local
+        if (local.state == L1OperationState.SETTLED || local.state == L1OperationState.REJECTED) return@withWalletLock local
         val remote = lookupOperation(profile(walletId), local.operationId)
-        require(remote.expectedTransactionId == local.expectedTransactionId)
-        remote.record(local.destinationWalletId, local.amount, local.fee, local.createdAtEpochMillis).also {
+        local.withRemote(remote).also {
             writeOperation(walletId, it)
         }
     }
@@ -214,21 +209,19 @@ class DefaultL1WalletRepository(
     private suspend fun profile(walletId: WalletId): WalletProfile =
         vault.profiles().single { it.id == walletId }
 
-    private fun L1OperationDto.record(destinationWalletId: WalletId, amount: Lovelace, fee: Lovelace, createdAt: Long) =
-        L1OperationRecord(
-            operationId,
-            expectedTransactionId,
-            destinationWalletId,
-            amount,
-            fee,
-            createdAt,
-            when (status) {
+    private fun L1OperationRecord.withRemote(remote: L1OperationDto): L1OperationRecord {
+        require(remote.operationId == operationId && remote.expectedTransactionId == expectedTransactionId) {
+            "operation identity mismatch"
+        }
+        return copy(
+            state = when (remote.status) {
                 "confirmed" -> L1OperationState.CONFIRMED
                 "settled" -> L1OperationState.SETTLED
                 "rejected" -> L1OperationState.REJECTED
                 else -> L1OperationState.PENDING
             },
         )
+    }
 
     private fun ByteArray.hex() = joinToString("") { byte -> byte.toUByte().toString(16).padStart(2, '0') }
 

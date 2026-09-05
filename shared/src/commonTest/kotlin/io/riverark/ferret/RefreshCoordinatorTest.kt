@@ -73,13 +73,12 @@ class RefreshCoordinatorTest {
         val utxo = Json.decodeFromString<ConnectorUtxoDto>(
             """{"transaction_id":"${"b".repeat(64)}","output_index":0,"address":"${MAINNET.scriptDeploymentAddress}","value":[{"unit":"lovelace","quantity":"1"}],"reference_script_hash":"${MAINNET.validatorHashHex}","reference_script_version":3,"reference_script":"00"}""",
         )
-        val operation = Json.decodeFromString<L1OperationDto>(
-            """{"operation_id":"00000000-0000-4000-8000-000000000000","expected_transaction_id":"${"c".repeat(64)}","status":"accepted","depth":0}""",
+        Json.decodeFromString<L1OperationDto>(
+            """{"operation_id":"00000000-0000-4000-8000-000000000000","expected_transaction_id":"${"c".repeat(64)}","transaction_id":"${"c".repeat(64)}","status":"accepted","depth":0}""",
         )
 
         assertTrue(info.assetCatalogDigest != null)
         assertTrue(utxo.ledger().scriptRefHex == MAINNET.validatorHashHex)
-        assertTrue(operation.status == "accepted")
         RefreshCoordinator(
             MAINNET,
             { HealthDto("ok") },
@@ -94,6 +93,36 @@ class RefreshCoordinatorTest {
                 "stake1wallet",
             ),
         )
+    }
+
+    @Test
+    fun operationResponsesRequireConsistentFinalityEvidence() {
+        val identity = """"operation_id":"00000000-0000-4000-8000-000000000001","expected_transaction_id":"${"c".repeat(64)}""""
+        fun decode(status: String, depth: String?, transaction: Boolean = true, extra: String = ""): L1OperationDto =
+            decodeBoundedJson(
+                """{$identity,"status":"$status"${depth?.let { ""","depth":$it""" } ?: ""}${if (transaction) ""","transaction_id":"${"c".repeat(64)}"""" else ""}$extra}"""
+                    .encodeToByteArray(),
+            )
+
+        listOf("pending" to 0L, "rejected" to 0L, "accepted" to 0L, "accepted" to 4L,
+            "confirmed" to 5L, "confirmed" to 2_159L, "settled" to 2_160L, "settled" to Long.MAX_VALUE)
+            .forEach { (status, depth) -> decode(status, depth.toString()) }
+        decode("pending", "0", transaction = false)
+        decode("rejected", "0", transaction = false)
+        listOf(null, "null").forEach { depth ->
+            assertFailsWith<kotlinx.serialization.SerializationException> { decode("pending", depth) }
+        }
+        listOf("pending" to -1, "pending" to 1, "rejected" to 1, "accepted" to 5,
+            "confirmed" to 4, "confirmed" to 2_160, "settled" to 2_159, "unknown" to 0)
+            .forEach { (status, depth) ->
+                assertFailsWith<IllegalArgumentException> { decode(status, depth.toString()) }
+            }
+        listOf("accepted" to 0, "confirmed" to 5, "settled" to 2_160).forEach { (status, depth) ->
+            assertFailsWith<IllegalArgumentException> { decode(status, depth.toString(), transaction = false) }
+        }
+        assertFailsWith<kotlinx.serialization.SerializationException> {
+            decode("accepted", "0", extra = ""","unexpected":true""")
+        }
     }
 
     @Test
