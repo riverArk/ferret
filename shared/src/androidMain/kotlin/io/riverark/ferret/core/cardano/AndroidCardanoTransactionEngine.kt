@@ -42,7 +42,7 @@ class AndroidCardanoTransactionEngine(
             is CardanoIntent.CloseChannel -> require(ledger.network.addressMatches(intent.channelInput.address))
         }
         require(intent.validFrom >= ledger.currentSlot && intent.validUntil > intent.validFrom)
-        val utxos = ledger.utxos.map(::toBloxbean)
+        val utxos = ledger.utxos.filter { it.isSpendableBy(intent.sourceAddress) }.map(::toBloxbean)
         val supplier = SnapshotUtxoSupplier(utxos)
         val params = ObjectMapper().readValue(ledger.protocolParametersJson, ProtocolParams::class.java)
         val builder = QuickTxBuilder(supplier, ProtocolParamsSupplier { params }, transactionProcessor)
@@ -118,13 +118,14 @@ class AndroidCardanoTransactionEngine(
         .outputIndex(utxo.index)
         .address(utxo.address)
         .amount(listOf(utxo.lovelace.amount()) + utxo.assets.map { Amount.asset(it.key, BigInteger.valueOf(it.value)) })
+        .dataHash(utxo.datumHashHex)
         .inlineDatum(utxo.datumHex)
         .referenceScriptHash(utxo.scriptRefHex)
         .build()
 
     private class SnapshotUtxoSupplier(private val utxos: List<Utxo>) : UtxoSupplier {
         override fun getPage(address: String, count: Int?, page: Int?, order: OrderEnum?): List<Utxo> =
-            utxos.filter { it.address == address && it.amount.size == 1 && it.amount.single().unit == "lovelace" }
+            utxos.filter { it.address == address }
                 .drop((page ?: 0) * (count ?: 100)).take(count ?: 100)
         override fun getTxOutput(hash: String, index: Int): Optional<Utxo> = Optional.ofNullable(utxos.firstOrNull { it.txHash == hash && it.outputIndex == index })
     }

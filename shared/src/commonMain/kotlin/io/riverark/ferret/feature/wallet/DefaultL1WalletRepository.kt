@@ -68,7 +68,7 @@ class DefaultL1WalletRepository(
         val profile = profile(walletId)
         val ledger = loadLedger(profile)
         val spendable = ledger.utxos
-            .filter { it.address == profile.paymentAddress && it.assets.isEmpty() && it.datumHex == null && it.scriptRefHex == null }
+            .filter { it.isSpendableBy(profile.paymentAddress) }
             .fold(Lovelace(0)) { total, utxo -> total + utxo.lovelace }
         return WalletBalance(spendable, Lovelace(0))
     }

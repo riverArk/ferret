@@ -14,13 +14,18 @@ data class LedgerUtxo(
     val assets: Map<String, Long> = emptyMap(),
     val datumHex: String? = null,
     val scriptRefHex: String? = null,
+    val datumHashHex: String? = null,
 ) {
     init {
         require(Regex("[0-9a-f]{64}").matches(transactionId))
         require(index >= 0 && address.isNotBlank())
         require(assets.all { (unit, quantity) -> unit.length in 56..120 && unit.length % 2 == 0 && unit.all { it in "0123456789abcdef" } && quantity >= 0 })
+        require(datumHashHex == null || Regex("[0-9a-f]{64}").matches(datumHashHex))
         require(listOfNotNull(datumHex, scriptRefHex).all { it.length % 2 == 0 && it.all { char -> char in "0123456789abcdef" } })
     }
+
+    fun isSpendableBy(sourceAddress: String) =
+        address == sourceAddress && assets.isEmpty() && datumHashHex == null && datumHex == null && scriptRefHex == null
 }
 @Serializable data class LedgerSnapshot(val network: CardanoNetwork, val utxos: List<LedgerUtxo>, val protocolParametersJson: String, val currentSlot: Long)
 @Serializable data class UnsignedTransaction(val cbor: ByteArray, val operationId: String, val feeBound: Lovelace)

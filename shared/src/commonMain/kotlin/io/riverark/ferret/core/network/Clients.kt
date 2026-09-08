@@ -158,6 +158,7 @@ data class ConnectorUtxoDto(
         require(referenceScriptHash == null || Regex("[0-9a-f]{56}").matches(referenceScriptHash))
         require(referenceScriptVersion == null || referenceScriptVersion in 0..3)
         require(referenceScript == null || referenceScript.isBoundedHex(131_072))
+        require(referenceScriptHash != null || referenceScriptVersion == null && referenceScript == null)
         val quantities = value.associate { asset ->
             require(asset.unit == "lovelace" || asset.unit.length in 56..120 && asset.unit.length % 2 == 0 && asset.unit.all { it in "0123456789abcdef" })
             require(Regex("(0|[1-9][0-9]*)").matches(asset.quantity))
@@ -171,6 +172,7 @@ data class ConnectorUtxoDto(
             quantities - "lovelace",
             datumInline,
             referenceScriptHash,
+            datumHashHex = datumHash,
         )
     }
 }

@@ -1,6 +1,8 @@
 package io.riverark.ferret
 
+import io.riverark.ferret.core.cardano.LedgerUtxo
 import io.riverark.ferret.core.model.CardanoNetwork
+import io.riverark.ferret.core.model.Lovelace
 import io.riverark.ferret.core.model.WalletId
 import io.riverark.ferret.core.model.WalletProfile
 import io.riverark.ferret.core.channel.sessionClaimMessage
@@ -93,6 +95,26 @@ class RefreshCoordinatorTest {
                 "stake1wallet",
             ),
         )
+    }
+
+    @Test
+    fun connectorUtxoProtectionMetadataFailsClosed() {
+        val address = "addr1wallet"
+        val prefix = """{"transaction_id":"${"a".repeat(64)}","output_index":0,"address":"$address","value":[{"unit":"lovelace","quantity":"1"}]"""
+        fun decode(extra: String = "") =
+            Json.decodeFromString<ConnectorUtxoDto>("$prefix$extra}").ledger()
+
+        assertTrue(decode().isSpendableBy(address))
+        assertTrue(decode(""","datum_hash":null""").isSpendableBy(address))
+        listOf("a", "A".repeat(64)).forEach { datumHash ->
+            assertFailsWith<IllegalArgumentException> { decode(""","datum_hash":"$datumHash"""") }
+        }
+        assertFailsWith<IllegalArgumentException> { decode(""","reference_script_version":3""") }
+        assertFailsWith<IllegalArgumentException> { decode(""","reference_script":"00"""") }
+        assertFalse(decode(""","reference_script_hash":"${"b".repeat(56)}"""").isSpendableBy(address))
+        assertFailsWith<IllegalArgumentException> {
+            LedgerUtxo("a".repeat(64), 0, address, Lovelace(1), datumHashHex = "bad")
+        }
     }
 
     @Test

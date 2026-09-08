@@ -16,6 +16,7 @@ import io.riverark.ferret.core.model.WalletId
 import io.riverark.ferret.core.model.WalletProfile
 import io.riverark.ferret.core.model.WalletRepository
 import io.riverark.ferret.core.network.L1OperationDto
+import io.riverark.ferret.core.network.ConnectorUtxoDto
 import io.riverark.ferret.core.security.SecureVault
 import io.riverark.ferret.core.security.WalletEncryptedStateV1
 import io.riverark.ferret.core.security.WalletSecretV1
@@ -23,12 +24,44 @@ import io.riverark.ferret.feature.wallet.DefaultL1WalletRepository
 import io.riverark.ferret.feature.wallet.L1OperationState
 import io.riverark.ferret.feature.wallet.parseAdaAmount
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertFailsWith
 
+
 class L1WalletRepositoryTest {
+    @Test fun balanceExcludesEveryProtectedOutput() = runBlocking {
+        val source = WalletProfile(
+            WalletId("mainnet-${"0".repeat(56)}"),
+            "Mainnet wallet",
+            CardanoNetwork.MAINNET,
+            "addr1source",
+            "stake1source",
+        )
+        val wallets = WalletRepository().apply { publish(source.id, listOf(source)) }
+        val vault = FakeVault(listOf(source))
+        val plain = LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(10_000_000))
+        val excluded = listOf(
+            Json.decodeFromString<ConnectorUtxoDto>(
+                """{"transaction_id":"${"11".repeat(32)}","output_index":0,"address":"${source.paymentAddress}","value":[{"unit":"lovelace","quantity":"20000000"}],"datum_hash":"${"aa".repeat(32)}"}""",
+            ).ledger(),
+            LedgerUtxo("22".repeat(32), 0, source.paymentAddress, Lovelace(20_000_000), datumHex = "d87980"),
+            LedgerUtxo("33".repeat(32), 0, source.paymentAddress, Lovelace(20_000_000), scriptRefHex = "bb".repeat(28)),
+            LedgerUtxo("44".repeat(32), 0, source.paymentAddress, Lovelace(20_000_000), mapOf("cc".repeat(28) to 0)),
+            LedgerUtxo("55".repeat(32), 0, "addr1foreign", Lovelace(20_000_000)),
+        )
+        var ledger = LedgerSnapshot(CardanoNetwork.MAINNET, listOf(plain) + excluded, "{}", 100)
+        val repository = DefaultL1WalletRepository(
+            wallets, vault, { ledger }, { emptyList() }, { _, _ -> error("submission not used") },
+            { _, _ -> error("lookup not used") }, FakeEngine(), { OPERATION_ID }, { 123L },
+        )
+
+        assertEquals(Lovelace(10_000_000), repository.balance(source.id).spendable)
+        ledger = ledger.copy(utxos = excluded)
+        assertEquals(Lovelace(0), repository.balance(source.id).spendable)
+    }
     @Test fun previewUsesSelectedInputsAndAllowsExactSpend() = runBlocking {
         val source = profile('0')
         val destination = profile('1')

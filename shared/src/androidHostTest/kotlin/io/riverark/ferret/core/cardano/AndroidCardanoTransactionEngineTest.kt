@@ -13,6 +13,8 @@ import io.riverark.ferret.core.model.CardanoNetwork
 import io.riverark.ferret.core.model.Lovelace
 import io.riverark.ferret.core.model.InvalidRecoveryPhraseException
 import io.riverark.ferret.core.security.AndroidRecoveryPhraseCodec
+import io.riverark.ferret.core.network.ConnectorUtxoDto
+import io.riverark.ferret.core.network.MAINNET
 import java.util.Collections
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -20,6 +22,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
 
 class AndroidCardanoTransactionEngineTest {
     private val processor = object : TransactionProcessor {
@@ -79,6 +82,69 @@ class AndroidCardanoTransactionEngineTest {
 
         val unsigned = engine.build(intent, ledger)
         engine.inspect(unsigned.cbor).requireMatches(intent, CardanoNetwork.PREPROD, unsigned.feeBound)
+    }
+
+    @Test fun transferRejectsEveryProtectedOnlyFundingForm() = runBlocking<Unit> {
+        val engine = AndroidCardanoTransactionEngine(processor)
+        val source = engine.deriveWallet(ByteArray(32) { it.toByte() }, CardanoNetwork.MAINNET)
+        val destination = engine.deriveWallet(ByteArray(32) { (it + 1).toByte() }, CardanoNetwork.MAINNET)
+        val intent = CardanoIntent.Transfer(
+            source.paymentAddress,
+            destination.paymentAddress,
+            Lovelace(5_000_000),
+            "00000000-0000-4000-8000-000000000002",
+            100,
+            200,
+        )
+        val protected = listOf(
+            Json.decodeFromString<ConnectorUtxoDto>(
+                """{"transaction_id":"${"22".repeat(32)}","output_index":0,"address":"${source.paymentAddress}","value":[{"unit":"lovelace","quantity":"100000000"}],"datum_hash":"${"33".repeat(32)}"}""",
+            ).ledger(),
+            LedgerUtxo("33".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000), datumHex = "d87980"),
+            LedgerUtxo("44".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000), scriptRefHex = "55".repeat(28)),
+            LedgerUtxo("55".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000), mapOf("66".repeat(28) to 0)),
+        )
+
+        protected.forEach { utxo ->
+            assertFailsWith<Exception> {
+                engine.build(intent, LedgerSnapshot(CardanoNetwork.MAINNET, listOf(utxo), PROTOCOL_PARAMETERS, 100))
+            }
+        }
+        val plain = protected.first().copy(datumHashHex = null)
+        val unsigned = engine.build(intent, LedgerSnapshot(CardanoNetwork.MAINNET, listOf(plain), PROTOCOL_PARAMETERS, 100))
+        assertEquals(setOf(plain.transactionId to plain.index), Transaction.deserialize(unsigned.cbor).body.inputs.map { it.transactionId to it.index }.toSet())
+        engine.inspect(unsigned.cbor).requireMatches(intent, CardanoNetwork.MAINNET, unsigned.feeBound)
+    }
+
+    @Test fun automaticWalletIntentsSpendOnlyEligibleInputs() = runBlocking {
+        val engine = AndroidCardanoTransactionEngine(processor)
+        val source = engine.deriveWallet(ByteArray(32) { it.toByte() }, CardanoNetwork.MAINNET)
+        val destination = engine.deriveWallet(ByteArray(32) { (it + 1).toByte() }, CardanoNetwork.MAINNET)
+        val eligible = LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000))
+        val ledger = LedgerSnapshot(
+            CardanoNetwork.MAINNET,
+            listOf(
+                eligible,
+                LedgerUtxo("11".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000), datumHashHex = "aa".repeat(32)),
+                LedgerUtxo("22".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000), datumHex = "d87980"),
+                LedgerUtxo("33".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000), scriptRefHex = "bb".repeat(28)),
+                LedgerUtxo("44".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000), mapOf("cc".repeat(28) to 0)),
+                LedgerUtxo("55".repeat(32), 0, destination.paymentAddress, Lovelace(100_000_000)),
+            ),
+            PROTOCOL_PARAMETERS,
+            100,
+        )
+        val intents = listOf<CardanoIntent>(
+            CardanoIntent.Transfer(source.paymentAddress, destination.paymentAddress, Lovelace(5_000_000), "00000000-0000-4000-8000-000000000003", 100, 200),
+            CardanoIntent.SweepWallet(source.paymentAddress, destination.paymentAddress, Lovelace(5_000_000), "00000000-0000-4000-8000-000000000004", 100, 200),
+            CardanoIntent.OpenChannel(source.paymentAddress, MAINNET.validatorAddress, "d87980", Lovelace(5_000_000), "00000000-0000-4000-8000-000000000005", 100, 200),
+        )
+
+        intents.forEach { intent ->
+            val unsigned = engine.build(intent, ledger)
+            assertEquals(setOf(eligible.transactionId to eligible.index), Transaction.deserialize(unsigned.cbor).body.inputs.map { it.transactionId to it.index }.toSet())
+            engine.inspect(unsigned.cbor).requireMatches(intent, CardanoNetwork.MAINNET, unsigned.feeBound)
+        }
     }
 
     @Test fun signingPreservesOriginalBodyHashAndBodyMutationsAreDetected() = runBlocking<Unit> {
