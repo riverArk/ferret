@@ -39,6 +39,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import ferret.shared.generated.resources.Res
 import ferret.shared.generated.resources.restore
 import ferret.shared.generated.resources.settings
@@ -59,13 +61,41 @@ fun QrPaymentScannerScreen(onInvoice: (String) -> Unit, onError: () -> Unit) {
     var requested by remember { mutableStateOf(false) }
     var scanFailed by remember { mutableStateOf(false) }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted = it; requested = true }
+    DisposableEffect(owner, context) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                granted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+            }
+        }
+        owner.lifecycle.addObserver(observer)
+        onDispose { owner.lifecycle.removeObserver(observer) }
+    }
 
     if (granted) {
         val scanner = remember { AndroidQrScanner(context) }
+        var previewView by remember { mutableStateOf<PreviewView?>(null) }
         DisposableEffect(scanner) { onDispose(scanner::close) }
+        DisposableEffect(scanner, owner, previewView) {
+            val view = previewView
+            val observer = LifecycleEventObserver { _, event ->
+                when (event) {
+                    Lifecycle.Event.ON_START -> view?.let { scanner.start(owner, it, onInvoice) { scanFailed = true; onError() } }
+                    Lifecycle.Event.ON_STOP -> scanner.stop()
+                    else -> Unit
+                }
+            }
+            owner.lifecycle.addObserver(observer)
+            if (view != null && owner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+                scanner.start(owner, view, onInvoice) { scanFailed = true; onError() }
+            }
+            onDispose {
+                owner.lifecycle.removeObserver(observer)
+                scanner.stop()
+            }
+        }
         Box(Modifier.fillMaxSize().background(Color.Black)) {
             AndroidView(
-                factory = { PreviewView(it).also { view -> scanner.start(owner, view, onInvoice) { scanFailed = true; onError() } } },
+                factory = { PreviewView(it).also { view -> previewView = view } },
                 modifier = Modifier.fillMaxSize(),
             )
             Box(

@@ -50,7 +50,7 @@ fun SettingsScreen(
     onConnectBackup: (() -> Unit)?,
     onVerifyBackup: (() -> Unit)?,
     onTakeoverBackup: (() -> Unit)?,
-    onRemove: () -> Unit,
+    onRemove: (() -> Unit)?,
 ) {
     var name by rememberSaveable(settings.profile.id.value) { mutableStateOf(settings.profile.name) }
     var confirmTakeover by rememberSaveable(settings.profile.id.value) { mutableStateOf(false) }
@@ -99,7 +99,7 @@ fun SettingsScreen(
             section("App diagnostics")
             item { FerretListRow("Version", "${settings.version} (${settings.buildCommit})") }
             settings.diagnosticCode?.let { code -> item { FerretListRow("Diagnostic code", code) } }
-            item { FerretDangerButton("Remove wallet", onRemove) }
+            onRemove?.let { item { FerretDangerButton("Remove wallet", it) } }
         }
     }
     if (confirmTakeover) {

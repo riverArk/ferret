@@ -55,12 +55,12 @@ class ProtocolWireTest {
         )
 
         val quote = decodeBoundedJson<io.riverark.ferret.core.channel.ProtocolQuote>(
-            """{"index":7,"amount":8,"relative_timeout":9,"routing_fee":10}""".encodeToByteArray(),
+            """{"index":7,"amount":8,"relative_timeout":9,"routing_fee":3,"invoice_hash":"${"ab".repeat(32)}","invoice_amount_msat":2000,"payment_amount":2,"routing_fee_amount":3,"adaptor_fee":3,"expires_at_epoch_millis":1000}""".encodeToByteArray(),
         )
         assertEquals(7, quote.index)
         assertFailsWith<SerializationException> {
             decodeBoundedJson<io.riverark.ferret.core.channel.ProtocolQuote>(
-                """{"index":7,"amount":8,"relative_timeout":9,"routing_fee":10,"extra":true}""".encodeToByteArray(),
+                """{"index":7,"amount":8,"relative_timeout":9,"routing_fee":3,"invoice_hash":"${"ab".repeat(32)}","invoice_amount_msat":2000,"payment_amount":2,"routing_fee_amount":3,"adaptor_fee":3,"expires_at_epoch_millis":1000,"extra":true}""".encodeToByteArray(),
             )
         }
     }

@@ -32,12 +32,15 @@ data class PaymentJournalV1(
 )
 
 interface PaymentStore {
+    suspend fun requireCapacity(walletId: WalletId) = Unit
     suspend fun isPaid(walletId: WalletId, paymentHash: String): Boolean
     suspend fun pending(walletId: WalletId): PendingPaymentV1?
     suspend fun recordPending(walletId: WalletId, payment: PendingPaymentV1)
     suspend fun complete(walletId: WalletId, receipt: Receipt, completedAtEpochMillis: Long)
     suspend fun receipt(walletId: WalletId, operationId: String): Receipt?
     suspend fun history(walletId: WalletId): List<TransactionRecord>
+    suspend fun recovery(walletId: WalletId): PaymentJournalV1
+    suspend fun installRecovery(walletId: WalletId, recovery: PaymentJournalV1)
 }
 
 class VaultPaymentStore(
@@ -47,11 +50,18 @@ class VaultPaymentStore(
     override suspend fun isPaid(walletId: WalletId, paymentHash: String) = load(walletId).paidHashes.contains(paymentHash)
 
     override suspend fun pending(walletId: WalletId) = load(walletId).pending
+    override suspend fun recovery(walletId: WalletId) = load(walletId)
+    override suspend fun installRecovery(walletId: WalletId, recovery: PaymentJournalV1) = save(walletId, recovery)
+    override suspend fun requireCapacity(walletId: WalletId) {
+        // ponytail: bounded encrypted hash set; use an authenticated paged store if 10,000 payments becomes insufficient.
+        require(load(walletId).paidHashes.size < MAX_RECEIPTS) { "Payment history storage is full." }
+    }
 
     override suspend fun recordPending(walletId: WalletId, payment: PendingPaymentV1) {
         validateHash(payment.paymentHash)
         require(payment.createdAtEpochMillis >= 0)
         val journal = load(walletId)
+        if (journal.pending == payment) return
         require(journal.pending == null && payment.paymentHash !in journal.paidHashes) { "payment is already pending or paid" }
         save(walletId, journal.copy(pending = payment))
     }
@@ -59,6 +69,10 @@ class VaultPaymentStore(
     override suspend fun complete(walletId: WalletId, receipt: Receipt, completedAtEpochMillis: Long) {
         require(completedAtEpochMillis >= 0)
         val journal = load(walletId)
+        journal.receipts.singleOrNull { it.receipt.operationId == receipt.operationId }?.let {
+            require(it.receipt == receipt)
+            return
+        }
         val pending = requireNotNull(journal.pending)
         require(receipt.operationId == pending.operationId && receipt.paymentHash == pending.paymentHash)
         save(walletId, journal.copy(

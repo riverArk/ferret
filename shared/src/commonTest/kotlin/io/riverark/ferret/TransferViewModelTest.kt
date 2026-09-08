@@ -48,5 +48,7 @@ class TransferViewModelTest {
             return TransferPreview(destination, amount, Lovelace(1), Lovelace(0))
         }
         override suspend fun submitTransfer(walletId: WalletId, preview: TransferPreview) = error("not used")
+        override suspend fun previewSweep(walletId: WalletId, destinationAddress: String) = error("not used")
+        override suspend fun submitSweep(walletId: WalletId, preview: io.riverark.ferret.core.cardano.SweepPreview) = error("not used")
     }
 }

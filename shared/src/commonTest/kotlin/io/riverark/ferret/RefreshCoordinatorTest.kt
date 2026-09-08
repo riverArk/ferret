@@ -80,7 +80,8 @@ class RefreshCoordinatorTest {
         )
 
         assertTrue(info.assetCatalogDigest != null)
-        assertTrue(utxo.ledger().scriptRefHex == MAINNET.validatorHashHex)
+        assertTrue(utxo.ledger().scriptRefHex == "00")
+        assertTrue(utxo.ledger().scriptRefHashHex == MAINNET.validatorHashHex)
         RefreshCoordinator(
             MAINNET,
             { HealthDto("ok") },

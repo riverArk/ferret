@@ -30,6 +30,7 @@ import io.riverark.ferret.core.backup.BackupCheckpointV1
 import io.riverark.ferret.core.cardano.deriveAndroidWallet
 import io.riverark.ferret.core.model.CardanoNetwork
 import io.riverark.ferret.core.model.WalletManager
+import io.riverark.ferret.core.model.AppState
 import io.riverark.ferret.core.model.DiagnosticCode
 import io.riverark.ferret.core.model.RuntimeDiagnostics
 import io.riverark.ferret.core.model.WalletRepository
@@ -53,6 +54,12 @@ import io.riverark.ferret.core.security.SensitiveContentCounter
 import io.riverark.ferret.core.security.AndroidUserAuthenticator
 import io.riverark.ferret.core.security.AndroidBackupCrypto
 import io.riverark.ferret.core.channel.VaultChannelJournal
+import io.riverark.ferret.core.channel.AdaptorChannelRemote
+import io.riverark.ferret.core.channel.ChannelRepository
+import io.riverark.ferret.core.channel.DriveChannelBackupProtocol
+import io.riverark.ferret.core.channel.DefaultPaymentGateway
+import io.riverark.ferret.core.channel.PaymentViewModel
+import io.riverark.ferret.core.channel.ProtocolKeytag
 import io.riverark.ferret.core.security.AndroidDeviceIdentity
 import io.riverark.ferret.core.channel.SessionLeaseRepository
 import io.riverark.ferret.core.channel.WriterLease
@@ -86,6 +93,7 @@ class MainActivity : FragmentActivity() {
     private lateinit var authenticator: AndroidUserAuthenticator
     private lateinit var paymentStore: VaultPaymentStore
     private lateinit var l1WalletRepository: DefaultL1WalletRepository
+    private lateinit var channelRepository: ChannelRepository
     private lateinit var walletRemovalManager: WalletRemovalManager
     private lateinit var driveTokens: AndroidGoogleOAuthTokenProvider
     private lateinit var backupCoordinator: WalletBackupCoordinator
@@ -138,12 +146,28 @@ class MainActivity : FragmentActivity() {
             wallets,
             vault,
             { profile -> connectors.getValue(profile.network) },
-            androidCardanoTransactionEngine(),
+            androidCardanoTransactionEngine { network, cbor ->
+                connectors.getValue(network).evaluate(cbor.joinToString("") { byte -> byte.toUByte().toString(16).padStart(2, '0') })
+            },
             { UUID.randomUUID().toString() },
             System::currentTimeMillis,
         )
         paymentStore = VaultPaymentStore(vault)
-        val channelJournal = VaultChannelJournal(vault)
+        val channelJournal = VaultChannelJournal(vault, paymentStore)
+        channelRepository = ChannelRepository(
+            wallets,
+            channelJournal,
+            DriveChannelBackupProtocol(backupCoordinator, ::claimWriter, paymentStore),
+            AdaptorChannelRemote(
+                { walletId ->
+                    val profile = vault.profiles().single { it.id == walletId }
+                    adaptors.getValue(profile.network)
+                },
+                AndroidProtocolCrypto,
+            ),
+            paymentStore,
+            { UUID.randomUUID().toString() },
+        )
         walletRemovalManager = WalletRemovalManager(
             DefaultWalletRemovalRepository(
                 loadReadiness = { walletId ->
@@ -169,12 +193,13 @@ class MainActivity : FragmentActivity() {
                             val channel = channelJournal.load(walletId)
                             val transactions = connectors.getValue(profile.network).transactions(profile.paymentAddress)
                             RemovalReadiness(
-                                profile,
-                                connectors.getValue(profile.network).balance(profile.paymentAddress),
+                                profile.copy(channelState = channel.state),
+                                l1WalletRepository.balance(walletId).spendable,
                                 l1Operation?.state in setOf(L1OperationState.PREPARED, L1OperationState.SUBMITTING, L1OperationState.PENDING) ||
                                     channel.pending != null || paymentStore.pending(walletId) != null,
                                 driveResolved,
                                 if (transactions.none { it.state != TransactionState.SETTLED }) 2_160 else 0,
+                                l1WalletRepository.hasNativeAssets(walletId),
                             )
                         } finally {
                             encrypted.channelRecovery.fill(0)
@@ -182,10 +207,12 @@ class MainActivity : FragmentActivity() {
                         }
                     }
                 },
-                sweepWallet = { _, _ -> error("L1 sweep deployment is unavailable") },
+                previewer = l1WalletRepository::previewSweep,
+                submitter = l1WalletRepository::submitSweep,
                 deleteBackup = backupCoordinator::delete,
             ),
             vault,
+            wallets,
         )
         connectivity = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         connectivity.registerDefaultNetworkCallback(networkCallback)
@@ -197,7 +224,11 @@ class MainActivity : FragmentActivity() {
                     loadBalance = { profile ->
                         try {
                             coordinators.getValue(profile.network).refresh {
-                                connectors.getValue(profile.network).balance(profile.paymentAddress)
+                                l1WalletRepository.reconcilePending(profile.id)
+                                channelRepository.reconcile(profile.id)
+                                channelRepository.load(profile.id)
+                                l1WalletRepository.balance(profile.id).spendable +
+                                    channelRepository.snapshots.value.getValue(profile.id).spendableBalance
                             }
                         } catch (error: CancellationException) {
                             throw error
@@ -223,8 +254,32 @@ class MainActivity : FragmentActivity() {
                     encodeQr = ::addressQrCode,
                     copyAddress = ::copyAddress,
                     l1WalletRepository = l1WalletRepository,
-                    l1MutationsAvailable = false,
-                    loadChannel = channelJournal::load,
+                    l1MutationsAvailable = BuildConfig.MAINNET_ACCEPTANCE,
+                    loadChannel = { walletId ->
+                        channelRepository.reconcile(walletId)
+                        channelRepository.load(walletId)
+                        channelRepository.snapshots.value.getValue(walletId)
+                    },
+                    paymentViewModelFactory = { walletId ->
+                        val profile = currentProfile(walletId)
+                        PaymentViewModel(
+                            walletId,
+                            channelRepository,
+                            DefaultPaymentGateway(
+                                adaptor = { adaptors.getValue(profile.network) },
+                                keytag = { protocolKeytag(it) },
+                                writer = { verifiedWriter(it) },
+                                signer = { AndroidProtocolSigner(vault, it, profile.network) },
+                                network = { profile.network },
+                                chain = if (profile.network == CardanoNetwork.MAINNET) "mainnet" else "testnet",
+                                crypto = AndroidProtocolCrypto,
+                            ),
+                            paymentStore,
+                        )
+                    },
+                    loadPaymentReceipt = paymentStore::receipt,
+                    paymentActionsAvailable = BuildConfig.MAINNET_ACCEPTANCE,
+                    channelActionsAvailable = BuildConfig.MAINNET_ACCEPTANCE,
                     invoiceScanner = { onInvoice, onError -> QrPaymentScannerScreen(onInvoice, onError) },
                     nowEpochMillis = System::currentTimeMillis,
                     loadSettings = { profile ->
@@ -313,8 +368,7 @@ class MainActivity : FragmentActivity() {
                             checkpoint.channelSnapshot.fill(0)
                         }
                     },
-                    walletRemovalManager = walletRemovalManager,
-                    paymentActionsAvailable = false,
+                    walletRemovalManager = walletRemovalManager.takeIf { BuildConfig.MAINNET_ACCEPTANCE },
                 ),
                 ::unlock,
                 ::setSensitiveContent,
@@ -460,6 +514,28 @@ class MainActivity : FragmentActivity() {
                 System::currentTimeMillis,
             )
         }.claim(checkpoint)
+    }
+
+    private fun currentProfile(walletId: WalletId): WalletProfile =
+        ((wallets.state.value as? AppState.Ready)?.wallets?.singleOrNull { it.id == walletId })
+            ?: error("wallet profile unavailable")
+
+    private suspend fun protocolKeytag(walletId: WalletId): ProtocolKeytag {
+        return ProtocolKeytag(
+            channelRepository.snapshots.value[walletId]?.verifiedChannelData
+                ?.takeIf { it.length >= 66 }
+                ?: error("verified channel keytag unavailable"),
+        )
+    }
+
+    private suspend fun verifiedWriter(walletId: WalletId): WriterLease {
+        val checkpoint = backupCoordinator.verify(walletId)
+        return try {
+            claimWriter(walletId, checkpoint)
+        } finally {
+            checkpoint.ciphertextHash.fill(0)
+            checkpoint.channelSnapshot.fill(0)
+        }
     }
 
     private fun lockSession() {

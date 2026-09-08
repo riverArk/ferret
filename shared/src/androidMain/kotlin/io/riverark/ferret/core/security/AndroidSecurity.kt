@@ -86,6 +86,7 @@ class AndroidSecureVault(private val context: Context) : SecureVault {
                 channelRecovery = secret.channelRecovery.copyOf(),
                 operationJournal = secret.operationJournal.copyOf(),
                 backupGeneration = secret.backupGeneration,
+                removalState = secret.removalState,
             )
         } finally {
             secret.clear()
@@ -99,6 +100,7 @@ class AndroidSecureVault(private val context: Context) : SecureVault {
             channelRecovery = state.channelRecovery,
             operationJournal = state.operationJournal,
             backupGeneration = state.backupGeneration,
+            removalState = state.removalState,
         )
         val plaintext = json.encodeToString(updated).encodeToByteArray()
         try {

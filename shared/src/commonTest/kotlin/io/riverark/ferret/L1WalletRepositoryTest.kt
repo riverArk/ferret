@@ -49,7 +49,7 @@ class L1WalletRepositoryTest {
                 """{"transaction_id":"${"11".repeat(32)}","output_index":0,"address":"${source.paymentAddress}","value":[{"unit":"lovelace","quantity":"20000000"}],"datum_hash":"${"aa".repeat(32)}"}""",
             ).ledger(),
             LedgerUtxo("22".repeat(32), 0, source.paymentAddress, Lovelace(20_000_000), datumHex = "d87980"),
-            LedgerUtxo("33".repeat(32), 0, source.paymentAddress, Lovelace(20_000_000), scriptRefHex = "bb".repeat(28)),
+            LedgerUtxo("33".repeat(32), 0, source.paymentAddress, Lovelace(20_000_000), scriptRefHashHex = "bb".repeat(28)),
             LedgerUtxo("44".repeat(32), 0, source.paymentAddress, Lovelace(20_000_000), mapOf("cc".repeat(28) to 0)),
             LedgerUtxo("55".repeat(32), 0, "addr1foreign", Lovelace(20_000_000)),
         )
@@ -274,6 +274,9 @@ class L1WalletRepositoryTest {
         val nextPreview = next.previewTransfer(source.id, destination, Lovelace(4_000_000))
         assertEquals(NEXT_OPERATION_ID, next.submitTransfer(source.id, nextPreview))
         assertEquals(2, submissions)
+        assertEquals(2, next.operations(source.id).size)
+        assertEquals(L1OperationState.CONFIRMED, next.operations(source.id).first().state)
+        assertEquals(L1OperationState.PENDING, next.operations(source.id).last().state)
     }
 
     @Test fun successfulSubmissionKeepsPreparationTimeAndLocalMetadata() = runBlocking {

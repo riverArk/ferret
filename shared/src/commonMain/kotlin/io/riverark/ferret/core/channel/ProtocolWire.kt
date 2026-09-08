@@ -71,8 +71,22 @@ data class ProtocolQuote(
     val amount: Long,
     val relative_timeout: Long,
     val routing_fee: Long,
+    val invoice_hash: String?,
+    val invoice_amount_msat: Long,
+    val payment_amount: Long,
+    val routing_fee_amount: Long,
+    val adaptor_fee: Long,
+    val expires_at_epoch_millis: Long,
 ) {
-    init { require(index >= 0 && amount >= 0 && relative_timeout > 0 && routing_fee >= 0) }
+    init {
+        require(index >= 0 && amount >= 0 && relative_timeout > 0 && routing_fee >= 0)
+        require(invoice_hash == null || Regex("[0-9a-f]{64}").matches(invoice_hash))
+        require(invoice_amount_msat > 0 && payment_amount >= 0 && routing_fee_amount >= 0 && adaptor_fee >= 0)
+        require(payment_amount <= Long.MAX_VALUE - routing_fee_amount)
+        val subtotal = payment_amount + routing_fee_amount
+        require(subtotal <= Long.MAX_VALUE - adaptor_fee && amount == subtotal + adaptor_fee)
+        require(expires_at_epoch_millis >= 0)
+    }
 }
 
 @Serializable

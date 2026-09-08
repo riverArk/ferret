@@ -5,6 +5,7 @@ import io.riverark.ferret.core.cardano.CardanoTransactionEngine
 import io.riverark.ferret.core.cardano.LedgerSnapshot
 import io.riverark.ferret.core.cardano.UnsignedTransaction
 import io.riverark.ferret.core.cardano.requireMatches
+import io.riverark.ferret.core.cardano.SweepPreview
 import io.riverark.ferret.core.cardano.requireL1Funding
 import io.riverark.ferret.core.model.Lovelace
 import io.riverark.ferret.core.model.TransactionRecord
@@ -27,12 +28,15 @@ enum class L1OperationState { PREPARED, SUBMITTING, PENDING, CONFIRMED, SETTLED,
 data class L1OperationRecord(
     val operationId: String,
     val expectedTransactionId: String? = null,
-    val destinationWalletId: WalletId,
+    val destinationWalletId: WalletId? = null,
+    val destinationAddress: String? = null,
     val amount: Lovelace,
     val fee: Lovelace,
     val createdAtEpochMillis: Long,
     val state: L1OperationState,
 )
+@Serializable
+private data class L1OperationsV1(val records: List<L1OperationRecord>)
 
 class DefaultL1WalletRepository(
     private val wallets: WalletRepository,
@@ -68,30 +72,43 @@ class DefaultL1WalletRepository(
     override suspend fun balance(walletId: WalletId): WalletBalance {
         val profile = profile(walletId)
         val ledger = loadLedger(profile)
-        val spendable = ledger.utxos
+        val ledgerSpendable = ledger.utxos
             .filter { it.isSpendableBy(profile.paymentAddress) }
             .fold(Lovelace(0)) { total, utxo -> total + utxo.lovelace }
-        return WalletBalance(spendable, Lovelace(0))
+        val pending = operations(walletId)
+            .filter { it.state in setOf(L1OperationState.PREPARED, L1OperationState.SUBMITTING, L1OperationState.PENDING) }
+            .fold(Lovelace(0)) { total, operation -> total + operation.amount + operation.fee }
+        return WalletBalance(
+            Lovelace((ledgerSpendable.value - pending.value).coerceAtLeast(0)),
+            pending,
+        )
+    }
+
+    suspend fun hasNativeAssets(walletId: WalletId): Boolean {
+        val profile = profile(walletId)
+        return loadLedger(profile).utxos.any { it.address == profile.paymentAddress && it.assets.isNotEmpty() }
     }
     override suspend fun history(walletId: WalletId): List<TransactionRecord> {
         val profile = profile(walletId)
         val remote = loadTransactions(profile)
-        val local = operation(walletId) ?: return remote
-        val id = local.expectedTransactionId ?: local.operationId
-        if (remote.any { it.id == id }) return remote
-        return (remote + TransactionRecord(
-            id,
-            local.createdAtEpochMillis,
-            local.amount,
-            local.fee,
-            io.riverark.ferret.core.model.Realm.L1,
-            when (local.state) {
-                L1OperationState.CONFIRMED -> io.riverark.ferret.core.model.TransactionState.CONFIRMED
-                L1OperationState.SETTLED -> io.riverark.ferret.core.model.TransactionState.SETTLED
-                L1OperationState.REJECTED -> io.riverark.ferret.core.model.TransactionState.FAILED
-                else -> io.riverark.ferret.core.model.TransactionState.PENDING
-            },
-        )).sortedWith(compareByDescending<TransactionRecord> { it.timestampEpochMillis }.thenByDescending { it.id })
+        val local = operations(walletId)
+        return (remote + local
+            .filterNot { operation -> remote.any { it.id == (operation.expectedTransactionId ?: operation.operationId) } }
+            .map { operation ->
+                TransactionRecord(
+                    operation.expectedTransactionId ?: operation.operationId,
+                    operation.createdAtEpochMillis,
+                    operation.amount,
+                    operation.fee,
+                    io.riverark.ferret.core.model.Realm.L1,
+                    when (operation.state) {
+                        L1OperationState.CONFIRMED -> io.riverark.ferret.core.model.TransactionState.CONFIRMED
+                        L1OperationState.SETTLED -> io.riverark.ferret.core.model.TransactionState.SETTLED
+                        L1OperationState.REJECTED -> io.riverark.ferret.core.model.TransactionState.FAILED
+                        else -> io.riverark.ferret.core.model.TransactionState.PENDING
+                    },
+                )
+            }).sortedWith(compareByDescending<TransactionRecord> { it.timestampEpochMillis }.thenByDescending { it.id })
     }
 
     override suspend fun previewTransfer(walletId: WalletId, destination: WalletProfile, amount: Lovelace): TransferPreview =
@@ -134,8 +151,8 @@ class DefaultL1WalletRepository(
             summary.requireMatches(intent, profile.network, preview.feeBound)
             require((summary.outputs.singleOrNull { it.address == profile.paymentAddress }?.lovelace ?: Lovelace(0)) == preview.change)
             require(engine.transactionId(unsigned.cbor) == previewTransactionId)
-            val existing = operation(walletId)
-            require(existing == null || existing.state !in UNRESOLVED_STATES) { "another wallet operation is unresolved" }
+            val existing = operations(walletId)
+            require(existing.none { it.state in UNRESOLVED_STATES }) { "another wallet operation is unresolved" }
             val prepared = L1OperationRecord(
                 intent.operationId,
                 destinationWalletId = preview.destination.id,
@@ -163,21 +180,111 @@ class DefaultL1WalletRepository(
             }
         }
 
+    override suspend fun previewSweep(walletId: WalletId, destinationAddress: String): SweepPreview =
+        wallets.withWalletLock(walletId) {
+            val profile = profile(walletId)
+            require(profile.network.accepts(destinationAddress) && destinationAddress != profile.paymentAddress)
+            val ledger = loadLedger(profile)
+            val owned = ledger.utxos.filter { it.address == profile.paymentAddress }
+            require(owned.none { it.assets.isNotEmpty() }) { "move native assets before sweeping" }
+            val total = owned
+                .filter { it.isSpendableBy(profile.paymentAddress) }
+                .fold(Lovelace(0)) { sum, utxo -> sum + utxo.lovelace }
+            require(total.value > INITIAL_SWEEP_FEE)
+            val operationId = newOperationId()
+            var amount = Lovelace(total.value - INITIAL_SWEEP_FEE)
+            repeat(MAX_SWEEP_PASSES) {
+                val intent = CardanoIntent.SweepWallet(
+                    profile.paymentAddress,
+                    destinationAddress,
+                    amount,
+                    operationId,
+                    ledger.currentSlot,
+                    ledger.currentSlot + TRANSFER_VALIDITY_SLOTS,
+                )
+                val unsigned = engine.build(intent, ledger)
+                val summary = engine.inspect(unsigned.cbor)
+                summary.requireMatches(intent, profile.network, unsigned.feeBound)
+                summary.requireL1Funding(intent, ledger)
+                val nextAmount = total - summary.fee
+                if (nextAmount == amount && summary.outputs.singleOrNull()?.address == destinationAddress) {
+                    return@withWalletLock SweepPreview(
+                        destinationAddress,
+                        amount,
+                        summary.fee,
+                        intent,
+                        unsigned,
+                        engine.transactionId(unsigned.cbor),
+                    )
+                }
+                amount = nextAmount
+            }
+            error("sweep fee did not converge")
+        }
+
+    override suspend fun submitSweep(walletId: WalletId, preview: SweepPreview): String =
+        wallets.withWalletLock(walletId) {
+            val profile = profile(walletId)
+            require(profile.network.accepts(preview.destinationAddress))
+            require(preview.intent.sourceAddress == profile.paymentAddress)
+            require(preview.intent.destinationAddress == preview.destinationAddress)
+            require(preview.intent.amount == preview.amount && preview.intent.operationId == preview.unsigned.operationId)
+            val summary = engine.inspect(preview.unsigned.cbor)
+            summary.requireMatches(preview.intent, profile.network, preview.unsigned.feeBound)
+            require(summary.outputs.singleOrNull()?.let {
+                it.address == preview.destinationAddress && it.lovelace == preview.amount && it.assets.isEmpty()
+            } == true)
+            require(summary.fee == preview.fee)
+            require(engine.transactionId(preview.unsigned.cbor) == preview.expectedTransactionId)
+            val existing = operations(walletId)
+            require(existing.none { it.state in UNRESOLVED_STATES }) { "another wallet operation is unresolved" }
+            val prepared = L1OperationRecord(
+                preview.intent.operationId,
+                destinationAddress = preview.destinationAddress,
+                amount = preview.amount,
+                fee = preview.fee,
+                createdAtEpochMillis = nowEpochMillis(),
+                state = L1OperationState.PREPARED,
+            )
+            writeOperation(walletId, prepared)
+            val signed = vault.withWalletSeed(walletId) { engine.sign(preview.unsigned, it) }
+            try {
+                engine.inspect(signed.cbor).requireMatches(preview.intent, profile.network, preview.unsigned.feeBound)
+                val transactionId = engine.transactionId(signed.cbor)
+                require(transactionId == preview.expectedTransactionId)
+                val submitting = prepared.copy(expectedTransactionId = transactionId, state = L1OperationState.SUBMITTING)
+                writeOperation(walletId, submitting)
+                val remote = submitOperation(
+                    profile,
+                    L1SubmitRequest(preview.intent.operationId, transactionId, signed.cbor.hex()),
+                )
+                writeOperation(walletId, submitting.withRemote(remote))
+                preview.intent.operationId
+            } finally {
+                signed.cbor.fill(0)
+            }
+        }
+
     suspend fun reconcilePending(walletId: WalletId): L1OperationRecord? = wallets.withWalletLock(walletId) {
-        val local = operation(walletId) ?: return@withWalletLock null
-        if (local.state == L1OperationState.PREPARED) {
-            return@withWalletLock local.copy(state = L1OperationState.REJECTED).also { writeOperation(walletId, it) }
+        val local = operations(walletId)
+        if (local.isEmpty()) return@withWalletLock null
+        val profile = profile(walletId)
+        val reconciled = local.map { operation ->
+            when (operation.state) {
+                L1OperationState.PREPARED -> operation.copy(state = L1OperationState.REJECTED)
+                L1OperationState.SETTLED, L1OperationState.REJECTED -> operation
+                else -> operation.withRemote(lookupOperation(profile, operation.operationId))
+            }
         }
-        if (local.state == L1OperationState.SETTLED || local.state == L1OperationState.REJECTED) return@withWalletLock local
-        val remote = lookupOperation(profile(walletId), local.operationId)
-        local.withRemote(remote).also {
-            writeOperation(walletId, it)
-        }
+        writeOperations(walletId, reconciled)
+        reconciled.last()
     }
 
-    suspend fun operation(walletId: WalletId): L1OperationRecord? {
+    suspend fun operation(walletId: WalletId): L1OperationRecord? = operations(walletId).lastOrNull()
+
+    suspend fun operations(walletId: WalletId): List<L1OperationRecord> {
         val bytes = vault.walletState(walletId).operationJournal
-        if (bytes.isEmpty()) return null
+        if (bytes.isEmpty()) return emptyList()
         val journal = try {
             json.decodeFromString<WalletOperationJournalV1>(bytes.decodeToString())
         } finally {
@@ -186,10 +293,12 @@ class DefaultL1WalletRepository(
         if (journal.l1.isEmpty()) {
             journal.channel.fill(0)
             journal.payment.fill(0)
-            return null
+            return emptyList()
         }
         return try {
-            json.decodeFromString<L1OperationRecord>(journal.l1.decodeToString())
+            val encoded = journal.l1.decodeToString()
+            runCatching { json.decodeFromString<L1OperationsV1>(encoded).records }
+                .getOrElse { listOf(json.decodeFromString<L1OperationRecord>(encoded)) }
         } finally {
             journal.l1.fill(0)
             journal.channel.fill(0)
@@ -198,10 +307,17 @@ class DefaultL1WalletRepository(
     }
 
     private suspend fun writeOperation(walletId: WalletId, operation: L1OperationRecord) {
+        val operations = operations(walletId).toMutableList()
+        val existing = operations.indexOfFirst { it.operationId == operation.operationId }
+        if (existing < 0) operations += operation else operations[existing] = operation
+        writeOperations(walletId, operations)
+    }
+
+    private suspend fun writeOperations(walletId: WalletId, operations: List<L1OperationRecord>) {
         val current = vault.walletState(walletId)
         val journal = if (current.operationJournal.isEmpty()) WalletOperationJournalV1() else
             json.decodeFromString<WalletOperationJournalV1>(current.operationJournal.decodeToString())
-        val l1 = json.encodeToString(operation).encodeToByteArray()
+        val l1 = json.encodeToString(L1OperationsV1(operations)).encodeToByteArray()
         val encoded = json.encodeToString(journal.copy(l1 = l1)).encodeToByteArray()
         try {
             vault.updateWalletState(walletId, current.copy(operationJournal = encoded))
@@ -243,7 +359,16 @@ class DefaultL1WalletRepository(
 
     private fun ByteArray.hex() = joinToString("") { byte -> byte.toUByte().toString(16).padStart(2, '0') }
 
+    private fun io.riverark.ferret.core.model.CardanoNetwork.accepts(address: String) =
+        if (this == io.riverark.ferret.core.model.CardanoNetwork.MAINNET) {
+            address.startsWith("addr1")
+        } else {
+            address.startsWith("addr_test1")
+        }
+
     private companion object {
+        const val INITIAL_SWEEP_FEE = 500_000L
+        const val MAX_SWEEP_PASSES = 4
         const val TRANSFER_VALIDITY_SLOTS = 3_600L
         val UNRESOLVED_STATES = setOf(
             L1OperationState.PREPARED,

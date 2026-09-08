@@ -15,8 +15,13 @@ val googleServerClientId = providers.environmentVariable("FERRET_GOOGLE_SERVER_C
 val buildCommit = providers.environmentVariable("FERRET_BUILD_COMMIT").getOrElse("development").also {
     require(it == "development" || Regex("[0-9a-f]{7,40}").matches(it)) { "FERRET_BUILD_COMMIT must be a lowercase git commit" }
 }
+val mainnetAcceptance = providers.gradleProperty("ferretMainnetAcceptance").orNull?.let {
+    require(it == "true" || it == "false") { "ferretMainnetAcceptance must be true or false" }
+    it.toBoolean()
+} ?: false
 if (gradle.startParameter.taskNames.any { it.contains("release", ignoreCase = true) }) {
     require(googleServerClientId.getOrElse("").isNotBlank()) { "FERRET_GOOGLE_SERVER_CLIENT_ID is required for release builds" }
+    require(!mainnetAcceptance) { "ferretMainnetAcceptance is debug-only" }
 }
 
 android {
@@ -39,16 +44,54 @@ android {
     }
 
     buildTypes {
-        debug { isMinifyEnabled = false }
+        debug {
+            isMinifyEnabled = false
+            buildConfigField("boolean", "MAINNET_ACCEPTANCE", mainnetAcceptance.toString())
+        }
         release {
             isDebuggable = false
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            buildConfigField("boolean", "MAINNET_ACCEPTANCE", "false")
         }
     }
     buildFeatures { compose = true; buildConfig = true }
     packaging.resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+}
+
+abstract class GenerateReleaseSbom : DefaultTask() {
+    @get:InputFile abstract val lockfile: RegularFileProperty
+    @get:OutputFile abstract val outputFile: RegularFileProperty
+
+    @TaskAction
+    fun generate() {
+        val components = lockfile.get().asFile.readLines()
+            .filter { !it.startsWith("#") && it.substringAfter('=', "").split(',').contains("releaseRuntimeClasspath") }
+            .map { it.substringBefore('=').split(':') }
+            .filter { it.size == 3 }
+            .map { Triple(it[0], it[1], it[2]) }
+            .distinct()
+            .sortedWith(compareBy({ it.first }, { it.second }, { it.third }))
+        outputFile.get().asFile.apply {
+            parentFile.mkdirs()
+            writeText(buildString {
+                append("""{"bomFormat":"CycloneDX","specVersion":"1.5","version":1,"components":[""")
+                components.forEachIndexed { index, component ->
+                    if (index > 0) append(',')
+                    append("""{"type":"library","group":${json(component.first)},"name":${json(component.second)},"version":${json(component.third)},"purl":${json("pkg:maven/${component.first}/${component.second}@${component.third}")}}""")
+                }
+                append("]}")
+            })
+        }
+    }
+
+    private fun json(value: String) = "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+}
+
+tasks.register<GenerateReleaseSbom>("generateReleaseSbom") {
+    lockfile.set(layout.projectDirectory.file("gradle.lockfile"))
+    outputFile.set(layout.buildDirectory.file("reports/sbom/android-release.cdx.json"))
 }
 
 abstract class VerifyReleaseSecurity : DefaultTask() {

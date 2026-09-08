@@ -5,7 +5,7 @@
     </base-config>
     <domain-config cleartextTrafficPermitted="false">
         <domain includeSubdomains="false">preprod-cardano.ferret.channel</domain>
-        <pin-set expiration="2027-08-24">
+        <pin-set>
             <pin digest="SHA-256">7jbNyGtnwNf+MpW0NPnODGDXpM4u6GkH3BM4VUjIYn0=</pin>
             <pin digest="SHA-256">kIdp6NNEd8wsugYyyIYFsi1ylMCED3hZbSR8ZFsa/A4=</pin>
         </pin-set>
@@ -13,28 +13,28 @@
     <domain-config cleartextTrafficPermitted="false">
         <domain includeSubdomains="false">preprod-adaptor.ferret.channel</domain>
         <domain includeSubdomains="false">adaptor.ferret.channel</domain>
-        <pin-set expiration="2027-08-24">
+        <pin-set>
             <pin digest="SHA-256">CC5622ZhmmddKG3zIcjutkVSBXGKLcSZXyMhY4Bz/0Y=</pin>
             <pin digest="SHA-256">kIdp6NNEd8wsugYyyIYFsi1ylMCED3hZbSR8ZFsa/A4=</pin>
         </pin-set>
     </domain-config>
     <domain-config cleartextTrafficPermitted="false">
         <domain includeSubdomains="false">cardano.ferret.channel</domain>
-        <pin-set expiration="2027-08-24">
+        <pin-set>
             <pin digest="SHA-256">1oP6AzHOK26nc/hrdhx2XUyZRXwWVqAH0T1CG+MeOAU=</pin>
             <pin digest="SHA-256">kIdp6NNEd8wsugYyyIYFsi1ylMCED3hZbSR8ZFsa/A4=</pin>
         </pin-set>
     </domain-config>
     <domain-config cleartextTrafficPermitted="false">
         <domain includeSubdomains="false">konduit.crustypants.com</domain>
-        <pin-set expiration="2027-09-03">
+        <pin-set>
             <pin digest="SHA-256">i53/avaLL/MmCn1VsVDNZSPo/uQt2RBl6HCEUJ+lFqo=</pin>
             <pin digest="SHA-256">brzvtCELCIZUo4sD/qPX0ccRtPsd3DY6RfmxpOU9oB4=</pin>
         </pin-set>
     </domain-config>
     <domain-config cleartextTrafficPermitted="false">
         <domain includeSubdomains="false">konduit-cardano.crustypants.com</domain>
-        <pin-set expiration="2027-09-03">
+        <pin-set>
             <pin digest="SHA-256">tqIfLixQGOlWUYCl3a4CIz1FbFs3r7d6R6y5hnjroxA=</pin>
             <pin digest="SHA-256">brzvtCELCIZUo4sD/qPX0ccRtPsd3DY6RfmxpOU9oB4=</pin>
         </pin-set>

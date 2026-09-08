@@ -269,6 +269,7 @@ fun HomeScreen(
     state: HomeUiState,
     onRefresh: () -> Unit,
     onTopUp: () -> Unit,
+    onOpenChannel: (() -> Unit)?,
     onPay: (() -> Unit)?,
     onTransfer: (() -> Unit)?,
     onChannel: (() -> Unit)?,
@@ -320,6 +321,7 @@ fun HomeScreen(
                 }
             }
         }
+        FerretSecondaryButton("Refresh", onRefresh)
         when {
             channelRouteAvailable(state.profile.channelState) -> {
                 FerretPrimaryButton("View channel", { onChannel?.invoke() }, enabled = onChannel != null)
@@ -331,7 +333,7 @@ fun HomeScreen(
             }
             state.balance?.value == 0L -> FerretPrimaryButton("Add ADA", onTopUp)
             state.balance != null -> {
-                FerretPrimaryButton("Open channel", {}, enabled = false)
+                FerretPrimaryButton("Open channel", { onOpenChannel?.invoke() }, enabled = onOpenChannel != null)
                 FerretSecondaryButton("Add ADA", onTopUp)
                 FerretSecondaryButton("Transfer ADA", { onTransfer?.invoke() }, enabled = onTransfer != null)
             }
@@ -382,7 +384,7 @@ fun ChannelScreen(
                 }
                 snapshot.pending?.let { pending ->
                     FerretCard(Modifier.fillMaxWidth()) {
-                        FerretDataBlock("Pending operation", pending.id)
+                        FerretDataBlock("Pending operation", pending.operationId)
                         FerretDataBlock("Reconciliation", pending.state.label())
                     }
                 }
@@ -392,6 +394,7 @@ fun ChannelScreen(
                 )
             }
         }
+        FerretSecondaryButton("Refresh", onRetry)
         Box(Modifier.weight(1f))
     }
 }

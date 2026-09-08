@@ -5,12 +5,16 @@ import io.riverark.ferret.core.model.WalletProfile
 import kotlinx.serialization.Serializable
 
 @Serializable
+enum class WalletRemovalState { ACTIVE, DELETING_BACKUP, DELETING_VAULT }
+
+@Serializable
 data class WalletSecretV1(
     val schema: Int = 1,
     val entropy: ByteArray,
     val channelRecovery: ByteArray = byteArrayOf(),
     val operationJournal: ByteArray = byteArrayOf(),
     val backupGeneration: Long = 0,
+    val removalState: WalletRemovalState = WalletRemovalState.ACTIVE,
 )
 
 @Serializable
@@ -18,6 +22,7 @@ data class WalletEncryptedStateV1(
     val channelRecovery: ByteArray = byteArrayOf(),
     val operationJournal: ByteArray = byteArrayOf(),
     val backupGeneration: Long = 0,
+    val removalState: WalletRemovalState = WalletRemovalState.ACTIVE,
 )
 
 @Serializable

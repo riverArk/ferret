@@ -16,5 +16,5 @@ tasks.register("androidCheck") {
 }
 
 tasks.register("androidReleaseCheck") {
-    dependsOn(":shared:allTests", ":androidApp:test", ":androidApp:lintRelease", ":androidApp:verifyReleaseSecurity")
+    dependsOn(":shared:allTests", ":androidApp:test", ":androidApp:lintRelease", ":androidApp:verifyReleaseSecurity", ":androidApp:generateReleaseSbom")
 }

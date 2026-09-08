@@ -101,7 +101,7 @@ class AndroidCardanoTransactionEngineTest {
                 """{"transaction_id":"${"22".repeat(32)}","output_index":0,"address":"${source.paymentAddress}","value":[{"unit":"lovelace","quantity":"100000000"}],"datum_hash":"${"33".repeat(32)}"}""",
             ).ledger(),
             LedgerUtxo("33".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000), datumHex = "d87980"),
-            LedgerUtxo("44".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000), scriptRefHex = "55".repeat(28)),
+            LedgerUtxo("44".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000), scriptRefHashHex = "55".repeat(28)),
             LedgerUtxo("55".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000), mapOf("66".repeat(28) to 0)),
         )
 
@@ -127,7 +127,7 @@ class AndroidCardanoTransactionEngineTest {
                 eligible,
                 LedgerUtxo("11".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000), datumHashHex = "aa".repeat(32)),
                 LedgerUtxo("22".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000), datumHex = "d87980"),
-                LedgerUtxo("33".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000), scriptRefHex = "bb".repeat(28)),
+                LedgerUtxo("33".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000), scriptRefHashHex = "bb".repeat(28)),
                 LedgerUtxo("44".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000), mapOf("cc".repeat(28) to 0)),
                 LedgerUtxo("55".repeat(32), 0, destination.paymentAddress, Lovelace(100_000_000)),
             ),
@@ -137,7 +137,6 @@ class AndroidCardanoTransactionEngineTest {
         val intents = listOf<CardanoIntent>(
             CardanoIntent.Transfer(source.paymentAddress, destination.paymentAddress, Lovelace(5_000_000), "00000000-0000-4000-8000-000000000003", 100, 200),
             CardanoIntent.SweepWallet(source.paymentAddress, destination.paymentAddress, Lovelace(5_000_000), "00000000-0000-4000-8000-000000000004", 100, 200),
-            CardanoIntent.OpenChannel(source.paymentAddress, MAINNET.validatorAddress, "d87980", Lovelace(5_000_000), "00000000-0000-4000-8000-000000000005", 100, 200),
         )
 
         intents.forEach { intent ->

@@ -112,6 +112,30 @@ data class L1SubmitRequest(
     }
 }
 @Serializable
+data class EvaluationRedeemerDto(
+    val purpose: String,
+    val index: Int,
+    val memory: Long,
+    val steps: Long,
+) {
+    init {
+        require(purpose in setOf("spend", "mint", "cert", "reward", "voting", "proposing"))
+        require(index >= 0 && memory >= 0 && steps >= 0)
+    }
+}
+
+@Serializable
+data class EvaluationResponse(
+    @SerialName("transaction_id") val transactionId: String,
+    val redeemers: List<EvaluationRedeemerDto>,
+) {
+    init {
+        require(HEX_64.matches(transactionId))
+        require(redeemers.size <= 100)
+        require(redeemers.map { it.purpose to it.index }.distinct().size == redeemers.size)
+    }
+}
+@Serializable
 data class L1OperationDto(
     @SerialName("operation_id") val operationId: String,
     @SerialName("expected_transaction_id") val expectedTransactionId: String,
@@ -171,8 +195,10 @@ data class ConnectorUtxoDto(
             Lovelace(quantities["lovelace"] ?: error("missing lovelace")),
             quantities - "lovelace",
             datumInline,
-            referenceScriptHash,
+            referenceScript,
             datumHashHex = datumHash,
+            scriptRefVersion = referenceScriptVersion,
+            scriptRefHashHex = referenceScriptHash,
         )
     }
 }
@@ -243,8 +269,6 @@ class ConnectorClient(private val http: HttpClient, private val deployment: Netw
     suspend fun utxos(address: String): List<ConnectorUtxoDto> = getOnce("/utxos_at/${path(address)}")
     suspend fun transactions(address: String): List<TransactionRecord> =
         getOnce<List<ConnectorTransactionDto>>("/transactions/${path(address)}").transactionRecords(address)
-    suspend fun submitChannel(request: SubmitRequest, writer: WriterLease): SubmitResponse =
-        postOnce("/submit", request, writer.token)
     suspend fun transaction(transactionId: String): ConnectorTransactionDto? {
         require(HEX_64.matches(transactionId))
         return getOnce<ConnectorTransactionDto?>("/transaction/$transactionId").validatedFor(transactionId)
@@ -253,6 +277,8 @@ class ConnectorClient(private val http: HttpClient, private val deployment: Netw
         val parameters = protocolParameters()
         return LedgerSnapshot(network, utxos(address).map(ConnectorUtxoDto::ledger), parameters.payload.toString(), parameters.slot)
     }
+    suspend fun evaluate(unsignedCborHex: String): EvaluationResponse =
+        postOnce("/evaluate", SubmitRequest(unsignedCborHex))
     suspend fun submitL1(request: L1SubmitRequest): L1OperationDto = postOnce("/operations", request)
     suspend fun operation(operationId: String): L1OperationDto {
         require(UUID.matches(operationId))
@@ -368,6 +394,23 @@ class AdaptorClient(
         mutateJson<AdaptorPayRequest, ProtocolSquashStatus>("/ch/pay", keytag, lease, request).verified(keytag)
     suspend fun squash(keytag: ProtocolKeytag, lease: String, request: SignedSquashWire): ProtocolSquashStatus =
         mutateJson<SignedSquashWire, ProtocolSquashStatus>("/ch/squash", keytag, lease, request).verified(keytag)
+    suspend fun submitChannelOperation(
+        keytag: ProtocolKeytag,
+        writer: WriterLease,
+        request: L1SubmitRequest,
+    ): L1OperationDto = mutateJson("/ch/submit", keytag, writer.token, request)
+
+    suspend fun channelOperation(
+        keytag: ProtocolKeytag,
+        writer: WriterLease,
+        operationId: String,
+    ): L1OperationDto {
+        require(UUID.matches(operationId) && HEX_64.matches(writer.token))
+        return http.get(deployment.adaptor.value + "/ch/operations/$operationId") {
+            header("KONDUIT", keytag.value)
+            header("FERRET-SESSION", writer.token)
+        }.boundedJsonBody()
+    }
 
     private suspend inline fun <reified Request, reified Response> mutateJson(
         path: String,

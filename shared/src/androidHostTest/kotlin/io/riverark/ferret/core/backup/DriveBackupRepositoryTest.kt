@@ -142,6 +142,28 @@ class DriveBackupRepositoryTest {
         checkpoint.channelSnapshot.fill(0)
     }
 
+    @Test fun adoptsAnExactlyMatchingInterruptedOwnWrite() = runBlocking {
+        val walletId = WalletId("preprod-" + "00".repeat(28))
+        val vault = FakeVault(walletId, ByteArray(32) { it.toByte() }, failAtUpdate = 2)
+        val coordinator = WalletBackupCoordinator(
+            vault,
+            DriveBackupRepository(FakeDrive(), AndroidBackupCrypto()),
+            AndroidBackupCrypto(),
+            { 1L },
+        )
+        assertFailsWith<IllegalStateException> {
+            coordinator.initialize(walletId, "candidate".encodeToByteArray())
+        }
+        assertTrue(coordinator.checkpoint(walletId)!!.pending)
+
+        vault.failAtUpdate = null
+        val recovered = coordinator.verify(walletId)
+        assertFalse(recovered.pending)
+        assertContentEquals("candidate".encodeToByteArray(), recovered.channelSnapshot)
+        recovered.ciphertextHash.fill(0)
+        recovered.channelSnapshot.fill(0)
+    }
+
 
     private class FakeDrive : DriveAppDataClient {
         private val files = mutableMapOf<String, ByteArray>()
@@ -153,8 +175,10 @@ class DriveBackupRepositoryTest {
     private class FakeVault(
         private val walletId: WalletId,
         private val seed: ByteArray,
+        var failAtUpdate: Int? = null,
     ) : SecureVault {
         private var state = WalletEncryptedStateV1()
+        private var updates = 0
         override val isUnlocked = true
         override suspend fun unlock(wrappedDataKey: ByteArray) = Unit
         override fun lock() = Unit
@@ -177,6 +201,8 @@ class DriveBackupRepositoryTest {
             operationJournal = state.operationJournal.copyOf(),
         )
         override suspend fun updateWalletState(walletId: WalletId, state: WalletEncryptedStateV1) {
+            updates++
+            if (updates == failAtUpdate) error("simulated local checkpoint failure")
             require(walletId == this.walletId)
             this.state = state.copy(
                 channelRecovery = state.channelRecovery.copyOf(),

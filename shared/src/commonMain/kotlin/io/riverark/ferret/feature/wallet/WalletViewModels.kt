@@ -99,6 +99,8 @@ interface L1WalletRepository {
     suspend fun history(walletId: WalletId): List<TransactionRecord>
     suspend fun previewTransfer(walletId: WalletId, destination: WalletProfile, amount: Lovelace): TransferPreview
     suspend fun submitTransfer(walletId: WalletId, preview: TransferPreview): String
+    suspend fun previewSweep(walletId: WalletId, destinationAddress: String): io.riverark.ferret.core.cardano.SweepPreview
+    suspend fun submitSweep(walletId: WalletId, preview: io.riverark.ferret.core.cardano.SweepPreview): String
 }
 
 data class HomeUiState(

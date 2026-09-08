@@ -38,6 +38,7 @@ import io.riverark.ferret.core.channel.PaymentQuote
 import io.riverark.ferret.core.channel.PaymentUiState
 import io.riverark.ferret.core.channel.PaymentViewModel
 import io.riverark.ferret.core.model.AppState
+import io.riverark.ferret.core.model.CardanoNetwork
 import io.riverark.ferret.core.model.WalletId
 import io.riverark.ferret.core.model.WalletManager
 import io.riverark.ferret.core.model.Lovelace
@@ -75,6 +76,7 @@ import io.riverark.ferret.ui.FerretLoadingState
 import io.riverark.ferret.ui.FerretPrimaryButton
 import io.riverark.ferret.ui.FerretScreen
 import io.riverark.ferret.ui.FerretSpacing
+import io.riverark.ferret.ui.FerretTopBar
 import io.riverark.ferret.ui.FerretTheme
 import org.jetbrains.compose.resources.painterResource
 import kotlinx.coroutines.delay
@@ -92,11 +94,11 @@ data class FerretDependencies(
     val l1MutationsAvailable: Boolean = false,
     val loadChannel: (suspend (WalletId) -> ChannelSnapshot)? = null,
     val paymentViewModelFactory: ((WalletId) -> PaymentViewModel)? = null,
+    val loadPaymentReceipt: (suspend (WalletId, String) -> io.riverark.ferret.core.model.Receipt?)? = null,
     val invoiceScanner: (@Composable ((String) -> Unit, () -> Unit) -> Unit)? = null,
     val paymentActionsAvailable: Boolean = false,
+    val channelActionsAvailable: Boolean = false,
     val nowEpochMillis: (() -> Long)? = null,
-    val newOperationId: (() -> String)? = null,
-    val paymentIntentHash: ((PaymentQuote) -> String)? = null,
     val loadSettings: (suspend (WalletProfile) -> WalletSettings)? = null,
     val connectDrive: (suspend () -> String)? = null,
     val verifyBackup: (suspend (WalletId) -> Long)? = null,
@@ -141,11 +143,11 @@ fun FerretApp(
             dependencies.l1MutationsAvailable,
             dependencies.loadChannel,
             dependencies.paymentViewModelFactory,
+            dependencies.loadPaymentReceipt,
             dependencies.invoiceScanner,
             dependencies.paymentActionsAvailable,
+            dependencies.channelActionsAvailable,
             dependencies.nowEpochMillis,
-            dependencies.newOperationId,
-            dependencies.paymentIntentHash,
             dependencies.loadSettings,
             dependencies.connectDrive,
             dependencies.verifyBackup,
@@ -170,11 +172,11 @@ private fun WalletNavigation(
     l1MutationsAvailable: Boolean,
     loadChannel: (suspend (WalletId) -> ChannelSnapshot)?,
     paymentViewModelFactory: ((WalletId) -> PaymentViewModel)?,
+    loadPaymentReceipt: (suspend (WalletId, String) -> io.riverark.ferret.core.model.Receipt?)?,
     invoiceScanner: (@Composable ((String) -> Unit, () -> Unit) -> Unit)?,
     paymentActionsAvailable: Boolean,
+    channelActionsAvailable: Boolean,
     nowEpochMillis: (() -> Long)?,
-    newOperationId: (() -> String)?,
-    paymentIntentHash: ((PaymentQuote) -> String)?,
     loadSettings: (suspend (WalletProfile) -> WalletSettings)?,
     connectDrive: (suspend () -> String)?,
     verifyBackup: (suspend (WalletId) -> Long)?,
@@ -191,7 +193,10 @@ private fun WalletNavigation(
     val walletViewModel = viewModel { WalletPickerViewModel(manager) }
     val pickerState by walletViewModel.state.collectAsState()
     val activeWalletId = (state as? AppState.Ready)?.activeWalletId
-    val paymentViewModel = if (activeWalletId != null && paymentViewModelFactory != null) {
+    val paymentViewModel = if (
+        activeWalletId != null && paymentViewModelFactory != null && paymentActionsAvailable &&
+        (state as? AppState.Ready)?.wallets?.singleOrNull { it.id == activeWalletId }?.network == CardanoNetwork.MAINNET
+    ) {
         viewModel(key = "payment-${activeWalletId.value}") { paymentViewModelFactory(activeWalletId) }
     } else {
         null
@@ -383,12 +388,20 @@ private fun WalletNavigation(
                     homeState,
                     homeViewModel::refresh,
                     { navController.navigate(Route.TopUp(profile.id.value)) },
-                    if (paymentActionsAvailable && paymentViewModel != null && invoiceScanner != null) {
+                    if (channelActionsAvailable && profile.network == CardanoNetwork.MAINNET) {
+                        { navController.navigate(Route.OpenChannel(profile.id.value)) }
+                    } else {
+                        null
+                    },
+                    if (
+                        paymentActionsAvailable && profile.network == CardanoNetwork.MAINNET &&
+                        paymentViewModel != null && invoiceScanner != null
+                    ) {
                         { navController.navigate(Route.ScanInvoice(profile.id.value)) }
                     } else {
                         null
                     },
-                    if (l1MutationsAvailable && l1WalletRepository != null) {
+                    if (l1MutationsAvailable && profile.network == CardanoNetwork.MAINNET && l1WalletRepository != null) {
                         { navController.navigate(Route.Transfer(profile.id.value)) }
                     } else {
                         null
@@ -416,7 +429,7 @@ private fun WalletNavigation(
             val route = backStackEntry.toRoute<Route.Transfer>()
             val ready = state as? AppState.Ready
             val profile = ready?.wallets?.firstOrNull { it.id.value == route.walletId }
-            if (profile != null && l1WalletRepository != null && l1MutationsAvailable) {
+            if (profile != null && profile.network == CardanoNetwork.MAINNET && l1WalletRepository != null && l1MutationsAvailable) {
                 val transferViewModel = viewModel { TransferViewModel(profile.id, profile.network, l1WalletRepository) }
                 val transferState by transferViewModel.state.collectAsState()
                 SensitiveContent(onSensitiveContentChanged) {
@@ -428,6 +441,20 @@ private fun WalletNavigation(
                         transferViewModel::submitAsync,
                         navController::popBackStack,
                     )
+                }
+            }
+        }
+        composable<Route.OpenChannel> { backStackEntry ->
+            val route = backStackEntry.toRoute<Route.OpenChannel>()
+            val profile = (state as? AppState.Ready)?.wallets?.firstOrNull { it.id.value == route.walletId }
+            if (profile != null && profile.network == CardanoNetwork.MAINNET && channelActionsAvailable) {
+                SensitiveContent(onSensitiveContentChanged) {
+                    FerretScreen {
+                        FerretTopBar("Open channel", navigation = {
+                            io.riverark.ferret.ui.FerretTextButton("Back", navController::popBackStack)
+                        })
+                        FerretErrorState("Channel opening remains disabled until controlled Mainnet acceptance passes.")
+                    }
                 }
             }
         }
@@ -455,8 +482,10 @@ private fun WalletNavigation(
         }
         composable<Route.ScanInvoice> { backStackEntry ->
             val route = backStackEntry.toRoute<Route.ScanInvoice>()
+            val profile = (state as? AppState.Ready)?.wallets?.firstOrNull { it.id.value == route.walletId }
             if (
-                paymentActionsAvailable && paymentViewModel != null && invoiceScanner != null &&
+                paymentActionsAvailable && profile?.network == CardanoNetwork.MAINNET &&
+                paymentViewModel != null && invoiceScanner != null &&
                 nowEpochMillis != null && activeWalletId?.value == route.walletId
             ) {
                 when (val current = paymentState) {
@@ -487,8 +516,7 @@ private fun WalletNavigation(
             val current = paymentState
             if (
                 paymentActionsAvailable && paymentViewModel != null && current is PaymentUiState.Confirming &&
-                nowEpochMillis != null && newOperationId != null && paymentIntentHash != null &&
-                activeWalletId?.value == route.walletId
+                nowEpochMillis != null && activeWalletId?.value == route.walletId
             ) {
                 var guardComplete by remember(current.quote.id) { mutableStateOf(false) }
                 LaunchedEffect(current.confirmAfterEpochMillis) {
@@ -497,7 +525,7 @@ private fun WalletNavigation(
                 }
                 SensitiveContent(onSensitiveContentChanged) {
                     ConfirmPaymentScreen(current.description, current.quote, guardComplete) {
-                        paymentViewModel.confirm(newOperationId(), paymentIntentHash(current.quote), nowEpochMillis())
+                        paymentViewModel.confirm(nowEpochMillis())
                     }
                 }
             } else if (current is PaymentUiState.Complete) {
@@ -508,15 +536,25 @@ private fun WalletNavigation(
         }
         composable<Route.PaymentReceipt> { backStackEntry ->
             val route = backStackEntry.toRoute<Route.PaymentReceipt>()
-            val complete = paymentState as? PaymentUiState.Complete
-            if (complete?.receipt?.operationId == route.operationId && activeWalletId?.value == route.walletId) {
-                SensitiveContent(onSensitiveContentChanged) {
-                    PaymentReceiptScreen(complete.receipt) {
+            val walletId = activeWalletId?.takeIf { it.value == route.walletId }
+            var receipt by remember(route.walletId, route.operationId) {
+                mutableStateOf((paymentState as? PaymentUiState.Complete)?.receipt?.takeIf { it.operationId == route.operationId })
+            }
+            LaunchedEffect(walletId, route.operationId) {
+                if (receipt == null && walletId != null) {
+                    receipt = loadPaymentReceipt?.invoke(walletId, route.operationId)
+                }
+            }
+            SensitiveContent(onSensitiveContentChanged) {
+                receipt?.let { durable ->
+                    PaymentReceiptScreen(durable) {
                         navController.navigate(Route.Home(route.walletId)) {
                             launchSingleTop = true
                             popUpTo(navController.graph.startDestinationId) { inclusive = true }
                         }
                     }
+                } ?: FerretScreen {
+                    FerretErrorState("Verified payment receipt is unavailable.")
                 }
             }
         }
@@ -602,7 +640,11 @@ private fun WalletNavigation(
                                 }
                             }
                         },
-                        { navController.navigate(Route.RemoveWallet(profile.id.value)) },
+                        if (profile.network == CardanoNetwork.MAINNET && walletRemovalManager != null) {
+                            { navController.navigate(Route.RemoveWallet(profile.id.value)) }
+                        } else {
+                            null
+                        },
                     )
                 } ?: FerretScreen {
                     Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { FerretLoadingState("Loading settings") }
@@ -612,7 +654,7 @@ private fun WalletNavigation(
         composable<Route.RemoveWallet> { backStackEntry ->
             val route = backStackEntry.toRoute<Route.RemoveWallet>()
             val profile = (state as? AppState.Ready)?.wallets?.firstOrNull { it.id.value == route.walletId }
-            if (profile != null && walletRemovalManager != null) {
+            if (profile != null && profile.network == CardanoNetwork.MAINNET && walletRemovalManager != null) {
                 val removalViewModel = viewModel { WalletRemovalViewModel(profile.id, walletRemovalManager) }
                 val removalState by removalViewModel.state.collectAsState()
                 LaunchedEffect(removalViewModel) { removalViewModel.load() }
@@ -621,6 +663,7 @@ private fun WalletNavigation(
                         removalState,
                         navController::popBackStack,
                         removalViewModel::sweep,
+                        removalViewModel::confirmSweep,
                     ) {
                         removalViewModel.remove {
                             walletViewModel.load()

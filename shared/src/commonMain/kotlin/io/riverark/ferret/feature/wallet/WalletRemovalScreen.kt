@@ -13,6 +13,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import io.riverark.ferret.core.cardano.SweepPreview
 import io.riverark.ferret.core.model.RemovalReadiness
 import io.riverark.ferret.core.model.WalletId
 import io.riverark.ferret.core.model.WalletRemovalManager
@@ -34,6 +35,7 @@ import kotlinx.coroutines.launch
     val readiness: RemovalReadiness? = null,
     val busy: Boolean = true,
     val error: String? = null,
+    val sweepPreview: SweepPreview? = null,
 )
 
 class WalletRemovalViewModel(
@@ -43,9 +45,23 @@ class WalletRemovalViewModel(
     private val mutableState = MutableStateFlow(WalletRemovalUiState())
     val state = mutableState.asStateFlow()
 
-    fun load() = run { launch { manager.readiness(walletId) } }
+    fun load() {
+        launchReadiness { manager.readiness(walletId) }
+    }
 
-    fun sweep(destination: String) = run { launch { manager.sweep(walletId, destination); manager.readiness(walletId) } }
+    fun sweep(destination: String) {
+        launchState { current ->
+            current.copy(sweepPreview = manager.previewSweep(walletId, destination))
+        }
+    }
+
+    fun confirmSweep() {
+        val preview = mutableState.value.sweepPreview ?: return
+        launchReadiness {
+            manager.submitSweep(walletId, preview)
+            manager.readiness(walletId)
+        }
+    }
 
     fun remove(onRemoved: () -> Unit) {
         viewModelScope.launch {
@@ -61,15 +77,19 @@ class WalletRemovalViewModel(
         }
     }
 
-    private fun launch(action: suspend () -> RemovalReadiness) {
+    private fun launchReadiness(action: suspend () -> RemovalReadiness) {
+        launchState { current -> current.copy(readiness = action(), sweepPreview = null) }
+    }
+
+    private fun launchState(action: suspend (WalletRemovalUiState) -> WalletRemovalUiState) {
         viewModelScope.launch {
             mutableState.value = mutableState.value.copy(busy = true, error = null)
             try {
-                mutableState.value = WalletRemovalUiState(action(), busy = false)
+                mutableState.value = action(mutableState.value).copy(busy = false)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
-                mutableState.value = WalletRemovalUiState(error = "Removal readiness is unavailable.", busy = false)
+                mutableState.value = mutableState.value.copy(error = "Removal readiness is unavailable.", busy = false)
             }
         }
     }
@@ -80,6 +100,7 @@ fun WalletRemovalScreen(
     state: WalletRemovalUiState,
     onBack: () -> Unit,
     onSweep: (String) -> Unit,
+    onConfirmSweep: () -> Unit,
     onRemove: () -> Unit,
 ) {
     val readiness = state.readiness
@@ -95,14 +116,22 @@ fun WalletRemovalScreen(
                 current.blockers().forEach { Text(it, color = MaterialTheme.colorScheme.error) }
             }
             if (current.spendable.value > 0) {
-                OutlinedTextField(
-                    destination,
-                    { destination = it.trim() },
-                    Modifier.fillMaxWidth(),
-                    label = { Text("Same-network sweep address") },
-                    singleLine = true,
-                )
-                FerretPrimaryButton("Sweep balance", { onSweep(destination) }, enabled = destination.isNotBlank() && !state.busy)
+                state.sweepPreview?.let { preview ->
+                    FerretCard(Modifier.fillMaxWidth()) {
+                        FerretDataBlock("Sweep amount", formatAda(preview.amount))
+                        FerretDataBlock("Network fee", formatAda(preview.fee))
+                    }
+                    FerretDangerButton("Confirm sweep", onConfirmSweep, enabled = !state.busy)
+                } ?: run {
+                    OutlinedTextField(
+                        destination,
+                        { destination = it.trim() },
+                        Modifier.fillMaxWidth(),
+                        label = { Text("Same-network sweep address") },
+                        singleLine = true,
+                    )
+                    FerretPrimaryButton("Preview sweep", { onSweep(destination) }, enabled = destination.isNotBlank() && !state.busy)
+                }
             } else if (current.blockers().isEmpty()) {
                 OutlinedTextField(
                     confirmation,

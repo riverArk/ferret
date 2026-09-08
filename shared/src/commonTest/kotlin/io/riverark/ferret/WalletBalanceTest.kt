@@ -2,13 +2,15 @@ package io.riverark.ferret
 
 import io.riverark.ferret.core.model.Lovelace
 import io.riverark.ferret.core.channel.ChannelSnapshot
+import io.riverark.ferret.core.channel.ChannelAction
+import io.riverark.ferret.core.channel.ChannelPayload
+import io.riverark.ferret.core.channel.PreparedChannelOperation
 import io.riverark.ferret.core.model.ChannelState
 import io.riverark.ferret.core.model.CardanoNetwork
 import io.riverark.ferret.core.model.Realm
 import io.riverark.ferret.core.model.TransactionRecord
 import io.riverark.ferret.core.model.TransactionState
 import io.riverark.ferret.core.model.OperationState
-import io.riverark.ferret.core.model.PendingOperation
 import io.riverark.ferret.core.model.WalletId
 import io.riverark.ferret.core.model.WalletProfile
 import io.riverark.ferret.core.network.lovelaceBalance
@@ -146,7 +148,14 @@ class WalletBalanceTest {
         val snapshots = listOf(
             ChannelSnapshot(
                 ChannelState.Opening("opening"),
-                PendingOperation("operation", "intent", OperationState.PENDING_RECONCILIATION),
+                PreparedChannelOperation(
+                    "operation",
+                    "intent",
+                    ChannelAction.Open(3_000_000),
+                    preparedAtEpochMillis = 1,
+                    payload = ChannelPayload.Protocol(byteArrayOf(1)),
+                    state = OperationState.PENDING_RECONCILIATION,
+                ),
             ),
             ChannelSnapshot(ChannelState.Open("channel")),
         )

@@ -14,6 +14,9 @@ data class BackupCheckpointV1(
     val sequence: Long,
     val ciphertextHash: ByteArray,
     val channelSnapshot: ByteArray,
+    val pending: Boolean = false,
+    val previousHash: ByteArray = byteArrayOf(),
+    val snapshotDigest: ByteArray = byteArrayOf(),
 )
 
 class StaleBackupWriterException(
@@ -39,7 +42,11 @@ class WalletBackupCoordinator(
 
     suspend fun writeNext(walletId: WalletId, channelSnapshot: ByteArray): BackupCheckpointV1 {
         val current = requireNotNull(checkpoint(walletId)) { "verified backup is required" }
-        return write(walletId, current.generation, current.sequence + 1, current.ciphertextHash, channelSnapshot)
+        return if (current.pending) {
+            resumePending(walletId, current)
+        } else {
+            write(walletId, current.generation, current.sequence + 1, current.ciphertextHash, channelSnapshot)
+        }
     }
 
     suspend fun restore(walletId: WalletId): BackupCheckpointV1 = vault.withWalletSeed(walletId) { seed ->
@@ -69,11 +76,17 @@ class WalletBackupCoordinator(
 
     suspend fun verify(walletId: WalletId): BackupCheckpointV1 {
         val local = requireNotNull(checkpoint(walletId))
+        if (local.pending) return resumePending(walletId, local)
         val remote = vault.withWalletSeed(walletId) { seed ->
             val latest = backups.verifyChain(backups.discover(walletId, seed))
             val plaintext = backups.decrypt(seed, latest)
             try {
-                BackupCheckpointV1(1, latest.generation, latest.sequence, crypto.sha256(latest.ciphertext), plaintext.copyOf())
+                BackupCheckpointV1(
+                    generation = latest.generation,
+                    sequence = latest.sequence,
+                    ciphertextHash = crypto.sha256(latest.ciphertext),
+                    channelSnapshot = plaintext.copyOf(),
+                )
             } finally {
                 plaintext.fill(0)
             }
@@ -93,6 +106,8 @@ class WalletBackupCoordinator(
         } finally {
             local.ciphertextHash.fill(0)
             local.channelSnapshot.fill(0)
+            local.previousHash.fill(0)
+            local.snapshotDigest.fill(0)
             if (!verified) {
                 remote.ciphertextHash.fill(0)
                 remote.channelSnapshot.fill(0)
@@ -131,13 +146,30 @@ class WalletBackupCoordinator(
         previousHash: ByteArray,
         channelSnapshot: ByteArray,
     ): BackupCheckpointV1 = vault.withWalletSeed(walletId) { seed ->
-        val backup = backups.write(walletId, seed, generation, sequence, previousHash, nowEpochMillis(), channelSnapshot)
-        save(walletId, BackupCheckpointV1(
+        val candidate = BackupCheckpointV1(
             generation = generation,
             sequence = sequence,
-            ciphertextHash = crypto.sha256(backup.ciphertext),
-            channelSnapshot = channelSnapshot,
-        ))
+            ciphertextHash = ByteArray(32),
+            channelSnapshot = channelSnapshot.copyOf(),
+            pending = true,
+            previousHash = previousHash.copyOf(),
+            snapshotDigest = crypto.sha256(channelSnapshot),
+        )
+        save(walletId, candidate)
+        try {
+            val backup = backups.write(walletId, seed, generation, sequence, previousHash, nowEpochMillis(), channelSnapshot)
+            save(walletId, BackupCheckpointV1(
+                generation = generation,
+                sequence = sequence,
+                ciphertextHash = crypto.sha256(backup.ciphertext),
+                channelSnapshot = channelSnapshot,
+            ))
+        } finally {
+            candidate.ciphertextHash.fill(0)
+            candidate.channelSnapshot.fill(0)
+            candidate.previousHash.fill(0)
+            candidate.snapshotDigest.fill(0)
+        }
     }
 
     private suspend fun save(walletId: WalletId, checkpoint: BackupCheckpointV1): BackupCheckpointV1 {
@@ -152,6 +184,8 @@ class WalletBackupCoordinator(
             return checkpoint.copy(
                 ciphertextHash = checkpoint.ciphertextHash.copyOf(),
                 channelSnapshot = checkpoint.channelSnapshot.copyOf(),
+                previousHash = checkpoint.previousHash.copyOf(),
+                snapshotDigest = checkpoint.snapshotDigest.copyOf(),
             )
         } finally {
             current.channelRecovery.fill(0)
@@ -160,8 +194,54 @@ class WalletBackupCoordinator(
         }
     }
 
+    private suspend fun resumePending(walletId: WalletId, candidate: BackupCheckpointV1): BackupCheckpointV1 =
+        vault.withWalletSeed(walletId) { seed ->
+            require(candidate.pending)
+            require(candidate.snapshotDigest.contentEquals(crypto.sha256(candidate.channelSnapshot)))
+            val discovered = backups.discover(walletId, seed)
+            val matching = discovered.singleOrNull {
+                it.generation == candidate.generation && it.sequence == candidate.sequence
+            }
+            if (matching != null) {
+                require(matching.previousCiphertextHash.contentEquals(candidate.previousHash))
+                val plaintext = backups.decrypt(seed, matching)
+                try {
+                    require(crypto.sha256(plaintext).contentEquals(candidate.snapshotDigest))
+                    save(walletId, BackupCheckpointV1(
+                        generation = matching.generation,
+                        sequence = matching.sequence,
+                        ciphertextHash = crypto.sha256(matching.ciphertext),
+                        channelSnapshot = plaintext,
+                    ))
+                } finally {
+                    plaintext.fill(0)
+                }
+            } else {
+                val backup = backups.write(
+                    walletId,
+                    seed,
+                    candidate.generation,
+                    candidate.sequence,
+                    candidate.previousHash,
+                    nowEpochMillis(),
+                    candidate.channelSnapshot,
+                )
+                save(walletId, BackupCheckpointV1(
+                    generation = candidate.generation,
+                    sequence = candidate.sequence,
+                    ciphertextHash = crypto.sha256(backup.ciphertext),
+                    channelSnapshot = candidate.channelSnapshot,
+                ))
+            }
+        }
+
     private fun validate(checkpoint: BackupCheckpointV1) {
         require(checkpoint.schema == 1 && checkpoint.generation >= 1 && checkpoint.sequence >= 1)
         require(checkpoint.ciphertextHash.size == 32 && checkpoint.channelSnapshot.size in 1..1_048_576)
+        if (checkpoint.pending) {
+            require(checkpoint.previousHash.size == 32 && checkpoint.snapshotDigest.size == 32)
+        } else {
+            require(checkpoint.previousHash.isEmpty() && checkpoint.snapshotDigest.isEmpty())
+        }
     }
 }
