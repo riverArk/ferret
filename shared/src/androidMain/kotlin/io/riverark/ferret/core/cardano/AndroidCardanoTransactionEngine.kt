@@ -74,7 +74,11 @@ class AndroidCardanoTransactionEngine(
                 .validFrom(intent.validFrom).validTo(intent.validUntil).build()
         }
         val fee = Lovelace(transaction.body.fee.longValueExact())
-        return UnsignedTransaction(transaction.serialize(), intent.operationId, fee)
+        val cbor = transaction.serialize()
+        if (intent is CardanoIntent.Transfer || intent is CardanoIntent.SweepWallet) {
+            inspect(cbor).requireL1Funding(intent, ledger)
+        }
+        return UnsignedTransaction(cbor, intent.operationId, fee)
     }
 
     override fun sign(unsigned: UnsignedTransaction, seed: ByteArray): SignedTransaction {
@@ -103,6 +107,7 @@ class AndroidCardanoTransactionEngine(
             requiredSigners = body.requiredSigners.map(HexUtil::encodeHexString).toSet(),
             validityStart = body.validityStartInterval.takeIf { it != 0L },
             validityEnd = body.ttl.takeIf { it != 0L },
+            inputs = body.inputs.map { TransactionInputReference(it.transactionId, it.index) },
         )
     }
 

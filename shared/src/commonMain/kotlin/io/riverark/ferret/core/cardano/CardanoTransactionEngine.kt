@@ -31,7 +31,14 @@ data class LedgerUtxo(
 @Serializable data class UnsignedTransaction(val cbor: ByteArray, val operationId: String, val feeBound: Lovelace)
 @Serializable data class SignedTransaction(val cbor: ByteArray)
 @Serializable data class TransactionOutputSummary(val address: String, val lovelace: Lovelace, val assets: Map<String, Long>)
-@Serializable data class TransactionSummary(val network: CardanoNetwork, val outputs: List<TransactionOutputSummary>, val fee: Lovelace, val requiredSigners: Set<String>, val validityStart: Long?, val validityEnd: Long?)
+@Serializable
+data class TransactionInputReference(val transactionId: String, val index: Int) {
+    init {
+        require(Regex("[0-9a-f]{64}").matches(transactionId))
+        require(index >= 0)
+    }
+}
+@Serializable data class TransactionSummary(val network: CardanoNetwork, val outputs: List<TransactionOutputSummary>, val fee: Lovelace, val requiredSigners: Set<String>, val validityStart: Long?, val validityEnd: Long?, val inputs: List<TransactionInputReference>)
 
 @Serializable
 sealed interface CardanoIntent {
@@ -80,4 +87,27 @@ fun TransactionSummary.requireMatches(intent: CardanoIntent, network: CardanoNet
         require(destination != intent.sourceAddress)
         require(outputs.all { it.assets.isEmpty() })
     }
+}
+
+fun TransactionSummary.requireL1Funding(intent: CardanoIntent, ledger: LedgerSnapshot) {
+    require(intent is CardanoIntent.Transfer || intent is CardanoIntent.SweepWallet)
+    require(intent.amount.value > 0)
+    require(network == ledger.network)
+    require(inputs.isNotEmpty() && inputs.distinct().size == inputs.size)
+
+    val available = mutableMapOf<TransactionInputReference, LedgerUtxo>()
+    ledger.utxos.forEach { utxo ->
+        val reference = TransactionInputReference(utxo.transactionId, utxo.index)
+        require(available.put(reference, utxo) == null) { "duplicate ledger input" }
+    }
+    val inputTotal = inputs.fold(Lovelace(0)) { total, reference ->
+        val utxo = requireNotNull(available[reference]) { "unknown transaction input" }
+        require(utxo.isSpendableBy(intent.sourceAddress))
+        total + utxo.lovelace
+    }
+    val outputTotal = outputs.fold(fee) { total, output ->
+        require(output.assets.isEmpty())
+        total + output.lovelace
+    }
+    require(inputTotal == outputTotal)
 }

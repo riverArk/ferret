@@ -142,8 +142,12 @@ class AndroidCardanoTransactionEngineTest {
 
         intents.forEach { intent ->
             val unsigned = engine.build(intent, ledger)
-            assertEquals(setOf(eligible.transactionId to eligible.index), Transaction.deserialize(unsigned.cbor).body.inputs.map { it.transactionId to it.index }.toSet())
-            engine.inspect(unsigned.cbor).requireMatches(intent, CardanoNetwork.MAINNET, unsigned.feeBound)
+            val summary = engine.inspect(unsigned.cbor)
+            assertEquals(listOf(TransactionInputReference(eligible.transactionId, eligible.index)), summary.inputs)
+            summary.requireMatches(intent, CardanoNetwork.MAINNET, unsigned.feeBound)
+            if (intent is CardanoIntent.Transfer || intent is CardanoIntent.SweepWallet) {
+                summary.requireL1Funding(intent, ledger)
+            }
         }
     }
 
@@ -156,22 +160,52 @@ class AndroidCardanoTransactionEngineTest {
             source.paymentAddress, destination.paymentAddress, Lovelace(5_000_000),
             "00000000-0000-4000-8000-000000000001", 100, 200,
         )
-        val unsigned = engine.build(intent, LedgerSnapshot(
+        val eligible = LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000))
+        val protected = LedgerUtxo("11".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000), datumHashHex = "aa".repeat(32))
+        val ledger = LedgerSnapshot(
             CardanoNetwork.MAINNET,
-            listOf(LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000))),
-            PROTOCOL_PARAMETERS, 100,
-        ))
+            listOf(eligible, protected),
+            PROTOCOL_PARAMETERS,
+            100,
+        )
+        val unsigned = engine.build(intent, ledger)
         val signed = try { engine.sign(unsigned, entropy) } finally { entropy.fill(0) }
         try {
             val summary = engine.inspect(unsigned.cbor)
             summary.requireMatches(intent, CardanoNetwork.MAINNET, unsigned.feeBound)
-            engine.inspect(signed.cbor).requireMatches(intent, CardanoNetwork.MAINNET, unsigned.feeBound)
+            summary.requireL1Funding(intent, ledger)
+            val signedSummary = engine.inspect(signed.cbor)
+            signedSummary.requireMatches(intent, CardanoNetwork.MAINNET, unsigned.feeBound)
+            signedSummary.requireL1Funding(intent, ledger)
+            assertEquals(summary.inputs, signedSummary.inputs)
             assertEquals(engine.transactionId(unsigned.cbor), engine.transactionId(signed.cbor))
+
             val changedInput = Transaction.deserialize(signed.cbor)
-            changedInput.body.inputs = listOf(TransactionInput.builder().transactionId("11".repeat(32)).index(0).build())
+            changedInput.body.inputs = listOf(TransactionInput.builder().transactionId("22".repeat(32)).index(0).build())
             val changedBytes = changedInput.serialize()
-            assertEquals(summary, engine.inspect(changedBytes))
+            engine.inspect(changedBytes).requireMatches(intent, CardanoNetwork.MAINNET, unsigned.feeBound)
+            assertFailsWith<IllegalArgumentException> { engine.inspect(changedBytes).requireL1Funding(intent, ledger) }
             assertNotEquals(engine.transactionId(unsigned.cbor), engine.transactionId(changedBytes))
+
+            val protectedInput = Transaction.deserialize(unsigned.cbor)
+            protectedInput.body.inputs = listOf(TransactionInput.builder().transactionId(protected.transactionId).index(protected.index).build())
+            assertFailsWith<IllegalArgumentException> {
+                engine.inspect(protectedInput.serialize()).requireL1Funding(intent, ledger)
+            }
+
+            val changedChange = Transaction.deserialize(unsigned.cbor)
+            changedChange.body.outputs = changedChange.body.outputs.map { output ->
+                if (output.address == source.paymentAddress) {
+                    TransactionOutput.builder().address(output.address)
+                        .value(Value(output.value.coin.add(BigInteger.ONE), emptyList())).build()
+                } else {
+                    output
+                }
+            }
+            val changedChangeSummary = engine.inspect(changedChange.serialize())
+            changedChangeSummary.requireMatches(intent, CardanoNetwork.MAINNET, unsigned.feeBound)
+            assertFailsWith<IllegalArgumentException> { changedChangeSummary.requireL1Funding(intent, ledger) }
+
             val extraOutput = Transaction.deserialize(unsigned.cbor)
             extraOutput.body.outputs = extraOutput.body.outputs + TransactionOutput.builder()
                 .address(destination.paymentAddress).value(Value(BigInteger.valueOf(1_000_000), emptyList())).build()

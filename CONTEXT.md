@@ -78,6 +78,12 @@ Android installation and manual onboarding verification require an API 36 emulat
 
 ## Session log
 
+### 2026-09-08 — L1 funding semantic validation
+
+- Transaction inspection now exposes ordered consumed input references. Transfer and SweepWallet construction reject empty, duplicate, unknown, foreign, asset-bearing, datum-bearing, and reference-script inputs and require exact overflow-safe ADA conservation against selected ledger UTxOs.
+- Transfer preview independently revalidates the initial body against its connector ledger before authorization; signed bodies retain the validated input identity and existing transaction-body hash binding.
+- Focused host regressions, `androidCheck`, and `:shared:compileKotlinIosSimulatorArm64` passed on Linux. Transfer remains disabled pending signer/script/datum/redeemer and dynamic min-ADA conformance, pinned-Konduit equivalence, funded Mainnet interruption acceptance, and release OAuth/MASVS checks.
+
 ### 2026-09-05 — Transfer preview integrity
 
 - Transfer previews resolve recipients from the vault, display decoded change rather than total-wallet arithmetic, and retain the unsigned transaction body hash in memory.

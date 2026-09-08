@@ -5,6 +5,7 @@ import io.riverark.ferret.core.cardano.CardanoTransactionEngine
 import io.riverark.ferret.core.cardano.LedgerSnapshot
 import io.riverark.ferret.core.cardano.UnsignedTransaction
 import io.riverark.ferret.core.cardano.requireMatches
+import io.riverark.ferret.core.cardano.requireL1Funding
 import io.riverark.ferret.core.model.Lovelace
 import io.riverark.ferret.core.model.TransactionRecord
 import io.riverark.ferret.core.model.WalletId
@@ -112,6 +113,7 @@ class DefaultL1WalletRepository(
             require(unsigned.operationId == intent.operationId)
             val summary = engine.inspect(unsigned.cbor)
             summary.requireMatches(intent, profile.network, unsigned.feeBound)
+            summary.requireL1Funding(intent, ledger)
             val change = summary.outputs.singleOrNull { it.address == profile.paymentAddress }?.lovelace ?: Lovelace(0)
             TransferPreview(resolvedDestination, amount, unsigned.feeBound, change, intent, unsigned, engine.transactionId(unsigned.cbor))
         }

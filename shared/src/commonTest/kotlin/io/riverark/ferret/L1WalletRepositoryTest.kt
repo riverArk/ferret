@@ -6,6 +6,7 @@ import io.riverark.ferret.core.cardano.DerivedWallet
 import io.riverark.ferret.core.cardano.LedgerSnapshot
 import io.riverark.ferret.core.cardano.LedgerUtxo
 import io.riverark.ferret.core.cardano.SignedTransaction
+import io.riverark.ferret.core.cardano.TransactionInputReference
 import io.riverark.ferret.core.cardano.TransactionOutputSummary
 import io.riverark.ferret.core.cardano.TransactionSummary
 import io.riverark.ferret.core.cardano.UnsignedTransaction
@@ -66,11 +67,42 @@ class L1WalletRepositoryTest {
         val source = profile('0')
         val destination = profile('1')
         val vault = FakeVault(listOf(source, destination))
-        val engine = FakeEngine()
-        val repository = previewRepository(vault, engine)
-        assertEquals(Lovelace(4_800_000), repository.previewTransfer(source.id, destination, Lovelace(5_000_000)).change)
-        engine.change = null
-        assertEquals(Lovelace(0), repository.previewTransfer(source.id, destination, Lovelace(5_000_000)).change)
+        val selected = LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(10_000_000))
+        val unselected = LedgerUtxo("11".repeat(32), 0, source.paymentAddress, Lovelace(90_000_000))
+        assertEquals(
+            Lovelace(4_800_000),
+            previewRepository(vault, FakeEngine(), listOf(selected, unselected))
+                .previewTransfer(source.id, destination, Lovelace(5_000_000)).change,
+        )
+        assertEquals(
+            Lovelace(0),
+            previewRepository(vault, FakeEngine(), listOf(selected.copy(lovelace = Lovelace(5_200_000))))
+                .previewTransfer(source.id, destination, Lovelace(5_000_000)).change,
+        )
+    }
+
+    @Test fun previewRejectsUntrustedConsumedInputsBeforeSideEffects() = runBlocking {
+        val source = profile('0')
+        val destination = profile('1')
+        val selected = TransactionInputReference("00".repeat(32), 0)
+        listOf(
+            emptyList(),
+            listOf(selected, selected),
+            listOf(TransactionInputReference("99".repeat(32), 0)),
+        ).forEach { invalidInputs ->
+            val vault = FakeVault(listOf(source, destination))
+            val engine = FakeEngine().apply { inputOverride = invalidInputs }
+            val repository = previewRepository(vault, engine)
+
+            assertFailsWith<IllegalArgumentException> {
+                repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+            }
+            assertEquals(1, engine.builds)
+            assertEquals(0, vault.writes)
+            assertEquals(0, vault.seedRequests)
+            assertEquals(0, engine.signs)
+            assertNull(repository.operation(source.id))
+        }
     }
 
     @Test fun previewRejectsDestinationsOutsideVaultIdentity() = runBlocking {
@@ -162,9 +194,20 @@ class L1WalletRepositoryTest {
         assertNull(restarted.operation(source.id)?.expectedTransactionId)
     }
 
-    private fun previewRepository(vault: FakeVault, engine: FakeEngine) = DefaultL1WalletRepository(
+    private fun previewRepository(
+        vault: FakeVault,
+        engine: FakeEngine,
+        ledgerInputs: List<LedgerUtxo>? = null,
+    ) = DefaultL1WalletRepository(
         WalletRepository(), vault,
-        { LedgerSnapshot(CardanoNetwork.PREPROD, listOf(LedgerUtxo("00".repeat(32), 0, it.paymentAddress, Lovelace(100_000_000))), "{}", 100) },
+        { profile ->
+            LedgerSnapshot(
+                CardanoNetwork.PREPROD,
+                ledgerInputs ?: listOf(LedgerUtxo("00".repeat(32), 0, profile.paymentAddress, Lovelace(10_000_000))),
+                "{}",
+                100,
+            )
+        },
         { emptyList() },
         { _, _ -> error("submission must not start") },
         { _, _ -> error("lookup must not run") },
@@ -629,17 +672,18 @@ class L1WalletRepositoryTest {
         assertNull(parseAdaAmount("1.0000001"))
         assertNull(parseAdaAmount("-1"))
     }
-
     private class FakeEngine(private val failSigning: Boolean = false) : CardanoTransactionEngine {
         private lateinit var intent: CardanoIntent.Transfer
-        var change: Lovelace? = Lovelace(4_800_000)
+        private lateinit var selectedInput: LedgerUtxo
         var builds = 0
         var signs = 0
         var changeSignedBody = false
+        var inputOverride: List<TransactionInputReference>? = null
         override suspend fun deriveWallet(entropy: ByteArray, network: CardanoNetwork): DerivedWallet = error("not used")
         override suspend fun build(intent: CardanoIntent, ledger: LedgerSnapshot): UnsignedTransaction {
             builds++
             this.intent = intent as CardanoIntent.Transfer
+            selectedInput = ledger.utxos.first()
             return UnsignedTransaction(byteArrayOf(0), intent.operationId, Lovelace(200_000))
         }
         override fun sign(unsigned: UnsignedTransaction, seed: ByteArray): SignedTransaction {
@@ -647,17 +691,21 @@ class L1WalletRepositoryTest {
             check(!failSigning)
             return SignedTransaction(byteArrayOf(if (changeSignedBody) 9 else 0, 2, 3))
         }
-        override fun inspect(signedCbor: ByteArray) = TransactionSummary(
-            CardanoNetwork.PREPROD,
-            listOfNotNull(
-                TransactionOutputSummary(intent.destinationAddress, intent.amount, emptyMap()),
-                change?.let { TransactionOutputSummary(intent.sourceAddress, it, emptyMap()) },
-            ),
-            Lovelace(200_000),
-            emptySet(),
-            intent.validFrom,
-            intent.validUntil,
-        )
+        override fun inspect(signedCbor: ByteArray): TransactionSummary {
+            val change = selectedInput.lovelace.value - intent.amount.value - 200_000
+            return TransactionSummary(
+                CardanoNetwork.PREPROD,
+                listOfNotNull(
+                    TransactionOutputSummary(intent.destinationAddress, intent.amount, emptyMap()),
+                    change.takeIf { it > 0 }?.let { TransactionOutputSummary(intent.sourceAddress, Lovelace(it), emptyMap()) },
+                ),
+                Lovelace(200_000),
+                emptySet(),
+                intent.validFrom,
+                intent.validUntil,
+                inputOverride ?: listOf(TransactionInputReference(selectedInput.transactionId, selectedInput.index)),
+            )
+        }
         override fun transactionId(signedCbor: ByteArray) = if (signedCbor[0] == 0.toByte()) TRANSACTION_ID else OTHER_TRANSACTION_ID
     }
 
