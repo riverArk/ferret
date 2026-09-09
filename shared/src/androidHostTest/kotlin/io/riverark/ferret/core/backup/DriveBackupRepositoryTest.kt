@@ -1,10 +1,27 @@
 package io.riverark.ferret.core.backup
 
+import io.riverark.ferret.core.channel.AdaptorPayRequest
+import io.riverark.ferret.core.channel.ChannelAction
+import io.riverark.ferret.core.channel.ChannelPayload
+import io.riverark.ferret.core.channel.ChannelPreview
+import io.riverark.ferret.core.channel.ChannelRemote
+import io.riverark.ferret.core.channel.ChannelRemoteResult
+import io.riverark.ferret.core.channel.ChannelRepository
 import io.riverark.ferret.core.channel.ChannelSnapshot
 import io.riverark.ferret.core.channel.VaultChannelJournal
 import io.riverark.ferret.core.channel.DriveChannelBackupProtocol
 import io.riverark.ferret.core.channel.WriterLease
+import io.riverark.ferret.core.channel.ChequeBodyWire
+import io.riverark.ferret.core.channel.Hex32
+import io.riverark.ferret.core.channel.PaymentQuote
+import io.riverark.ferret.core.channel.ProtocolDurationWire
+import io.riverark.ferret.core.channel.PreparedChannelOperation
+import io.riverark.ferret.core.channel.VaultPaymentStore
+import io.riverark.ferret.core.model.CardanoNetwork
 import io.riverark.ferret.core.model.ChannelState
+import io.riverark.ferret.core.model.Lovelace
+import io.riverark.ferret.core.model.OperationState
+import io.riverark.ferret.core.model.WalletRepository
 import io.riverark.ferret.core.model.WalletId
 import io.riverark.ferret.core.model.WalletProfile
 import io.riverark.ferret.core.security.AndroidBackupCrypto
@@ -21,6 +38,7 @@ import kotlin.test.assertFails
 import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import kotlin.test.assertNotNull
 
 class DriveBackupRepositoryTest {
     @Test fun roundTripsAndVerifiesGenerationsBeforeDeletion() = runBlocking {
@@ -164,6 +182,166 @@ class DriveBackupRepositoryTest {
         recovered.channelSnapshot.fill(0)
     }
 
+    @Test fun terminalChannelAndPaymentStateRestoresFromLatestEncryptedBackup() = runBlocking {
+        val walletId = WalletId("mainnet-" + "00".repeat(28))
+        val seed = ByteArray(32) { it.toByte() }
+        val drive = FakeDrive()
+        val vault = FakeVault(walletId, seed)
+        val payments = VaultPaymentStore(vault)
+        val journal = VaultChannelJournal(vault, payments)
+        journal.persist(walletId, ChannelSnapshot(ChannelState.Absent))
+        val coordinator = WalletBackupCoordinator(vault, DriveBackupRepository(drive, AndroidBackupCrypto()), AndroidBackupCrypto()) { 1L }
+        coordinator.initialize(walletId, journal.backupSnapshot(walletId))
+        val backup = DriveChannelBackupProtocol(coordinator, { _, checkpoint ->
+            WriterLease("a".repeat(64), checkpoint.generation, checkpoint.ciphertextHash.toHex(), "b".repeat(64), 1_000)
+        }, payments)
+        val repository = ChannelRepository(
+            WalletRepository(),
+            journal,
+            backup,
+            terminalRemote(OperationState.COMPLETED) { operation ->
+                ChannelState.Open(operation.operationId)
+            },
+        )
+        repository.load(walletId)
+        val open = operation(ChannelAction.Open(3_000_000), resultingBalance = 2_500_000)
+        repository.submit(walletId, preview(open))
+
+        var restored = restore(walletId, seed, drive)
+        assertEquals(ChannelState.Open(open.operationId), restored.journal.load(walletId).state)
+        assertEquals(Lovelace(2_500_000), restored.journal.load(walletId).spendableBalance)
+        assertEquals(null, restored.journal.load(walletId).pending)
+        assertEquals(listOf(open.operationId), restored.journal.load(walletId).history.map { it.operationId })
+
+        val paymentHash = "c".repeat(64)
+        val quote = PaymentQuote("quote", Lovelace(500_000), 1_000, Lovelace(20_000), Lovelace(30_000), 9_999, paymentHash)
+        val payment = operation(
+            ChannelAction.Pay("quote", paymentHash),
+            priorChannelIdentity = open.operationId,
+            resultingBalance = 1_950_000,
+            payload = ChannelPayload.Payment(
+                byteArrayOf(7),
+                "lnbc1fixture",
+                paymentHash,
+                "d".repeat(64),
+                AdaptorPayRequest(
+                    ChequeBodyWire(0, 550_000, ProtocolDurationWire.fromMillis(1), Hex32(paymentHash)),
+                    "e".repeat(128),
+                    "lnbc1fixture",
+                ),
+                quote,
+            ),
+        )
+        val paymentRepository = ChannelRepository(
+            WalletRepository(),
+            journal,
+            backup,
+            terminalRemote(OperationState.COMPLETED) { ChannelState.Open(open.operationId) },
+            payments,
+        )
+        paymentRepository.load(walletId)
+        paymentRepository.submit(walletId, preview(payment))
+
+        restored = restore(walletId, seed, drive)
+        val paymentSnapshot = restored.journal.load(walletId)
+        assertEquals(ChannelState.Open(open.operationId), paymentSnapshot.state)
+        assertEquals(Lovelace(1_950_000), paymentSnapshot.spendableBalance)
+        assertEquals(null, paymentSnapshot.pending)
+        assertEquals(true, restored.payments.isPaid(walletId, paymentHash))
+        assertEquals(null, restored.payments.pending(walletId))
+        assertEquals(payment.operationId, assertNotNull(restored.payments.receipt(walletId, payment.operationId)).operationId)
+        assertEquals(123L, restored.payments.history(walletId).single().timestampEpochMillis)
+        assertFails { restored.payments.recordPending(walletId, io.riverark.ferret.core.channel.PendingPaymentV1("other", paymentHash, quote, 999)) }
+        seed.fill(0)
+    }
+
+    @Test fun rejectedTerminalStateRestoresWithoutChangingBalanceOrInventingReceipt() = runBlocking {
+        val walletId = WalletId("mainnet-" + "00".repeat(28))
+        val seed = ByteArray(32) { it.toByte() }
+        val drive = FakeDrive()
+        val vault = FakeVault(walletId, seed)
+        val payments = VaultPaymentStore(vault)
+        val journal = VaultChannelJournal(vault, payments)
+        journal.persist(walletId, ChannelSnapshot(ChannelState.Open("channel"), spendableBalance = Lovelace(2_500_000)))
+        val coordinator = WalletBackupCoordinator(vault, DriveBackupRepository(drive, AndroidBackupCrypto()), AndroidBackupCrypto()) { 1L }
+        coordinator.initialize(walletId, journal.backupSnapshot(walletId))
+        val backup = DriveChannelBackupProtocol(coordinator, { _, checkpoint ->
+            WriterLease("a".repeat(64), checkpoint.generation, checkpoint.ciphertextHash.toHex(), "b".repeat(64), 1_000)
+        }, payments)
+        val close = operation(ChannelAction.Close, priorChannelIdentity = "channel", resultingBalance = 0)
+        val repository = ChannelRepository(
+            WalletRepository(),
+            journal,
+            backup,
+            terminalRemote(OperationState.FAILED) { ChannelState.Open("channel") },
+            payments,
+        )
+        repository.load(walletId)
+        repository.submit(walletId, preview(close))
+
+        val restored = restore(walletId, seed, drive)
+        assertEquals(ChannelState.Open("channel"), restored.journal.load(walletId).state)
+        assertEquals(Lovelace(2_500_000), restored.journal.load(walletId).spendableBalance)
+        assertEquals(null, restored.journal.load(walletId).pending)
+        assertEquals(emptyList(), restored.payments.history(walletId))
+        seed.fill(0)
+    }
+
+    private fun operation(
+        action: ChannelAction,
+        priorChannelIdentity: String? = null,
+        resultingBalance: Long,
+        payload: ChannelPayload = ChannelPayload.Protocol(byteArrayOf(1, 2, 3)),
+    ) = PreparedChannelOperation(
+        "00000000-0000-4000-8000-000000000000",
+        "f".repeat(64),
+        action,
+        priorChannelIdentity,
+        123,
+        payload,
+        resultingSpendableBalance = Lovelace(resultingBalance),
+    )
+
+    private fun preview(operation: PreparedChannelOperation) = ChannelPreview(
+        operation,
+        Lovelace(500_000),
+        Lovelace(50_000),
+        Lovelace(100_000),
+        Lovelace(1_000_000),
+        Lovelace(2_000_000),
+        Lovelace(500_000),
+        requireNotNull(operation.resultingSpendableBalance),
+        CardanoNetwork.MAINNET,
+    )
+
+    private fun terminalRemote(
+        status: OperationState,
+        state: (PreparedChannelOperation) -> ChannelState,
+    ) = object : ChannelRemote {
+        override suspend fun mutate(walletId: WalletId, operation: PreparedChannelOperation, writer: WriterLease) =
+            ChannelRemoteResult(operation.operationId, operation.intentHash, state = state(operation), status = status)
+        override suspend fun reconcile(walletId: WalletId, operation: PreparedChannelOperation, writer: WriterLease) =
+            error("lookup not expected")
+    }
+
+    private suspend fun restore(walletId: WalletId, seed: ByteArray, drive: FakeDrive): Restored {
+        val vault = FakeVault(walletId, seed)
+        val payments = VaultPaymentStore(vault)
+        val journal = VaultChannelJournal(vault, payments)
+        val checkpoint = WalletBackupCoordinator(
+            vault,
+            DriveBackupRepository(drive, AndroidBackupCrypto()),
+            AndroidBackupCrypto(),
+            { 2L },
+        ).restore(walletId)
+        journal.restoreFromBackup(walletId, checkpoint.channelSnapshot)
+        checkpoint.ciphertextHash.fill(0)
+        checkpoint.channelSnapshot.fill(0)
+        return Restored(journal, payments)
+    }
+
+    private data class Restored(val journal: VaultChannelJournal, val payments: VaultPaymentStore)
+
 
     private class FakeDrive : DriveAppDataClient {
         private val files = mutableMapOf<String, ByteArray>()
@@ -182,7 +360,15 @@ class DriveBackupRepositoryTest {
         override val isUnlocked = true
         override suspend fun unlock(wrappedDataKey: ByteArray) = Unit
         override fun lock() = Unit
-        override suspend fun profiles(): List<WalletProfile> = emptyList()
+        override suspend fun profiles(): List<WalletProfile> = listOf(
+            WalletProfile(
+                walletId,
+                "Wallet",
+                if (walletId.value.startsWith("mainnet-")) CardanoNetwork.MAINNET else CardanoNetwork.PREPROD,
+                if (walletId.value.startsWith("mainnet-")) "addr1wallet" else "addr_test1wallet",
+                if (walletId.value.startsWith("mainnet-")) "stake1wallet" else "stake_test1wallet",
+            ),
+        )
         override suspend fun createWallet(profile: WalletProfile, secret: WalletSecretV1) = error("not used")
         override suspend fun updateProfile(profile: WalletProfile) = error("not used")
         override suspend fun renameWallet(walletId: WalletId, name: String) = error("not used")

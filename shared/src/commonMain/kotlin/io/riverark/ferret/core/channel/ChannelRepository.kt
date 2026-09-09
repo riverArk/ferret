@@ -192,6 +192,16 @@ class ChannelRepository(
         val pending = current.pending ?: return@withWalletLock null
         var replayBase = current
         var writer = backup.requireVerifiedWriter(walletId)
+        val savedTerminal = current.history.filter {
+            it.operationId == pending.operationId &&
+                it.status in setOf(OperationState.COMPLETED, OperationState.FAILED)
+        }
+        require(savedTerminal.size <= 1) { "duplicate terminal channel result" }
+        savedTerminal.singleOrNull()?.let { result ->
+            require(result.intentHash == pending.intentHash) { "channel operation identity mismatch" }
+            ensurePendingPayment(walletId, current)
+            return@withWalletLock complete(walletId, current, result)
+        }
         val reconciled = remote.reconcile(walletId, pending, writer)
         val result = reconciled ?: run {
             if (pending.state in setOf(OperationState.SUBMITTED, OperationState.COMPLETED, OperationState.FAILED)) {
@@ -230,30 +240,6 @@ class ChannelRepository(
             history = current.history.filterNot { it.operationId == result.operationId } + result,
         )
         persist(walletId, persisted)
-        try {
-            backup.commit(walletId, persisted)
-        } catch (error: Exception) {
-            withContext(NonCancellable) {
-                persist(walletId, persisted.copy(
-                    pending = persisted.pending!!.copy(state = OperationState.PENDING_RECONCILIATION),
-                ))
-            }
-            throw error
-        }
-        if (result.status == OperationState.COMPLETED && pending.payload is ChannelPayload.Payment) {
-            val payment = pending.payload
-            payments?.complete(
-                walletId,
-                io.riverark.ferret.core.model.Receipt(
-                    pending.operationId,
-                    payment.invoiceHash,
-                    payment.quote.amount,
-                    payment.quote.routingFee + payment.quote.adaptorFee,
-                    true,
-                ),
-                pending.preparedAtEpochMillis,
-            )
-        }
         val terminal = if (result.status in setOf(OperationState.COMPLETED, OperationState.FAILED)) {
             persisted.copy(
                 state = result.state,
@@ -267,7 +253,31 @@ class ChannelRepository(
         } else {
             persisted
         }
-        persist(walletId, terminal)
+        try {
+            if (result.status == OperationState.COMPLETED && pending.payload is ChannelPayload.Payment) {
+                val payment = pending.payload
+                payments?.complete(
+                    walletId,
+                    io.riverark.ferret.core.model.Receipt(
+                        pending.operationId,
+                        payment.invoiceHash,
+                        payment.quote.amount,
+                        payment.quote.routingFee + payment.quote.adaptorFee,
+                        true,
+                    ),
+                    pending.preparedAtEpochMillis,
+                )
+            }
+            backup.commit(walletId, terminal)
+            persist(walletId, terminal)
+        } catch (error: Exception) {
+            withContext(NonCancellable) {
+                persist(walletId, persisted.copy(
+                    pending = persisted.pending!!.copy(state = OperationState.PENDING_RECONCILIATION),
+                ))
+            }
+            throw error
+        }
         return result
     }
 
@@ -344,14 +354,11 @@ class AdaptorChannelRemote(
         operation: PreparedChannelOperation,
         writer: WriterLease,
     ): ChannelRemoteResult? = when (val payload = operation.payload) {
-        is ChannelPayload.Transaction -> result(
-            operation,
-            adaptor(walletId).channelOperation(
-                ProtocolKeytag(operation.keytag),
-                writer,
-                operation.operationId,
-            ),
-        )
+        is ChannelPayload.Transaction -> adaptor(walletId).channelOperation(
+            ProtocolKeytag(operation.keytag),
+            writer,
+            operation.operationId,
+        )?.let { result(operation, it) }
         is ChannelPayload.Payment -> {
             val receipt = adaptor(walletId).receipt(ProtocolKeytag(operation.keytag)) ?: return null
             val matching = receipt.cheques.firstOrNull { cheque ->

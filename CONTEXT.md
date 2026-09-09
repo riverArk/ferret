@@ -78,6 +78,12 @@ Android installation and manual onboarding verification require an API 36 emulat
 
 ## Session log
 
+### 2026-09-09 — Channel interruption recovery
+
+- Authenticated adaptor operation lookup now treats only a bounded HTTP 404 as authoritative absence; every transport failure, unexpected status, redirect, oversized body, malformed result, or identity mismatch remains fail-closed without replay.
+- Terminal channel evidence and completed-payment recovery are persisted before the final encrypted Drive snapshot, and restart reconciliation finishes matching saved results without another adaptor lookup or mutation.
+- Focused real-client, repository, encrypted-backup and fresh-store recovery regressions plus `androidCheck` passed. Funded controlled-Mainnet lifecycle, Google account/two-device takeover, transaction controls, controlled-node evaluation, release OAuth and device acceptance remain outstanding.
+
 ### 2026-09-09 — Current-Konduit channel encoding conformance
 
 - Android channel datums now encode current Konduit's five-field ADA constants and strictly reconstruct bounded Opened/Closed/Responded evidence from complete single-item CBOR.

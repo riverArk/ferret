@@ -22,6 +22,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.plugins.HttpRequestTimeoutException
+import io.ktor.client.plugins.expectSuccess
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
@@ -404,12 +405,23 @@ class AdaptorClient(
         keytag: ProtocolKeytag,
         writer: WriterLease,
         operationId: String,
-    ): L1OperationDto {
+    ): L1OperationDto? {
         require(UUID.matches(operationId) && HEX_64.matches(writer.token))
-        return http.get(deployment.adaptor.value + "/ch/operations/$operationId") {
+        val response = http.get(deployment.adaptor.value + "/ch/operations/$operationId") {
+            expectSuccess = false
             header("KONDUIT", keytag.value)
             header("FERRET-SESSION", writer.token)
-        }.boundedJsonBody()
+        }
+        val bytes = response.boundedBody()
+        return try {
+            when (response.status.value) {
+                200 -> decodeBoundedJson<L1OperationDto>(bytes)
+                404 -> null
+                else -> error("channel operation lookup failed")
+            }
+        } finally {
+            bytes.fill(0)
+        }
     }
 
     private suspend inline fun <reified Request, reified Response> mutateJson(

@@ -21,6 +21,7 @@ import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFails
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 
@@ -66,26 +67,26 @@ class ChannelRepositoryTest {
         assertEquals(false, remoteCalled)
     }
 
-    @Test fun terminalBackupFailureKeepsExactOperationUntilReconciled() = runBlocking {
+    @Test fun terminalBackupFailureRecoversFromSavedResultWithoutRemoteLookup() = runBlocking {
         var stored = ChannelSnapshot(ChannelState.Open("channel"))
         var failCommit = true
-        val remote = object : ChannelRemote {
-            override suspend fun mutate(walletId: WalletId, operation: PreparedChannelOperation, writer: WriterLease) =
-                result(operation, ChannelState.Closed)
-            override suspend fun reconcile(walletId: WalletId, operation: PreparedChannelOperation, writer: WriterLease) =
-                result(operation, ChannelState.Closed)
+        val backup = object : ChannelBackupProtocol {
+            override suspend fun requireVerifiedWriter(walletId: WalletId) = writer
+            override suspend fun writeAhead(walletId: WalletId, snapshot: ChannelSnapshot) = Unit
+            override suspend fun commit(walletId: WalletId, snapshot: ChannelSnapshot) {
+                if (failCommit) error("Drive unavailable")
+            }
         }
         val repository = repository(
             stored = { stored },
             save = { stored = it },
-            backup = object : ChannelBackupProtocol {
-                override suspend fun requireVerifiedWriter(walletId: WalletId) = writer
-                override suspend fun writeAhead(walletId: WalletId, snapshot: ChannelSnapshot) = Unit
-                override suspend fun commit(walletId: WalletId, snapshot: ChannelSnapshot) {
-                    if (failCommit) error("Drive unavailable")
-                }
+            backup = backup,
+            remote = object : ChannelRemote {
+                override suspend fun mutate(walletId: WalletId, operation: PreparedChannelOperation, writer: WriterLease) =
+                    result(operation, ChannelState.Closed)
+                override suspend fun reconcile(walletId: WalletId, operation: PreparedChannelOperation, writer: WriterLease) =
+                    error("saved terminal result must avoid remote lookup")
             },
-            remote = remote,
         )
         repository.load(walletId)
         val preview = preview(ChannelAction.Close)
@@ -94,12 +95,60 @@ class ChannelRepositoryTest {
         assertEquals(ChannelState.Closing("operation"), stored.state)
         assertEquals(OperationState.PENDING_RECONCILIATION, assertNotNull(stored.pending).state)
         assertContentEquals(byteArrayOf(1, 2, 3), (stored.pending!!.payload as ChannelPayload.Protocol).cbor)
+        assertEquals(result(preview.operation, ChannelState.Closed), stored.history.single())
 
         failCommit = false
-        repository.reconcile(walletId)
+        val restarted = repository(
+            stored = { stored },
+            save = { stored = it },
+            backup = backup,
+            remote = object : ChannelRemote {
+                override suspend fun mutate(walletId: WalletId, operation: PreparedChannelOperation, writer: WriterLease) =
+                    error("saved terminal result must not mutate")
+                override suspend fun reconcile(walletId: WalletId, operation: PreparedChannelOperation, writer: WriterLease): ChannelRemoteResult? =
+                    error("saved terminal result must not query")
+            },
+        )
+        restarted.load(walletId)
+        restarted.reconcile(walletId)
         assertEquals(ChannelState.Closed, stored.state)
         assertEquals(null, stored.pending)
         assertEquals(1, stored.history.size)
+    }
+
+    @Test fun savedTerminalResultStillRequiresMatchingIntentAndWriter() = runBlocking {
+        val pending = preview(ChannelAction.Close).operation.copy(
+            priorChannelIdentity = "channel",
+            state = OperationState.PENDING_RECONCILIATION,
+        )
+        val terminal = result(pending, ChannelState.Closed)
+        val cases = listOf(
+            ChannelSnapshot(ChannelState.Closing(pending.operationId), pending, history = listOf(terminal.copy(intentHash = "wrong"))) to
+                suspend { _: WalletId -> writer },
+            ChannelSnapshot(ChannelState.Closing(pending.operationId), pending, history = listOf(terminal)) to
+                suspend { _: WalletId -> error("writer unavailable") },
+        )
+        for ((snapshot, requireWriter) in cases) {
+            var stored = snapshot
+            val repository = repository(
+                stored = { stored },
+                save = { stored = it },
+                backup = object : ChannelBackupProtocol {
+                    override suspend fun requireVerifiedWriter(walletId: WalletId) = requireWriter(walletId)
+                    override suspend fun writeAhead(walletId: WalletId, snapshot: ChannelSnapshot) = Unit
+                    override suspend fun commit(walletId: WalletId, snapshot: ChannelSnapshot) = Unit
+                },
+                remote = object : ChannelRemote {
+                    override suspend fun mutate(walletId: WalletId, operation: PreparedChannelOperation, writer: WriterLease) =
+                        error("saved terminal result must not mutate")
+                    override suspend fun reconcile(walletId: WalletId, operation: PreparedChannelOperation, writer: WriterLease): ChannelRemoteResult? =
+                        error("saved terminal result must not query")
+                },
+            )
+            repository.load(walletId)
+            assertFails { repository.reconcile(walletId) }
+            assertEquals(snapshot, stored)
+        }
     }
 
     @Test fun reclaimsWriteAheadLeaseAndReplaysOneStablePayload() = runBlocking {
