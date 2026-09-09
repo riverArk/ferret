@@ -78,6 +78,12 @@ Android installation and manual onboarding verification require an API 36 emulat
 
 ## Session log
 
+### 2026-09-09 — Current-Konduit channel encoding conformance
+
+- Android channel datums now encode current Konduit's five-field ADA constants and strictly reconstruct bounded Opened/Closed/Responded evidence from complete single-item CBOR.
+- Connector V3 reference scripts are consumed as raw script bytes, cryptographically checked against the pinned validator, and rejected when metadata or spending/reference input identity is invalid.
+- Rust-generated `b9ac1e0` golden vectors, real Android Open construction/signing, Konduit data/wire tests, `androidCheck`, and a controlled GET-only Mainnet deployment smoke passed. Full five-intent node evaluation, funded submission, lifecycle interruption, OAuth, and release acceptance remain outstanding.
+
 ### 2026-09-09 — Mainnet validator pin refresh
 
 - Mainnet now pins Konduit `b9ac1e0`'s Plutus V3 validator `b031eed54697d2c4b55659fe11dac2929228dd987fafe2b15904ce04` and its enterprise address `addr1wxcrrmk4g6ta93942evluyw6c2ffy2xanpl6lc43tyzvupqswlfa5`, matching the controlled adaptor.

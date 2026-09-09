@@ -19,6 +19,7 @@ import com.bloxbean.cardano.client.transaction.spec.Transaction
 import com.bloxbean.cardano.client.transaction.spec.TransactionInput
 import com.bloxbean.cardano.client.transaction.spec.TransactionOutput
 import com.bloxbean.cardano.client.transaction.spec.Value
+import com.bloxbean.cardano.client.util.HexUtil
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.math.BigInteger
@@ -35,6 +36,7 @@ import io.riverark.ferret.core.model.Lovelace
 import io.riverark.ferret.core.model.InvalidRecoveryPhraseException
 import io.riverark.ferret.core.security.AndroidRecoveryPhraseCodec
 import io.riverark.ferret.core.network.ConnectorUtxoDto
+import io.riverark.ferret.core.network.ConnectorAssetDto
 import io.riverark.ferret.core.network.MAINNET
 import java.util.Collections
 import kotlin.test.Test
@@ -46,6 +48,8 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 class AndroidCardanoTransactionEngineTest {
     private val processor = object : TransactionProcessor {
@@ -53,6 +57,190 @@ class AndroidCardanoTransactionEngineTest {
         @Suppress("UNCHECKED_CAST")
         override fun evaluateTx(cbor: ByteArray, inputUtxos: Set<Utxo>): Result<List<EvaluationResult>> =
             Result.success("fixture").withValue(Collections.emptyList<EvaluationResult>()) as Result<List<EvaluationResult>>
+    }
+    private val channelVectors = Json.parseToJsonElement(
+        requireNotNull(requireNotNull(javaClass.classLoader).getResource("konduit/channel-conformance.json")).readText(),
+    ).jsonObject
+
+    private fun fixture(name: String) = requireNotNull(channelVectors[name]).jsonPrimitive.content
+
+    private fun channelDatum(stage: ChannelDatumStage) = ChannelDatum(
+        fixture("validator_hash"),
+        ChannelConstants("01".repeat(32), "02".repeat(32), "03".repeat(32), 1_800_000),
+        stage,
+    )
+
+    private fun fixtureReference() = ConnectorUtxoDto(
+        "11".repeat(32),
+        0,
+        MAINNET.scriptDeploymentAddress,
+        listOf(ConnectorAssetDto("lovelace", "2000000")),
+        referenceScriptHash = fixture("validator_hash"),
+        referenceScriptVersion = 3,
+        referenceScript = fixture("reference_script"),
+    ).ledger()
+
+    @Test fun channelCodecMatchesPinnedKonduitVectors() {
+        val datums = mapOf(
+            "datum_opened_empty" to channelDatum(ChannelDatumStage.Opened(0)),
+            "datum_opened_used" to channelDatum(ChannelDatumStage.Opened(123, listOf(USED_EVIDENCE))),
+            "datum_closed_used" to channelDatum(ChannelDatumStage.Closed(123, listOf(USED_EVIDENCE), 1_700_000_000_000)),
+            "datum_responded_pending" to channelDatum(ChannelDatumStage.Responded(123, listOf(PENDING_EVIDENCE))),
+        )
+        datums.forEach { (name, datum) -> assertEquals(fixture(name), datum.plutus().serializeToHex()) }
+        ChannelRedeemer.entries.forEach { redeemer ->
+            assertEquals(fixture("redeemer_${redeemer.name.lowercase()}"), redeemer.plutus().serializeToHex())
+        }
+    }
+
+    @Test fun channelCodecRejectsInvalidEvidence() {
+        listOf(
+            ChannelDatumStage.Opened(0, listOf("00")),
+            ChannelDatumStage.Opened(0, listOf(USED_EVIDENCE + "00")),
+            ChannelDatumStage.Opened(0, listOf("d87980")),
+            ChannelDatumStage.Opened(0, listOf("9f2000ff")),
+            ChannelDatumStage.Opened(0, listOf("9f1b800000000000000000ff")),
+            ChannelDatumStage.Opened(0, listOf(PENDING_EVIDENCE)),
+            ChannelDatumStage.Responded(0, listOf(USED_EVIDENCE)),
+            ChannelDatumStage.Opened(0, List(11) { USED_EVIDENCE }),
+        ).forEach { stage ->
+            assertEquals(
+                "invalid channel evidence",
+                assertFailsWith<IllegalArgumentException> { channelDatum(stage).plutus() }.message,
+            )
+        }
+        assertEquals(
+            "invalid channel timestamp",
+            assertFailsWith<IllegalArgumentException> {
+                channelDatum(ChannelDatumStage.Closed(0, emptyList(), -1)).plutus()
+            }.message,
+        )
+    }
+
+    @Test fun channelReferenceRequiresRawPinnedV3Script() {
+        val reference = fixtureReference()
+        val script = reference.requireChannelReferenceScript(fixture("validator_hash"))
+        assertEquals(fixture("validator_hash"), script.policyId)
+        listOf(
+            reference.copy(scriptRefHex = reference.scriptRefHex!!.replaceRange(0, 2, "00")),
+            reference.copy(scriptRefHashHex = "00".repeat(28)),
+            reference.copy(scriptRefVersion = 2),
+            reference.copy(scriptRefHex = HexUtil.encodeHexString(script.scriptRefBytes())),
+            reference.copy(scriptRefHex = ""),
+            reference.copy(scriptRefHex = null, scriptRefVersion = null, scriptRefHashHex = null),
+        ).forEach { invalid ->
+            assertEquals(
+                "invalid channel reference script",
+                assertFailsWith<IllegalArgumentException> {
+                    invalid.requireChannelReferenceScript(fixture("validator_hash"))
+                }.message,
+            )
+        }
+    }
+
+    @Test fun channelSpendRejectsSameReferenceIdentityBeforeEvaluation() = runBlocking {
+        var evaluations = 0
+        val countingProcessor = object : TransactionProcessor {
+            override fun submitTransaction(cborData: ByteArray): Result<String> = error("submission not used")
+            override fun evaluateTx(cbor: ByteArray, inputUtxos: Set<Utxo>): Result<List<EvaluationResult>> {
+                evaluations++
+                error("evaluation must not run")
+            }
+        }
+        val engine = AndroidCardanoTransactionEngine(countingProcessor)
+        val source = engine.deriveWallet(ByteArray(32) { it.toByte() }, CardanoNetwork.MAINNET)
+        val current = channelDatum(ChannelDatumStage.Opened(0))
+        val reference = fixtureReference()
+        val channelInput = LedgerUtxo(
+            reference.transactionId,
+            reference.index,
+            MAINNET.validatorAddress,
+            Lovelace(5_000_000),
+            datumHex = current.plutus().serializeToHex(),
+        )
+        val intent = CardanoIntent.AddChannelFunds(
+            source.paymentAddress,
+            channelInput,
+            reference,
+            current,
+            current,
+            Lovelace(1_000_000),
+            "00000000-0000-4000-8000-000000000019",
+            100,
+            200,
+        )
+
+        assertFailsWith<IllegalArgumentException> {
+            engine.build(
+                intent,
+                LedgerSnapshot(
+                    CardanoNetwork.MAINNET,
+                    listOf(LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000))),
+                    PROTOCOL_PARAMETERS,
+                    100,
+                ),
+            )
+        }
+        assertEquals(0, evaluations)
+    }
+
+    @Test fun openChannelBuildAndSignPreservePinnedKonduitSemantics() = runBlocking {
+        val engine = AndroidCardanoTransactionEngine(processor)
+        val entropy = ByteArray(32) { it.toByte() }
+        try {
+            assertEquals(PINNED_KONDUIT_COMMIT, fixture("source_commit"))
+            val source = engine.deriveWallet(entropy, CardanoNetwork.MAINNET)
+            val reference = fixtureReference()
+            val datum = channelDatum(ChannelDatumStage.Opened(0))
+            val intent = CardanoIntent.OpenChannel(
+                source.paymentAddress,
+                MAINNET.validatorAddress,
+                reference,
+                datum,
+                Lovelace(5_000_000),
+                "00000000-0000-4000-8000-000000000018",
+                100,
+                200,
+            )
+            val ledger = LedgerSnapshot(
+                CardanoNetwork.MAINNET,
+                listOf(LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000))),
+                PROTOCOL_PARAMETERS,
+                100,
+            )
+
+            val unsigned = engine.build(intent, ledger)
+            val unsignedSummary = engine.inspect(unsigned.cbor)
+            unsignedSummary.requireMatches(intent, CardanoNetwork.MAINNET, unsigned.feeBound)
+            unsignedSummary.requireL1Witnesses(source.paymentCredentialHex, signed = false)
+            val channelOutput = unsignedSummary.outputs.single { it.address == MAINNET.validatorAddress }
+            assertEquals(Lovelace(5_000_000), channelOutput.lovelace)
+            assertTrue(channelOutput.assets.isEmpty())
+            assertEquals(TransactionDatum.Inline(fixture("datum_opened_empty")), channelOutput.datum)
+            val expectedReference = TransactionInputReference(reference.transactionId, reference.index)
+            assertEquals(listOf(expectedReference), unsignedSummary.referenceInputs)
+            assertTrue(expectedReference !in unsignedSummary.inputs)
+            val inputs = ledger.utxos.associateBy { TransactionInputReference(it.transactionId, it.index) }
+            val inputTotal = unsignedSummary.inputs.sumOf { requireNotNull(inputs[it]).lovelace.value }
+            val outputAndFeeTotal = unsignedSummary.outputs.sumOf { it.lovelace.value } + unsignedSummary.fee.value
+            assertEquals(inputTotal, outputAndFeeTotal)
+            engine.requireMinimumAda(unsigned.cbor, ledger.protocolParametersJson)
+
+            val signed = engine.sign(unsigned, entropy)
+            try {
+                val signedSummary = engine.inspect(signed.cbor)
+                assertEquals(engine.transactionId(unsigned.cbor), engine.transactionId(signed.cbor))
+                assertEquals(unsignedSummary.inputs, signedSummary.inputs)
+                assertEquals(unsignedSummary.referenceInputs, signedSummary.referenceInputs)
+                assertEquals(unsignedSummary.outputs, signedSummary.outputs)
+                signedSummary.requireL1Witnesses(source.paymentCredentialHex, signed = true)
+                engine.requireMinimumAda(signed.cbor, ledger.protocolParametersJson)
+            } finally {
+                signed.cbor.fill(0)
+            }
+        } finally {
+            entropy.fill(0)
+        }
     }
 
     @Test fun derivesStableNetworkCorrectCip1852Identity() = runBlocking {
@@ -772,6 +960,9 @@ class AndroidCardanoTransactionEngineTest {
 
     companion object {
         private const val ENTERPRISE_ADDRESS = "addr1v83gkkw3nqzakg5xynlurqcfqhgd65vkfvf5xv8tx25ufds2yvy2h"
+        private const val PINNED_KONDUIT_COMMIT = "b9ac1e08897e39f5f0253541548c8845f392b3b4"
+        private const val USED_EVIDENCE = "9f07187bff"
+        private const val PENDING_EVIDENCE = "9f1901c81b0000018bcfe5687b58200404040404040404040404040404040404040404040404040404040404040404ff"
         private const val BASE_ADDRESS = "addr1qytp6yfl9wwamcqu3j5kqhjz8hlgkt62nd82d837g9dlsmn85wjc8sjtq2wqxfmahmpn6h85y0ug7mzclf2jl4zyt3vq587s69"
         private const val PROTOCOL_PARAMETERS = """{
           "min_fee_a":44,"min_fee_b":155381,"max_tx_size":16384,

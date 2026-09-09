@@ -4,6 +4,7 @@ import co.nstant.`in`.cbor.CborDecoder
 import co.nstant.`in`.cbor.model.Array as CborArray
 import co.nstant.`in`.cbor.model.Map as CborMap
 import co.nstant.`in`.cbor.model.SimpleValue
+import co.nstant.`in`.cbor.model.ByteString
 import com.bloxbean.cardano.client.common.cbor.CborSerializationUtil
 import co.nstant.`in`.cbor.model.UnsignedInteger
 import com.bloxbean.cardano.client.account.Account
@@ -27,6 +28,7 @@ import com.bloxbean.cardano.client.plutus.spec.ConstrPlutusData
 import com.bloxbean.cardano.client.plutus.spec.ListPlutusData
 import com.bloxbean.cardano.client.plutus.spec.PlutusData
 import com.bloxbean.cardano.client.plutus.spec.PlutusScript
+import com.bloxbean.cardano.client.plutus.spec.PlutusV3Script
 import com.bloxbean.cardano.client.plutus.spec.ExUnits
 import com.bloxbean.cardano.client.plutus.spec.RedeemerTag
 import com.bloxbean.cardano.client.quicktx.QuickTxBuilder
@@ -178,10 +180,7 @@ class AndroidCardanoTransactionEngine(
             else -> null
         }
         if (channelIntent != null) {
-            require(channelIntent.referenceInput.scriptRefHex != null)
-            require(channelIntent.referenceInput.scriptRefVersion in 1..3)
-            require(channelIntent.referenceInput.scriptRefHashHex == channelIntent.datum.validatorHashHex)
-            require(channelIntent.referenceInput.scriptRefHex.hashHex() == channelIntent.datum.validatorHashHex)
+            channelIntent.referenceInput.requireChannelReferenceScript(channelIntent.datum.validatorHashHex)
             require(channelIntent.datum.stage == ChannelDatumStage.Opened(0))
         }
         if (current != null) {
@@ -195,11 +194,9 @@ class AndroidCardanoTransactionEngine(
                 is CardanoIntent.CloseChannel -> intent.referenceInput
                 else -> error("unreachable")
             }
-            require(channelInput !== referenceInput)
+            require(channelInput.transactionId != referenceInput.transactionId || channelInput.index != referenceInput.index)
             require(channelInput.datumHex == current.plutus().serializeToHex())
-            require(referenceInput.scriptRefHex != null && referenceInput.scriptRefVersion in 1..3)
-            require(referenceInput.scriptRefHashHex == current.validatorHashHex)
-            require(referenceInput.scriptRefHex.hashHex() == current.validatorHashHex)
+            referenceInput.requireChannelReferenceScript(current.validatorHashHex)
             require(resulting == null || resulting.constants == current.constants && resulting.validatorHashHex == current.validatorHashHex)
         }
         when (intent) {
@@ -333,42 +330,6 @@ class AndroidCardanoTransactionEngine(
         TransactionUtil.getTxHash(signedCbor)
 
     private fun inferNetwork(transaction: Transaction) = Address(transaction.body.outputs.firstOrNull()?.address ?: error("transaction has no outputs")).network
-    private fun plutus(hex: String) = PlutusData.deserialize(HexUtil.decodeHexString(hex))
-    private fun ChannelDatum.plutus(): PlutusData {
-        val constants = ConstrPlutusData.of(
-            0,
-            BytesPlutusData.of(HexUtil.decodeHexString(constants.tagHex)),
-            BytesPlutusData.of(HexUtil.decodeHexString(constants.addVerificationKeyHex)),
-            BytesPlutusData.of(HexUtil.decodeHexString(constants.adaptorVerificationKeyHex)),
-            BigIntPlutusData.of(constants.closePeriodMillis),
-        )
-        val evidence = ListPlutusData.of(*stage.evidenceCborHex.map { plutus(it) }.toTypedArray())
-        val encodedStage = when (val value = stage) {
-            is ChannelDatumStage.Opened -> ConstrPlutusData.of(0, BigIntPlutusData.of(value.accountedAmount), evidence)
-            is ChannelDatumStage.Closed -> ConstrPlutusData.of(
-                1,
-                BigIntPlutusData.of(value.accountedAmount),
-                evidence,
-                BigIntPlutusData.of(value.elapseAtEpochMillis),
-            )
-            is ChannelDatumStage.Responded -> ConstrPlutusData.of(2, BigIntPlutusData.of(value.accountedAmount), evidence)
-        }
-        return ListPlutusData.of(
-            BytesPlutusData.of(HexUtil.decodeHexString(validatorHashHex)),
-            constants,
-            encodedStage,
-        )
-    }
-
-    private fun ChannelRedeemer.plutus(): PlutusData {
-        val step = when (this) {
-            ChannelRedeemer.ADD -> ConstrPlutusData.of(0, ConstrPlutusData.of(0))
-            ChannelRedeemer.CLOSE -> ConstrPlutusData.of(0, ConstrPlutusData.of(2))
-            ChannelRedeemer.ELAPSE -> ConstrPlutusData.of(1, ConstrPlutusData.of(1))
-            ChannelRedeemer.END -> ConstrPlutusData.of(1, ConstrPlutusData.of(0))
-        }
-        return ConstrPlutusData.of(1, ListPlutusData.of(step))
-    }
 
     private fun CloseChannelStep.redeemer() = when (this) {
         CloseChannelStep.CLOSE -> ChannelRedeemer.CLOSE
@@ -376,7 +337,6 @@ class AndroidCardanoTransactionEngine(
         CloseChannelStep.END -> ChannelRedeemer.END
     }
 
-    private fun String.hashHex() = PlutusScript.deserializeScriptRef(HexUtil.decodeHexString(this)).policyId
     private fun Lovelace.amount() = Amount.lovelace(BigInteger.valueOf(value))
 
     private fun toBloxbean(utxo: LedgerUtxo) = Utxo.builder()
@@ -396,6 +356,92 @@ class AndroidCardanoTransactionEngine(
         override fun getTxOutput(hash: String, index: Int): Optional<Utxo> = Optional.ofNullable(utxos.firstOrNull { it.txHash == hash && it.outputIndex == index })
     }
 }
+private const val MAX_CHANNEL_EVIDENCE = 10
+
+internal fun LedgerUtxo.requireChannelReferenceScript(expectedValidatorHashHex: String): PlutusV3Script = try {
+    require(Regex("[0-9a-f]{56}").matches(expectedValidatorHashHex))
+    val scriptHex = requireNotNull(scriptRefHex)
+    require(scriptRefVersion == 3)
+    require(scriptRefHashHex == expectedValidatorHashHex)
+    require(scriptHex.length in 2..131_072 && scriptHex.length % 2 == 0 && scriptHex.all { it in "0123456789abcdef" })
+    PlutusV3Script.deserialize(ByteString(HexUtil.decodeHexString(scriptHex))).also {
+        require(it.policyId == expectedValidatorHashHex)
+    }
+} catch (_: Exception) {
+    throw IllegalArgumentException("invalid channel reference script")
+}
+
+internal fun ChannelDatum.plutus(): PlutusData {
+    val constants = ListPlutusData.of(
+        BytesPlutusData.of(HexUtil.decodeHexString(constants.tagHex)),
+        BytesPlutusData.of(HexUtil.decodeHexString(constants.addVerificationKeyHex)),
+        BytesPlutusData.of(HexUtil.decodeHexString(constants.adaptorVerificationKeyHex)),
+        BigIntPlutusData.of(constants.closePeriodMillis),
+        ConstrPlutusData.of(0),
+    )
+    require(stage.evidenceCborHex.size <= MAX_CHANNEL_EVIDENCE) { "invalid channel evidence" }
+    val evidence = ListPlutusData.of(*stage.evidenceCborHex.map { evidence(it, stage is ChannelDatumStage.Responded) }.toTypedArray())
+    val encodedStage = when (val value = stage) {
+        is ChannelDatumStage.Opened -> ConstrPlutusData.of(0, BigIntPlutusData.of(value.accountedAmount), evidence)
+        is ChannelDatumStage.Closed -> {
+            require(value.elapseAtEpochMillis >= 0) { "invalid channel timestamp" }
+            ConstrPlutusData.of(
+                1,
+                BigIntPlutusData.of(value.accountedAmount),
+                evidence,
+                BigIntPlutusData.of(value.elapseAtEpochMillis),
+            )
+        }
+        is ChannelDatumStage.Responded -> ConstrPlutusData.of(2, BigIntPlutusData.of(value.accountedAmount), evidence)
+    }
+    return ListPlutusData.of(
+        BytesPlutusData.of(HexUtil.decodeHexString(validatorHashHex)),
+        constants,
+        encodedStage,
+    )
+}
+
+private fun evidence(cborHex: String, pending: Boolean): PlutusData = try {
+    val decoded = CborDecoder(ByteArrayInputStream(HexUtil.decodeHexString(cborHex))).decode()
+    require(decoded.size == 1)
+    val fields = (PlutusData.deserialize(decoded.single()) as? ListPlutusData)?.plutusDataList
+        ?: error("invalid evidence")
+    if (pending) {
+        require(fields.size == 3)
+        val lock = (fields[2] as? BytesPlutusData)?.value ?: error("invalid lock")
+        require(lock.size == 32)
+        ListPlutusData.of(
+            BigIntPlutusData.of(fields[0].nonNegativeLong()),
+            BigIntPlutusData.of(fields[1].nonNegativeLong()),
+            BytesPlutusData.of(lock),
+        )
+    } else {
+        require(fields.size == 2)
+        ListPlutusData.of(
+            BigIntPlutusData.of(fields[0].nonNegativeLong()),
+            BigIntPlutusData.of(fields[1].nonNegativeLong()),
+        )
+    }
+} catch (_: Exception) {
+    throw IllegalArgumentException("invalid channel evidence")
+}
+
+private fun PlutusData.nonNegativeLong(): Long {
+    val value = (this as? BigIntPlutusData)?.value ?: error("invalid integer")
+    require(value.signum() >= 0)
+    return value.longValueExact()
+}
+
+internal fun ChannelRedeemer.plutus(): PlutusData {
+    val step = when (this) {
+        ChannelRedeemer.ADD -> ConstrPlutusData.of(0, ConstrPlutusData.of(0))
+        ChannelRedeemer.CLOSE -> ConstrPlutusData.of(0, ConstrPlutusData.of(2))
+        ChannelRedeemer.ELAPSE -> ConstrPlutusData.of(1, ConstrPlutusData.of(1))
+        ChannelRedeemer.END -> ConstrPlutusData.of(1, ConstrPlutusData.of(0))
+    }
+    return ConstrPlutusData.of(1, ListPlutusData.of(step))
+}
+
 
 fun androidCardanoTransactionEngine(
     evaluate: suspend (CardanoNetwork, ByteArray) -> EvaluationResponse,
