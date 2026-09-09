@@ -184,6 +184,8 @@ data class ChannelDatum(
     }
 }
 
+internal const val KONDUIT_MIN_ADA_BUFFER = 2_000_000L
+
 @Serializable enum class ChannelRedeemer { ADD, CLOSE, ELAPSE, END }
 @Serializable enum class CloseChannelStep { CLOSE, ELAPSE, END }
 
@@ -206,6 +208,8 @@ interface CardanoTransactionEngine {
     suspend fun deriveWallet(entropy: ByteArray, network: CardanoNetwork): DerivedWallet
     suspend fun build(intent: CardanoIntent, ledger: LedgerSnapshot): UnsignedTransaction
     fun requireMinimumAda(cbor: ByteArray, protocolParametersJson: String)
+    fun minimumAdaForOutput(cbor: ByteArray, protocolParametersJson: String, outputIndex: Int): Lovelace
+    fun decodeChannelDatum(cborHex: String): ChannelDatum
     fun requireAuthorized(unsigned: UnsignedTransaction, intent: CardanoIntent, ledger: LedgerSnapshot)
     fun sign(unsigned: UnsignedTransaction, seed: ByteArray, intent: CardanoIntent, ledger: LedgerSnapshot): SignedTransaction
     fun inspect(signedCbor: ByteArray): TransactionSummary

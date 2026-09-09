@@ -7,6 +7,7 @@ import co.nstant.`in`.cbor.model.SimpleValue
 import co.nstant.`in`.cbor.model.ByteString
 import com.bloxbean.cardano.client.common.cbor.CborSerializationUtil
 import co.nstant.`in`.cbor.model.UnsignedInteger
+import co.nstant.`in`.cbor.model.DataItem
 import com.bloxbean.cardano.client.account.Account
 import com.bloxbean.cardano.client.address.Address
 import com.bloxbean.cardano.client.api.ProtocolParamsSupplier
@@ -179,6 +180,19 @@ class AndroidCardanoTransactionEngine(
         requireMinimumAda(cbor, coinsPerUtxoByte)
     }
 
+    override fun minimumAdaForOutput(
+        cbor: ByteArray,
+        protocolParametersJson: String,
+        outputIndex: Int,
+    ): Lovelace {
+        val (_, coinsPerUtxoByte) = parseProtocolParameters(protocolParametersJson)
+        val outputs = transactionOutputs(cbor).first
+        require(outputIndex in outputs.indices) { "invalid output index" }
+        return Lovelace(minimumAda(outputs[outputIndex], coinsPerUtxoByte))
+    }
+
+    override fun decodeChannelDatum(cborHex: String): ChannelDatum = decodeChannelDatumStrict(cborHex)
+
     private fun parseProtocolParameters(json: String): Pair<ProtocolParams, Long> {
         val tree = try {
             objectMapper.readTree(json)
@@ -312,25 +326,37 @@ class AndroidCardanoTransactionEngine(
 
     private fun requireMinimumAda(cbor: ByteArray, coinsPerUtxoByte: Long) {
         val sufficient = try {
-            val decoded = CborDecoder(ByteArrayInputStream(cbor)).decode()
-            require(decoded.size == 1)
-            val envelope = decoded.single() as? CborArray ?: error("invalid envelope")
-            require(envelope.dataItems.size == 4)
-            val body = envelope.dataItems[0] as? CborMap ?: error("invalid body")
-            require(CborSerializationUtil.serialize(envelope).contentEquals(cbor))
-            val outputs = (body[UnsignedInteger(1)] as? CborArray)?.dataItems
-                ?.takeIf { it.isNotEmpty() }
-                ?: error("invalid outputs")
-            val checked = outputs + listOfNotNull(body[UnsignedInteger(16)])
-            checked.all { output ->
-                val encodedSize = CborSerializationUtil.serialize(output).size.toLong()
-                val minimum = Math.multiplyExact(Math.addExact(160L, encodedSize), coinsPerUtxoByte)
-                TransactionOutput.deserialize(output).value.coin.longValueExact() >= minimum
+            val (outputs, collateralReturn) = transactionOutputs(cbor)
+            (outputs + listOfNotNull(collateralReturn)).all { output ->
+                TransactionOutput.deserialize(output).value.coin.longValueExact() >= minimumAda(output, coinsPerUtxoByte)
             }
         } catch (_: Exception) {
             throw IllegalArgumentException("invalid transaction CBOR")
         }
         require(sufficient) { "output below minimum ADA" }
+    }
+
+    private fun minimumAda(output: DataItem, coinsPerUtxoByte: Long) = try {
+        Math.multiplyExact(
+            Math.addExact(160L, CborSerializationUtil.serialize(output).size.toLong()),
+            coinsPerUtxoByte,
+        )
+    } catch (_: Exception) {
+        throw IllegalArgumentException("invalid transaction CBOR")
+    }
+    private fun transactionOutputs(cbor: ByteArray): Pair<List<DataItem>, DataItem?> = try {
+        val decoded = CborDecoder(ByteArrayInputStream(cbor)).decode()
+        require(decoded.size == 1)
+        val envelope = decoded.single() as? CborArray ?: error("invalid envelope")
+        require(envelope.dataItems.size == 4)
+        val body = envelope.dataItems[0] as? CborMap ?: error("invalid body")
+        require(CborSerializationUtil.serialize(envelope).contentEquals(cbor))
+        val outputs = (body[UnsignedInteger(1)] as? CborArray)?.dataItems
+            ?.takeIf { it.isNotEmpty() }
+            ?: error("invalid outputs")
+        outputs to body[UnsignedInteger(16)]
+    } catch (_: Exception) {
+        throw IllegalArgumentException("invalid transaction CBOR")
     }
 
     private fun requireChannelSemantics(intent: CardanoIntent, ledger: LedgerSnapshot): PlutusV3Script? {
@@ -836,7 +862,6 @@ class AndroidCardanoTransactionEngine(
 }
 private val POSITIVE_DECIMAL = Regex("[1-9][0-9]*")
 private const val MAX_CHANNEL_EVIDENCE = 10
-private const val KONDUIT_MIN_ADA_BUFFER = 2_000_000L
 
 internal fun LedgerUtxo.requireChannelReferenceScript(expectedValidatorHashHex: String): PlutusV3Script = try {
     require(Regex("[0-9a-f]{56}").matches(expectedValidatorHashHex))
@@ -880,6 +905,69 @@ internal fun ChannelDatum.plutus(): PlutusData {
         encodedStage,
     )
 }
+
+private fun decodeChannelDatumStrict(cborHex: String): ChannelDatum = try {
+    require(cborHex.isNotEmpty() && cborHex.length % 2 == 0 && cborHex.all { it in "0123456789abcdef" })
+    val bytes = HexUtil.decodeHexString(cborHex)
+    val decoded = CborDecoder(ByteArrayInputStream(bytes)).decode()
+    require(decoded.size == 1)
+    val root = PlutusData.deserialize(decoded.single()).list(3)
+    val validatorHash = root[0].bytes(28)
+    val constants = root[1].list(5)
+    val asset = constants[4].constructor(0, 0)
+    require(asset.data.plutusDataList.isEmpty())
+    val stage = root[2] as? ConstrPlutusData ?: error("invalid stage")
+    val fields = stage.data.plutusDataList
+    val accountedAmount = fields.getOrNull(0)?.nonNegativeLong() ?: error("invalid stage")
+    val evidence = (fields.getOrNull(1) as? ListPlutusData)?.plutusDataList ?: error("invalid evidence")
+    require(evidence.size <= MAX_CHANNEL_EVIDENCE)
+    val evidenceHex = evidence.map { CborSerializationUtil.serialize(it.serialize()).let(HexUtil::encodeHexString) }
+    val decodedStage = when (stage.alternative) {
+        0L -> {
+            require(fields.size == 2)
+            evidenceHex.forEach { requireEvidence(it, false) }
+            ChannelDatumStage.Opened(accountedAmount, evidenceHex)
+        }
+        1L -> {
+            require(fields.size == 3)
+            evidenceHex.forEach { requireEvidence(it, false) }
+            ChannelDatumStage.Closed(accountedAmount, evidenceHex, fields[2].nonNegativeLong())
+        }
+        2L -> {
+            require(fields.size == 2)
+            evidenceHex.forEach { requireEvidence(it, true) }
+            ChannelDatumStage.Responded(accountedAmount, evidenceHex)
+        }
+        else -> error("invalid stage")
+    }
+    val datum = ChannelDatum(
+        HexUtil.encodeHexString(validatorHash),
+        ChannelConstants(
+            HexUtil.encodeHexString(constants[0].bytes(32)),
+            HexUtil.encodeHexString(constants[1].bytes(32)),
+            HexUtil.encodeHexString(constants[2].bytes(32)),
+            constants[3].nonNegativeLong().also { require(it > 0) },
+        ),
+        decodedStage,
+    )
+    require(datum.plutus().serializeToHex() == cborHex)
+    datum
+} catch (_: Exception) {
+    throw IllegalArgumentException("invalid channel datum")
+}
+
+private fun PlutusData.list(size: Int): List<PlutusData> =
+    (this as? ListPlutusData)?.plutusDataList?.also { require(it.size == size) }
+        ?: error("invalid list")
+
+private fun PlutusData.bytes(size: Int): ByteArray =
+    (this as? BytesPlutusData)?.value?.also { require(it.size == size) }
+        ?: error("invalid bytes")
+
+private fun PlutusData.constructor(alternative: Long, size: Int): ConstrPlutusData =
+    (this as? ConstrPlutusData)?.also {
+        require(it.alternative == alternative && it.data.plutusDataList.size == size)
+    } ?: error("invalid constructor")
 
 private data class ChannelEvidence(val plutus: PlutusData, val timeoutMillis: Long?)
 

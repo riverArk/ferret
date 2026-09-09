@@ -273,7 +273,7 @@ class L1WalletRepositoryTest {
             val calls = RemoteCalls()
             val engine = FakeEngine()
             var minimum = "0"
-            val repository = previewRepository(vault, engine, calls = calls) { minimum }
+            val repository = previewRepository(vault, engine, calls = calls, protocolParameters = { minimum })
             val preview = if (sweep) {
                 repository.previewSweep(source.id, destination.paymentAddress)
             } else {
@@ -324,6 +324,22 @@ class L1WalletRepositoryTest {
         }
     }
 
+    @Test fun pendingChannelBlocksTransferBeforeJournalOrSeedAccess() = runBlocking {
+        val source = profile('0')
+        val destination = profile('1')
+        val vault = FakeVault(listOf(source, destination))
+        val engine = FakeEngine()
+        val repository = previewRepository(vault, engine, hasPendingChannel = { true })
+        val preview = repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+        val writesBefore = vault.writes
+
+        assertFailsWith<IllegalArgumentException> { repository.submitTransfer(source.id, preview) }
+
+        assertEquals(0, vault.seedRequests)
+        assertEquals(writesBefore, vault.writes)
+        assertEquals(null, repository.operation(source.id))
+    }
+
 
 
 
@@ -333,6 +349,7 @@ class L1WalletRepositoryTest {
         ledgerInputs: List<LedgerUtxo>? = null,
         calls: RemoteCalls = RemoteCalls(),
         protocolParameters: () -> String = { "{}" },
+        hasPendingChannel: suspend (WalletId) -> Boolean = { false },
     ) = DefaultL1WalletRepository(
         WalletRepository(), vault,
         { profile ->
@@ -346,7 +363,7 @@ class L1WalletRepositoryTest {
         { emptyList() },
         { _, request -> calls.submit(request.operationId, request.expectedTransactionId) },
         { _, operationId -> calls.lookup(operationId) },
-        engine, { OPERATION_ID }, { 123L },
+        engine, { OPERATION_ID }, { 123L }, hasPendingChannel,
     )
 
     @Test fun rejectsDuplicateInFlightButAllowsNewTransferAfterConfirmation() = runBlocking {
@@ -852,6 +869,13 @@ class L1WalletRepositoryTest {
             val minimum = protocolParametersJson.toLongOrNull() ?: minimumOutputLovelace
             require(inspect(cbor).outputs.all { it.lovelace.value >= minimum })
         }
+        override fun minimumAdaForOutput(
+            cbor: ByteArray,
+            protocolParametersJson: String,
+            outputIndex: Int,
+        ) = Lovelace(protocolParametersJson.toLongOrNull() ?: minimumOutputLovelace)
+        override fun decodeChannelDatum(cborHex: String): io.riverark.ferret.core.cardano.ChannelDatum =
+            error("not used")
         override fun requireAuthorized(unsigned: UnsignedTransaction, intent: CardanoIntent, ledger: LedgerSnapshot) {
             require(unsigned.operationId == intent.operationId)
             inspect(unsigned.cbor).also {

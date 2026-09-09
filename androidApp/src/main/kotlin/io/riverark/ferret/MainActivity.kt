@@ -57,6 +57,7 @@ import io.riverark.ferret.core.channel.VaultChannelJournal
 import io.riverark.ferret.core.channel.AdaptorChannelRemote
 import io.riverark.ferret.core.channel.ChannelRepository
 import io.riverark.ferret.core.channel.DriveChannelBackupProtocol
+import io.riverark.ferret.core.channel.OpenChannelTransactions
 import io.riverark.ferret.core.channel.DefaultPaymentGateway
 import io.riverark.ferret.core.channel.PaymentViewModel
 import io.riverark.ferret.core.channel.ProtocolKeytag
@@ -142,18 +143,43 @@ class MainActivity : FragmentActivity() {
             backupCrypto,
             System::currentTimeMillis,
         )
+        paymentStore = VaultPaymentStore(vault)
+        val channelJournal = VaultChannelJournal(vault, paymentStore)
+        val cardanoEngine = androidCardanoTransactionEngine { network, cbor ->
+            connectors.getValue(network).evaluate(cbor.joinToString("") { byte ->
+                byte.toUByte().toString(16).padStart(2, '0')
+            })
+        }
         l1WalletRepository = DefaultL1WalletRepository(
             wallets,
             vault,
             { profile -> connectors.getValue(profile.network) },
-            androidCardanoTransactionEngine { network, cbor ->
-                connectors.getValue(network).evaluate(cbor.joinToString("") { byte -> byte.toUByte().toString(16).padStart(2, '0') })
-            },
+            cardanoEngine,
             { UUID.randomUUID().toString() },
             System::currentTimeMillis,
+            { walletId -> channelJournal.load(walletId).pending != null },
         )
-        paymentStore = VaultPaymentStore(vault)
-        val channelJournal = VaultChannelJournal(vault, paymentStore)
+        val random = AndroidSecureRandomSource()
+        val openTransactions = OpenChannelTransactions(
+            vault,
+            cardanoEngine,
+            loadLedger = { profile ->
+                val connector = connectors.getValue(profile.network)
+                val walletLedger = connector.ledger(profile.paymentAddress, profile.network)
+                val outputs = walletLedger.utxos +
+                    connector.utxos(deployment(profile.network).scriptDeploymentAddress).map { it.ledger() } +
+                    connector.utxos(deployment(profile.network).validatorAddress).map { it.ledger() }
+                require(outputs.map { it.transactionId to it.index }.distinct().size == outputs.size)
+                walletLedger.copy(utxos = outputs)
+            },
+            loadInfo = { profile -> adaptors.getValue(profile.network).info() },
+            verificationKey = { profile ->
+                AndroidProtocolSigner(vault, profile.id, profile.network).verificationKeyHex()
+            },
+            availability = ::requireOpenAvailable,
+            newTag = { random.bytes(32) },
+            nowEpochMillis = System::currentTimeMillis,
+        )
         channelRepository = ChannelRepository(
             wallets,
             channelJournal,
@@ -167,6 +193,7 @@ class MainActivity : FragmentActivity() {
             ),
             paymentStore,
             { UUID.randomUUID().toString() },
+            openTransactions,
         )
         walletRemovalManager = WalletRemovalManager(
             DefaultWalletRemovalRepository(
@@ -280,6 +307,18 @@ class MainActivity : FragmentActivity() {
                     loadPaymentReceipt = paymentStore::receipt,
                     paymentActionsAvailable = BuildConfig.MAINNET_ACCEPTANCE,
                     channelActionsAvailable = BuildConfig.MAINNET_ACCEPTANCE,
+                    previewOpenChannel = { walletId, amount ->
+                        val profile = currentProfile(walletId)
+                        coordinators.getValue(profile.network).refresh {
+                            channelRepository.previewOpen(walletId, amount)
+                        }
+                    },
+                    submitOpenChannel = { walletId, preview ->
+                        val profile = currentProfile(walletId)
+                        coordinators.getValue(profile.network).refresh {
+                            channelRepository.submit(walletId, preview)
+                        }
+                    },
                     invoiceScanner = { onInvoice, onError -> QrPaymentScannerScreen(onInvoice, onError) },
                     nowEpochMillis = System::currentTimeMillis,
                     loadSettings = { profile ->
@@ -514,6 +553,18 @@ class MainActivity : FragmentActivity() {
                 System::currentTimeMillis,
             )
         }.claim(checkpoint)
+    }
+
+    private suspend fun requireOpenAvailable(walletId: WalletId) {
+        require(BuildConfig.MAINNET_ACCEPTANCE) { "channel opening is deployment-gated" }
+        require(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) { "host is backgrounded" }
+        require(hasValidatedNetwork()) { "validated network unavailable" }
+        val ready = wallets.state.value as? AppState.Ready ?: error("wallet session unavailable")
+        require(ready.activeWalletId == walletId) { "wallet is not selected" }
+        require(ready.wallets.single { it.id == walletId }.network == CardanoNetwork.MAINNET)
+        require(l1WalletRepository.operations(walletId).none {
+            it.state in setOf(L1OperationState.PREPARED, L1OperationState.SUBMITTING, L1OperationState.PENDING)
+        }) { "L1 operation is unresolved" }
     }
 
     private fun currentProfile(walletId: WalletId): WalletProfile =

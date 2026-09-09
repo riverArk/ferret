@@ -1107,6 +1107,32 @@ class AndroidCardanoTransactionEngineTest {
         }
     }
 
+    @Test fun observesExactOutputMinimumAndStrictChannelDatums() {
+        val engine = AndroidCardanoTransactionEngine(processor)
+        val first = output(ENTERPRISE_ADDRESS, 1_000_000, false)
+        val second = output(BASE_ADDRESS, 2_000_000, true)
+        val cbor = transaction(listOf(first, second))
+        assertEquals(
+            Lovelace((160L + CborSerializationUtil.serialize(second).size) * 4_310L),
+            engine.minimumAdaForOutput(cbor, protocolParameters("4310"), 1),
+        )
+        assertFailsWith<IllegalArgumentException> {
+            engine.minimumAdaForOutput(cbor, protocolParameters("4310"), 2)
+        }
+
+        listOf(
+            ChannelDatumStage.Opened(0),
+            ChannelDatumStage.Closed(1, elapseAtEpochMillis = 2),
+            ChannelDatumStage.Responded(3),
+        ).forEach { stage ->
+            val expected = channelDatum(stage)
+            val encoded = expected.plutus().serializeToHex()
+            assertEquals(expected, engine.decodeChannelDatum(encoded))
+            assertFailsWith<IllegalArgumentException> { engine.decodeChannelDatum(encoded + "00") }
+            assertFailsWith<IllegalArgumentException> { engine.decodeChannelDatum(encoded.uppercase()) }
+        }
+    }
+
     @Test fun rejectsInvalidProtocolOutputCostsAndOverflow() {
         val engine = AndroidCardanoTransactionEngine(processor)
         val valid = transaction(listOf(output(ENTERPRISE_ADDRESS, 1_000_000, false)))

@@ -461,6 +461,94 @@ fun TransferScreen(
     }
 }
 
+@Composable
+fun OpenChannelScreen(
+    profile: WalletProfile,
+    state: OpenChannelUiState,
+    onAmountChanged: () -> Unit,
+    onPreview: (Lovelace) -> Unit,
+    onSubmit: () -> Unit,
+    onStatus: () -> Unit,
+    onSettings: () -> Unit,
+    onBack: () -> Unit,
+) {
+    var amount by remember { mutableStateOf("") }
+    val lovelace = parseAdaAmount(amount)
+    FerretScreen {
+        LazyColumn(
+            Modifier.weight(1f).fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(FerretSpacing.sm),
+        ) {
+            item {
+                FerretTopBar("Open channel", navigation = {
+                    io.riverark.ferret.ui.FerretTextButton("Back", onBack)
+                })
+            }
+            item { FerretStatusChip("${profile.network.name} · ${profile.name}") }
+            item {
+                Text(
+                    "The channel deposit includes the protocol reserve. The transaction fee is separate.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            item {
+                OutlinedTextField(
+                    amount,
+                    {
+                        amount = it
+                        onAmountChanged()
+                    },
+                    Modifier.fillMaxWidth().semantics {
+                        stateDescription = if (state.busy) "Processing" else "Editable"
+                    },
+                    enabled = !state.busy,
+                    label = { Text("Channel deposit (ADA)") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    singleLine = true,
+                )
+            }
+            state.preview?.let { preview ->
+                item {
+                    FerretCard(Modifier.fillMaxWidth()) {
+                        FerretDataBlock("Deposit", formatAda(preview.amount))
+                        FerretDataBlock("Transaction fee", formatAda(preview.actualFee))
+                        FerretDataBlock("Maximum fee", formatAda(preview.feeBound))
+                        FerretDataBlock("Wallet change", formatAda(preview.sourceChange))
+                        FerretDataBlock("Ledger minimum ADA", formatAda(preview.ledgerMinAda))
+                        FerretDataBlock("Protocol reserve", formatAda(preview.protocolReserve))
+                        FerretDataBlock("Channel capacity", formatAda(preview.resultingSpendableBalance))
+                    }
+                }
+                item {
+                    Text(
+                        "Channel payments remain deployment-gated.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            if (state.busy) item { FerretLoadingState("Processing channel authorization") }
+            state.error?.let { error -> item { FerretErrorState(error) } }
+            item {
+                when {
+                    state.operationId != null && state.error != null ->
+                        FerretPrimaryButton("View channel status", onStatus, enabled = !state.busy)
+                    state.preview != null ->
+                        FerretPrimaryButton("Open channel", onSubmit, enabled = !state.busy)
+                    else ->
+                        FerretPrimaryButton(
+                            "Preview channel",
+                            { onPreview(checkNotNull(lovelace)) },
+                            enabled = lovelace != null && !state.busy,
+                        )
+                }
+            }
+            if (state.error != null && state.operationId == null) {
+                item { FerretSecondaryButton("Verify backup in Settings", onSettings, enabled = !state.busy) }
+            }
+        }
+    }
+}
+
 internal fun parseAdaAmount(value: String): Lovelace? {
     if (!Regex("(0|[1-9][0-9]*)(\\.[0-9]{0,6})?").matches(value)) return null
     val parts = value.split('.', limit = 2)

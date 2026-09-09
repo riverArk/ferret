@@ -189,7 +189,7 @@ class DriveBackupRepositoryTest {
         val vault = FakeVault(walletId, seed)
         val payments = VaultPaymentStore(vault)
         val journal = VaultChannelJournal(vault, payments)
-        journal.persist(walletId, ChannelSnapshot(ChannelState.Absent))
+        journal.persist(walletId, ChannelSnapshot(ChannelState.Open("initial")))
         val coordinator = WalletBackupCoordinator(vault, DriveBackupRepository(drive, AndroidBackupCrypto()), AndroidBackupCrypto()) { 1L }
         coordinator.initialize(walletId, journal.backupSnapshot(walletId))
         val backup = DriveChannelBackupProtocol(coordinator, { _, checkpoint ->
@@ -204,7 +204,7 @@ class DriveBackupRepositoryTest {
             },
         )
         repository.load(walletId)
-        val open = operation(ChannelAction.Open(3_000_000), resultingBalance = 2_500_000)
+        val open = operation(ChannelAction.Add(3_000_000), resultingBalance = 2_500_000)
         repository.submit(walletId, preview(open))
 
         var restored = restore(walletId, seed, drive)

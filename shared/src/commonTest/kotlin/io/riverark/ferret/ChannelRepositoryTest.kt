@@ -41,7 +41,7 @@ class ChannelRepositoryTest {
     }
 
     @Test fun missingWriterLeasePreventsJournalAndRemoteMutation() = runBlocking {
-        val initial = ChannelSnapshot(ChannelState.Absent)
+        val initial = ChannelSnapshot(ChannelState.Open("channel"))
         var stored = initial
         var remoteCalled = false
         val repository = repository(
@@ -62,7 +62,7 @@ class ChannelRepositoryTest {
         )
         repository.load(walletId)
 
-        assertFailsWith<IllegalStateException> { repository.submit(walletId, preview(ChannelAction.Open(3_000_000))) }
+        assertFailsWith<IllegalStateException> { repository.submit(walletId, preview(ChannelAction.Close)) }
         assertEquals(initial, stored)
         assertEquals(false, remoteCalled)
     }
@@ -152,9 +152,9 @@ class ChannelRepositoryTest {
     }
 
     @Test fun reclaimsWriteAheadLeaseAndReplaysOneStablePayload() = runBlocking {
-        val action = ChannelAction.Open(3_000_000)
+        val action = ChannelAction.Close
         val updatedWriter = writer.copy(token = "d".repeat(64), backupHashHex = "e".repeat(64))
-        var stored = ChannelSnapshot(ChannelState.Absent)
+        var stored = ChannelSnapshot(ChannelState.Open("channel"))
         var writeAhead: ChannelSnapshot? = null
         var claims = 0
         val operations = mutableListOf<PreparedChannelOperation>()
@@ -182,7 +182,7 @@ class ChannelRepositoryTest {
 
         assertFailsWith<IllegalStateException> { repository.submit(walletId, preview) }
         assertEquals(action, assertNotNull(writeAhead).pending!!.action)
-        assertEquals(ChannelState.Opening("operation"), assertNotNull(writeAhead).state)
+        assertEquals(ChannelState.Closing("operation"), assertNotNull(writeAhead).state)
         assertEquals(OperationState.PENDING_RECONCILIATION, assertNotNull(stored.pending).state)
 
         repository.reconcile(walletId)

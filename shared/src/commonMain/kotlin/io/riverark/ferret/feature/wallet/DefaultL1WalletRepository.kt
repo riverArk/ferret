@@ -49,6 +49,7 @@ class DefaultL1WalletRepository(
     private val engine: CardanoTransactionEngine,
     private val newOperationId: () -> String,
     private val nowEpochMillis: () -> Long,
+    private val hasPendingChannel: suspend (WalletId) -> Boolean = { false },
 ) : L1WalletRepository {
     constructor(
         wallets: WalletRepository,
@@ -57,6 +58,7 @@ class DefaultL1WalletRepository(
         engine: CardanoTransactionEngine,
         newOperationId: () -> String,
         nowEpochMillis: () -> Long,
+        hasPendingChannel: suspend (WalletId) -> Boolean = { false },
     ) : this(
         wallets,
         vault,
@@ -67,6 +69,7 @@ class DefaultL1WalletRepository(
         engine,
         newOperationId,
         nowEpochMillis,
+        hasPendingChannel = hasPendingChannel,
     )
     private val json = Json { ignoreUnknownKeys = false }
 
@@ -160,6 +163,7 @@ class DefaultL1WalletRepository(
             engine.requireAuthorized(unsigned, intent, submitLedger)
             val existing = operations(walletId)
             require(existing.none { it.state in UNRESOLVED_STATES }) { "another wallet operation is unresolved" }
+            require(!hasPendingChannel(walletId)) { "channel operation is unresolved" }
             val prepared = L1OperationRecord(
                 intent.operationId,
                 destinationWalletId = preview.destination.id,
@@ -250,6 +254,7 @@ class DefaultL1WalletRepository(
             engine.requireAuthorized(preview.unsigned, preview.intent, submitLedger)
             val existing = operations(walletId)
             require(existing.none { it.state in UNRESOLVED_STATES }) { "another wallet operation is unresolved" }
+            require(!hasPendingChannel(walletId)) { "channel operation is unresolved" }
             val prepared = L1OperationRecord(
                 preview.intent.operationId,
                 destinationAddress = preview.destinationAddress,

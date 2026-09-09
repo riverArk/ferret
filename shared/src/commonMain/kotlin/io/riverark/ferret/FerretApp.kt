@@ -34,6 +34,7 @@ import ferret.shared.generated.resources.Res
 import ferret.shared.generated.resources.splash_ferret
 import io.riverark.ferret.core.backup.StaleBackupWriterException
 import io.riverark.ferret.core.channel.ChannelSnapshot
+import io.riverark.ferret.core.channel.ChannelPreview
 import io.riverark.ferret.core.channel.PaymentQuote
 import io.riverark.ferret.core.channel.PaymentUiState
 import io.riverark.ferret.core.channel.PaymentViewModel
@@ -51,6 +52,8 @@ import io.riverark.ferret.feature.payment.PaymentReceiptScreen
 import io.riverark.ferret.feature.wallet.CreateWalletScreen
 import io.riverark.ferret.feature.wallet.ChannelScreen
 import io.riverark.ferret.feature.wallet.HomeScreen
+import io.riverark.ferret.feature.wallet.OpenChannelScreen
+import io.riverark.ferret.feature.wallet.OpenChannelViewModel
 import io.riverark.ferret.feature.wallet.QrCode
 import io.riverark.ferret.feature.wallet.HomeViewModel
 import io.riverark.ferret.feature.wallet.HistoryScreen
@@ -98,6 +101,8 @@ data class FerretDependencies(
     val invoiceScanner: (@Composable ((String) -> Unit, () -> Unit) -> Unit)? = null,
     val paymentActionsAvailable: Boolean = false,
     val channelActionsAvailable: Boolean = false,
+    val previewOpenChannel: (suspend (WalletId, Lovelace) -> ChannelPreview)? = null,
+    val submitOpenChannel: (suspend (WalletId, ChannelPreview) -> String)? = null,
     val nowEpochMillis: (() -> Long)? = null,
     val loadSettings: (suspend (WalletProfile) -> WalletSettings)? = null,
     val connectDrive: (suspend () -> String)? = null,
@@ -149,6 +154,8 @@ fun FerretApp(
             dependencies.channelActionsAvailable,
             dependencies.nowEpochMillis,
             dependencies.loadSettings,
+            dependencies.previewOpenChannel,
+            dependencies.submitOpenChannel,
             dependencies.connectDrive,
             dependencies.verifyBackup,
             dependencies.restoreBackup,
@@ -178,6 +185,8 @@ private fun WalletNavigation(
     channelActionsAvailable: Boolean,
     nowEpochMillis: (() -> Long)?,
     loadSettings: (suspend (WalletProfile) -> WalletSettings)?,
+    previewOpenChannel: (suspend (WalletId, Lovelace) -> ChannelPreview)?,
+    submitOpenChannel: (suspend (WalletId, ChannelPreview) -> String)?,
     connectDrive: (suspend () -> String)?,
     verifyBackup: (suspend (WalletId) -> Long)?,
     restoreBackup: (suspend (WalletId) -> Long)?,
@@ -388,7 +397,10 @@ private fun WalletNavigation(
                     homeState,
                     homeViewModel::refresh,
                     { navController.navigate(Route.TopUp(profile.id.value)) },
-                    if (channelActionsAvailable && profile.network == CardanoNetwork.MAINNET) {
+                    if (
+                        channelActionsAvailable && profile.network == CardanoNetwork.MAINNET &&
+                        previewOpenChannel != null && submitOpenChannel != null
+                    ) {
                         { navController.navigate(Route.OpenChannel(profile.id.value)) }
                     } else {
                         null
@@ -447,14 +459,32 @@ private fun WalletNavigation(
         composable<Route.OpenChannel> { backStackEntry ->
             val route = backStackEntry.toRoute<Route.OpenChannel>()
             val profile = (state as? AppState.Ready)?.wallets?.firstOrNull { it.id.value == route.walletId }
-            if (profile != null && profile.network == CardanoNetwork.MAINNET && channelActionsAvailable) {
+            if (
+                profile != null && profile.network == CardanoNetwork.MAINNET && channelActionsAvailable &&
+                previewOpenChannel != null && submitOpenChannel != null
+            ) {
+                val openViewModel = viewModel(key = "open-${profile.id.value}") {
+                    OpenChannelViewModel(profile.id, previewOpenChannel, submitOpenChannel)
+                }
+                val openState by openViewModel.state.collectAsState()
+                fun showStatus() {
+                    navController.popBackStack()
+                    navController.navigate(Route.Channel(profile.id.value))
+                }
+                LaunchedEffect(openState.operationId, openState.error) {
+                    if (openState.operationId != null && openState.error == null) showStatus()
+                }
                 SensitiveContent(onSensitiveContentChanged) {
-                    FerretScreen {
-                        FerretTopBar("Open channel", navigation = {
-                            io.riverark.ferret.ui.FerretTextButton("Back", navController::popBackStack)
-                        })
-                        FerretErrorState("Channel opening remains disabled until controlled Mainnet acceptance passes.")
-                    }
+                    OpenChannelScreen(
+                        profile,
+                        openState,
+                        openViewModel::clearPreview,
+                        openViewModel::previewAsync,
+                        openViewModel::submitAsync,
+                        ::showStatus,
+                        { navController.navigate(Route.Settings(profile.id.value)) },
+                        navController::popBackStack,
+                    )
                 }
             }
         }

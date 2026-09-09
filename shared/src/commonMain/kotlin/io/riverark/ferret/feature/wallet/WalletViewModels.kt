@@ -3,6 +3,7 @@ package io.riverark.ferret.feature.wallet
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import io.riverark.ferret.core.channel.ChannelSnapshot
+import io.riverark.ferret.core.channel.ChannelPreview
 import io.riverark.ferret.core.cardano.CardanoIntent
 import io.riverark.ferret.core.cardano.UnsignedTransaction
 import io.riverark.ferret.core.model.CardanoNetwork
@@ -259,4 +260,60 @@ class TransferViewModel(private val walletId: WalletId, private val network: Car
     }
 
     suspend fun submit(preview: TransferPreview) = l1.submitTransfer(walletId, preview)
+}
+
+data class OpenChannelUiState(
+    val preview: ChannelPreview? = null,
+    val busy: Boolean = false,
+    val operationId: String? = null,
+    val error: String? = null,
+)
+
+class OpenChannelViewModel(
+    private val walletId: WalletId,
+    private val previewer: suspend (WalletId, Lovelace) -> ChannelPreview,
+    private val submitter: suspend (WalletId, ChannelPreview) -> String,
+) : ViewModel() {
+    private val mutableState = MutableStateFlow(OpenChannelUiState())
+    val state = mutableState.asStateFlow()
+
+    fun previewAsync(amount: Lovelace) {
+        if (mutableState.value.busy) return
+        mutableState.value = OpenChannelUiState(busy = true)
+        viewModelScope.launch {
+            try {
+                mutableState.value = OpenChannelUiState(preview = previewer(walletId, amount))
+            } catch (cancelled: CancellationException) {
+                mutableState.value = OpenChannelUiState()
+                throw cancelled
+            } catch (_: Exception) {
+                mutableState.value = OpenChannelUiState(
+                    error = "Unable to preview channel. Check the amount, connection, and backup.",
+                )
+            }
+        }
+    }
+
+    fun submitAsync() {
+        if (mutableState.value.busy) return
+        val preview = mutableState.value.preview ?: return
+        mutableState.value = OpenChannelUiState(busy = true)
+        viewModelScope.launch {
+            try {
+                mutableState.value = OpenChannelUiState(operationId = submitter(walletId, preview))
+            } catch (cancelled: CancellationException) {
+                mutableState.value = OpenChannelUiState(operationId = preview.operation.operationId)
+                throw cancelled
+            } catch (_: Exception) {
+                mutableState.value = OpenChannelUiState(
+                    operationId = preview.operation.operationId,
+                    error = "Channel status is unavailable. Check the channel before trying again.",
+                )
+            }
+        }
+    }
+
+    fun clearPreview() {
+        if (!mutableState.value.busy) mutableState.value = OpenChannelUiState()
+    }
 }

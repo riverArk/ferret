@@ -4,12 +4,15 @@ import io.riverark.ferret.core.model.ChannelState
 import io.riverark.ferret.core.model.Lovelace
 import io.riverark.ferret.core.model.OperationState
 import io.riverark.ferret.core.model.WalletId
+import io.riverark.ferret.core.cardano.CardanoIntent
 import io.riverark.ferret.core.model.WalletRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 
 @kotlinx.serialization.Serializable
 sealed interface ChannelAction {
@@ -27,6 +30,8 @@ sealed interface ChannelPayload {
         val unsignedBody: ByteArray,
         val expectedTransactionId: String,
         val signedTransaction: ByteArray = byteArrayOf(),
+        val intent: CardanoIntent? = null,
+        val feeBound: Lovelace? = null,
     ) : ChannelPayload
 
     @kotlinx.serialization.Serializable
@@ -111,6 +116,7 @@ class ChannelRepository(
     private val remote: ChannelRemote,
     private val payments: PaymentStore? = null,
     private val newOperationId: () -> String = { error("operation ID generator unavailable") },
+    private val transactions: OpenChannelTransactions? = null,
 ) {
     private val mutableSnapshots = MutableStateFlow<Map<WalletId, ChannelSnapshot>>(emptyMap())
     val snapshots: StateFlow<Map<WalletId, ChannelSnapshot>> = mutableSnapshots.asStateFlow()
@@ -120,6 +126,17 @@ class ChannelRepository(
         ensurePendingPayment(walletId, snapshot)
         publish(walletId, snapshot)
     }
+
+    suspend fun previewOpen(walletId: WalletId, amount: Lovelace): ChannelPreview =
+        wallets.withWalletLock(walletId) {
+            val current = mutableSnapshots.value[walletId] ?: journal.load(walletId)
+            require(current.pending == null) { "unresolved operation" }
+            requireAllowed(current.state, ChannelAction.Open(amount.value))
+            val authorizer = requireNotNull(transactions) { "Open channel transactions are unavailable" }
+            authorizer.requireAvailable(walletId)
+            backup.requireVerifiedWriter(walletId)
+            authorizer.preview(walletId, amount, newOperationId())
+        }
 
     suspend fun submitPayment(
         walletId: WalletId,
@@ -151,9 +168,26 @@ class ChannelRepository(
         val current = mutableSnapshots.value[walletId] ?: journal.load(walletId)
         require(current.pending == null) { "unresolved operation" }
         requireAllowed(current.state, preview.operation.action)
-        val prepared = preview.operation.copy(
+        val transactionPayload = preview.operation.payload as? ChannelPayload.Transaction
+        val adoptedPayload = transactionPayload?.copy(
+            unsignedBody = transactionPayload.unsignedBody.copyOf(),
+            signedTransaction = transactionPayload.signedTransaction.copyOf(),
+        ) ?: preview.operation.payload
+        val adoptedPreview = preview.copy(operation = preview.operation.copy(payload = adoptedPayload))
+        val adoptedTransaction = adoptedPayload as? ChannelPayload.Transaction
+        val authorizer = adoptedTransaction?.let {
+            require(preview.operation.action is ChannelAction.Open) { "unsupported channel transaction" }
+            require(it.intent is CardanoIntent.OpenChannel) { "Open intent is required" }
+            requireNotNull(transactions) { "Open channel transactions are unavailable" }
+                .also { configured -> configured.validatePreview(walletId, adoptedPreview) }
+        }
+        require(preview.operation.action !is ChannelAction.Open || adoptedTransaction != null) {
+            "Open channel transaction is required"
+        }
+        val prepared = adoptedPreview.operation.copy(
             priorChannelIdentity = preview.operation.priorChannelIdentity
                 ?: (current.state as? ChannelState.Open)?.channelId,
+            payload = adoptedPayload,
             resultingSpendableBalance = preview.operation.resultingSpendableBalance ?: when (preview.operation.action) {
                 is ChannelAction.Pay -> current.spendableBalance - preview.amount - preview.actualFee
                 else -> preview.resultingSpendableBalance
@@ -161,7 +195,7 @@ class ChannelRepository(
         )
         require(preview.operation.state == OperationState.PROPOSED)
         backup.requireVerifiedWriter(walletId)
-        val proposed = current.copy(
+        var proposed = current.copy(
             pending = prepared,
             state = when (preview.operation.action) {
                 is ChannelAction.Open -> ChannelState.Opening(preview.operation.operationId)
@@ -172,9 +206,17 @@ class ChannelRepository(
         persist(walletId, proposed)
         ensurePendingPayment(walletId, proposed)
         backup.writeAhead(walletId, proposed)
-        val armed = proposed.copy(pending = prepared.copy(state = OperationState.WRITE_AHEAD_VERIFIED))
+        if (authorizer != null) {
+            val signed = authorizer.sign(walletId, prepared)
+            proposed = proposed.copy(pending = signed)
+            persist(walletId, proposed)
+            backup.writeAhead(walletId, proposed)
+        }
+        val armed = proposed.copy(pending = proposed.pending!!.copy(state = OperationState.WRITE_AHEAD_VERIFIED))
         persist(walletId, armed)
         val writer = backup.requireVerifiedWriter(walletId)
+        currentCoroutineContext().ensureActive()
+        authorizer?.requireAvailable(walletId)
         val result = try {
             remote.mutate(walletId, armed.pending!!, writer)
         } catch (error: Exception) {
@@ -202,10 +244,32 @@ class ChannelRepository(
             ensurePendingPayment(walletId, current)
             return@withWalletLock complete(walletId, current, result)
         }
+        val transaction = pending.payload as? ChannelPayload.Transaction
+        if (transaction != null && transaction.signedTransaction.isEmpty()) {
+            require(
+                pending.action is ChannelAction.Open &&
+                    transaction.intent is CardanoIntent.OpenChannel &&
+                    transaction.feeBound != null,
+            ) { "unsupported channel transaction authorization" }
+            return@withWalletLock complete(
+                walletId,
+                current,
+                ChannelRemoteResult(
+                    pending.operationId,
+                    pending.intentHash,
+                    state = ChannelState.Absent,
+                    status = OperationState.FAILED,
+                ),
+            )
+        }
         val reconciled = remote.reconcile(walletId, pending, writer)
         val result = reconciled ?: run {
             if (pending.state in setOf(OperationState.SUBMITTED, OperationState.COMPLETED, OperationState.FAILED)) {
                 return@withWalletLock null
+            }
+            val authorizer = transaction?.let {
+                require(pending.action is ChannelAction.Open && it.intent is CardanoIntent.OpenChannel)
+                requireNotNull(transactions).also { configured -> configured.validateReplay(walletId, pending) }
             }
             if (pending.state == OperationState.PROPOSED) {
                 backup.writeAhead(walletId, current)
@@ -213,6 +277,8 @@ class ChannelRepository(
                 persist(walletId, replayBase)
                 writer = backup.requireVerifiedWriter(walletId)
             }
+            currentCoroutineContext().ensureActive()
+            authorizer?.requireAvailable(walletId)
             try {
                 remote.mutate(walletId, replayBase.pending!!, writer)
             } catch (error: Exception) {

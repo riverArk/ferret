@@ -98,12 +98,9 @@ class ChannelRemoteRecoveryTest {
         }
     }
 
-    @Test fun absentReplayUsesStableTransactionAndSubmittedDoesNotPost() = runBlocking {
-        val signed = byteArrayOf(1, 2, 3)
+    @Test fun legacyTransactionCannotReplayAndSubmittedDoesNotPost() = runBlocking {
         val responses = ArrayDeque<Any>(listOf(
             Reply(HttpStatusCode.NotFound, "missing"),
-            Reply(HttpStatusCode.OK, operationJson(operationId, transactionId)),
-            Reply(HttpStatusCode.OK, operationJson(operationId, transactionId)),
             Reply(HttpStatusCode.NotFound, "missing"),
         ))
         val engine = ScriptedEngine(responses)
@@ -116,25 +113,19 @@ class ChannelRemoteRecoveryTest {
             val repository = repository({ stored }, { stored = it }, remote(client))
             repository.load(walletId)
 
-            repository.reconcile(walletId)
-            assertEquals(listOf(HttpMethod.Get, HttpMethod.Post), engine.requests.map { it.method })
+            assertFailsWith<IllegalArgumentException> { repository.reconcile(walletId) }
+            assertEquals(listOf(HttpMethod.Get), engine.requests.map { it.method })
             assertEquals(operationId, stored.pending?.operationId)
-            assertEquals(
-                """{"operation_id":"$operationId","expected_transaction_id":"$transactionId","transaction":"010203"}""",
-                engine.requestBodies.single().decodeToString(),
+            assertContentEquals(
+                byteArrayOf(1, 2, 3),
+                (stored.pending?.payload as ChannelPayload.Transaction).signedTransaction,
             )
-            assertEquals(keytag, engine.requests[1].headers["KONDUIT"])
-            assertEquals(writer.token, engine.requests[1].headers["FERRET-SESSION"])
-            assertContentEquals(signed, (stored.pending?.payload as ChannelPayload.Transaction).signedTransaction)
-
-            repository.reconcile(walletId)
-            assertEquals(listOf(HttpMethod.Get, HttpMethod.Post, HttpMethod.Get), engine.requests.map { it.method })
 
             stored = stored.copy(pending = stored.pending?.copy(state = OperationState.SUBMITTED))
             val submitted = repository({ stored }, { stored = it }, remote(client))
             submitted.load(walletId)
             submitted.reconcile(walletId)
-            assertEquals(listOf(HttpMethod.Get, HttpMethod.Post, HttpMethod.Get, HttpMethod.Get), engine.requests.map { it.method })
+            assertEquals(listOf(HttpMethod.Get, HttpMethod.Get), engine.requests.map { it.method })
         } finally {
             client.close()
         }

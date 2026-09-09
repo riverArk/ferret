@@ -2,8 +2,8 @@
 
 ## Snapshot
 
-- Date: 2026-08-25
-- Current focus: repository-complete Android financial orchestration with deployment-gated mutation reachability.
+- Date: 2026-09-09
+- Current focus: deployment-gated Android Mainnet Open-channel lifecycle and remaining funded/device acceptance.
 - The live repository is a Kotlin Multiplatform project. This file describes current code only.
 
 ## Product and platforms
@@ -77,6 +77,13 @@ Primary commands:
 Android installation and manual onboarding verification require an API 36 emulator or device. Networked scenarios use low-value Mainnet wallets against the controlled `crustypants.com` services only. Release checks require `FERRET_GOOGLE_SERVER_CLIENT_ID`.
 
 ## Session log
+
+### 2026-09-09 — Gated Android Open-channel lifecycle
+
+- The shared Open-channel flow now previews a real Mainnet Konduit transaction, shows actual fee/change/minimum/reserve/capacity, requires explicit confirmation, and validates typed intent, live ledger policy, exact datum/output minimum, transaction identity, and signed witness bytes around vault signing.
+- Channel submission durably writes unsigned state and Drive backup before seed access, then signed state and Drive backup before adaptor mutation. Unsigned interrupted operations fail terminally without signing; signed absent operations replay exact stored bytes without re-signing; unsupported legacy records remain visible and fail closed.
+- Android wires the feature behind the existing build flag plus started lifecycle, validated Mainnet connectivity, selected-wallet readiness, and no unresolved L1/channel operation. Transfers and sweeps also reject pending channels before journal or seed access.
+- Focused host regressions, `androidCheck`, the shared iOS compile gate, and an API 36 Open-screen pass at 200% font with TalkBack passed. Funded controlled-Mainnet submission/recovery, Google OAuth/Drive two-device takeover, release credentials, and release-device acceptance remain outstanding.
 
 ### 2026-09-09 — Channel interruption recovery
 
