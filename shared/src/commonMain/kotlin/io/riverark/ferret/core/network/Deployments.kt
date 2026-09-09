@@ -47,11 +47,11 @@ val PREPROD = NetworkDeployment(
 val MAINNET = NetworkDeployment(
     CardanoNetwork.MAINNET,
     "addr1vy9z4llh8hxdwc54c0xlfgeza39vqm3zua4zva4elp0quqcxa7mjc",
-    "addr1wxxvdwawa53vy5ae6upa88mrkl3ptaa0pz76jv9vdwz7htcw94adk",
+    "addr1wxcrrmk4g6ta93942evluyw6c2ffy2xanpl6lc43tyzvupqswlfa5",
     HttpsUrl("https://konduit.crustypants.com"),
     HttpsUrl("https://konduit-cardano.crustypants.com"),
     "57da4bfac4a2d097c8b2f391ea5a0772b6db8a28bfbadd5cd72fb5b138d5a07c",
-    "8cc6bbaeed22c253b9d703d39f63b7e215f7af08bda930ac6b85ebaf",
+    "b031eed54697d2c4b55659fe11dac2929228dd987fafe2b15904ce04",
 ).also(NetworkDeployment::validate)
 
 fun deployment(network: CardanoNetwork) = if (network == CardanoNetwork.PREPROD) PREPROD else MAINNET

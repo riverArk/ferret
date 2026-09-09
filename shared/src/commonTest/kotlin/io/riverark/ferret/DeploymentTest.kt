@@ -16,6 +16,7 @@ class DeploymentTest {
         assertEquals("https://konduit.crustypants.com", MAINNET.adaptor.value)
         assertEquals("https://konduit-cardano.crustypants.com", MAINNET.connector.value)
         assertEquals("57da4bfac4a2d097c8b2f391ea5a0772b6db8a28bfbadd5cd72fb5b138d5a07c", MAINNET.adaptorIdentityHex)
-        assertEquals("8cc6bbaeed22c253b9d703d39f63b7e215f7af08bda930ac6b85ebaf", MAINNET.validatorHashHex)
+        assertEquals("addr1wxcrrmk4g6ta93942evluyw6c2ffy2xanpl6lc43tyzvupqswlfa5", MAINNET.validatorAddress)
+        assertEquals("b031eed54697d2c4b55659fe11dac2929228dd987fafe2b15904ce04", MAINNET.validatorHashHex)
     }
 }

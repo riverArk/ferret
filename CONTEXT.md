@@ -78,6 +78,10 @@ Android installation and manual onboarding verification require an API 36 emulat
 
 ## Session log
 
+### 2026-09-09 — Mainnet validator pin refresh
+
+- Mainnet now pins Konduit `b9ac1e0`'s Plutus V3 validator `b031eed54697d2c4b55659fe11dac2929228dd987fafe2b15904ce04` and its enterprise address `addr1wxcrrmk4g6ta93942evluyw6c2ffy2xanpl6lc43tyzvupqswlfa5`, matching the controlled adaptor.
+
 ### 2026-09-09 — Dynamic minimum ADA authorization
 
 - Android now validates every transaction output and collateral return against the live positive `coins_per_utxo_size` and each output's original serializer-stable CBOR size before L1 authorization.
