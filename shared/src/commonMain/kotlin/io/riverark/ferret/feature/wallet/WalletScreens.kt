@@ -2,6 +2,7 @@ package io.riverark.ferret.feature.wallet
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -19,8 +21,14 @@ import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -45,6 +53,12 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import ferret.shared.generated.resources.Res
+import ferret.shared.generated.resources.account_balance_wallet
+import ferret.shared.generated.resources.add_circle
+import ferret.shared.generated.resources.bolt
+import ferret.shared.generated.resources.history
+import ferret.shared.generated.resources.qr_code_scanner
+import ferret.shared.generated.resources.settings
 import ferret.shared.generated.resources.empty_activity_ferret
 import ferret.shared.generated.resources.ferret_unpack
 import ferret.shared.generated.resources.splash_ferret
@@ -67,6 +81,7 @@ import io.riverark.ferret.ui.FerretSecondaryButton
 import io.riverark.ferret.ui.FerretSpacing
 import io.riverark.ferret.ui.FerretStatusChip
 import io.riverark.ferret.ui.FerretTopBar
+import org.jetbrains.compose.resources.DrawableResource
 import org.jetbrains.compose.resources.painterResource
 import kotlin.random.Random
 
@@ -277,71 +292,108 @@ fun HomeScreen(
     onWallets: () -> Unit,
     onSettings: () -> Unit,
 ) {
+    var showMenu by rememberSaveable { mutableStateOf(false) }
+    val menuState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    fun select(action: () -> Unit) {
+        showMenu = false
+        action()
+    }
+
     FerretScreen {
         FerretTopBar("Ferret")
-        state.lastRefreshEpochMillis?.let {
-            Text("Last refreshed: $it", color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
         PullToRefreshBox(
             isRefreshing = state.loading,
             onRefresh = onRefresh,
             modifier = Modifier.weight(1f).fillMaxWidth(),
         ) {
-            LazyColumn(
-                Modifier.fillMaxSize(),
+            Column(
+                Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(FerretSpacing.md),
             ) {
-                item { Text(state.profile.name, style = MaterialTheme.typography.headlineLarge) }
-                item { FerretStatusChip(state.profile.network.name) }
-                item {
-                    FerretCard(Modifier.fillMaxWidth()) {
-                        when {
-                            state.balance != null -> FerretDataBlock("L1 available balance", formatAda(state.balance))
-                            state.error != null -> FerretErrorState(state.error, "Retry", onRefresh)
-                            else -> Text("Loading balance")
-                        }
+                Text(state.profile.name, style = MaterialTheme.typography.headlineLarge)
+                FerretStatusChip(state.profile.network.name)
+                FerretCard(Modifier.fillMaxWidth()) {
+                    when {
+                        state.balance != null -> FerretDataBlock("L1 available balance", formatAda(state.balance))
+                        state.error != null -> FerretErrorState(state.error)
+                        else -> Text("Loading balance")
                     }
                 }
-                item {
-                    FerretCard(Modifier.fillMaxWidth()) {
-                        Text("Latest activity", style = MaterialTheme.typography.titleMedium)
-                        state.latestActivity?.let { activity ->
-                            Text("${activity.realm}: ${formatAda(activity.amount)}")
-                            Text("${activity.state} · fee ${formatAda(activity.fee)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        } ?: Text("No activity yet", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
+                FerretCard(Modifier.fillMaxWidth()) {
+                    Text("Latest activity", style = MaterialTheme.typography.titleMedium)
+                    state.latestActivity?.let { activity ->
+                        Text("${activity.realm}: ${formatAda(activity.amount)}")
+                        Text("${activity.state} · fee ${formatAda(activity.fee)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    } ?: Text("No activity yet", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                item {
-                    FerretCard(Modifier.fillMaxWidth()) {
-                        SelectionContainer { FerretDataBlock("Payment address", state.profile.paymentAddress) }
-                    }
+                FerretCard(Modifier.fillMaxWidth()) {
+                    SelectionContainer { FerretDataBlock("Payment address", state.profile.paymentAddress) }
                 }
                 if (state.balance != null && state.error != null) {
-                    item { FerretErrorState(state.error, "Retry", onRefresh) }
+                    FerretErrorState(state.error)
                 }
             }
         }
-        FerretSecondaryButton("Refresh", onRefresh)
-        when {
-            channelRouteAvailable(state.profile.channelState) -> {
-                FerretPrimaryButton("View channel", { onChannel?.invoke() }, enabled = onChannel != null)
-                if (state.profile.channelState is ChannelState.Open) {
-                    FerretSecondaryButton("Pay invoice", { onPay?.invoke() }, enabled = onPay != null)
-                }
-                FerretSecondaryButton("Add ADA", onTopUp)
-                FerretSecondaryButton("Transfer ADA", { onTransfer?.invoke() }, enabled = onTransfer != null)
-            }
-            state.balance?.value == 0L -> FerretPrimaryButton("Add ADA", onTopUp)
-            state.balance != null -> {
-                FerretPrimaryButton("Open channel", { onOpenChannel?.invoke() }, enabled = onOpenChannel != null)
-                FerretSecondaryButton("Add ADA", onTopUp)
-                FerretSecondaryButton("Transfer ADA", { onTransfer?.invoke() }, enabled = onTransfer != null)
-            }
-        }
-        FerretSecondaryButton("History", onHistory)
-        FerretSecondaryButton("Wallets", onWallets)
-        FerretSecondaryButton("Settings", onSettings)
+        FerretSecondaryButton(
+            "Menu",
+            { showMenu = true },
+            Modifier.semantics { stateDescription = if (showMenu) "Expanded" else "Collapsed" },
+        )
     }
+
+    if (showMenu) {
+        ModalBottomSheet(
+            onDismissRequest = { showMenu = false },
+            sheetState = menuState,
+        ) {
+            Column(
+                Modifier.fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .navigationBarsPadding()
+                    .padding(horizontal = FerretSpacing.md, vertical = FerretSpacing.sm),
+            ) {
+                HomeMenuSection("Wallet actions")
+                if (channelRouteAvailable(state.profile.channelState) && onChannel != null) {
+                    HomeMenuItem("View channel", Res.drawable.bolt) { select(onChannel) }
+                    if (state.profile.channelState is ChannelState.Open && onPay != null) {
+                        HomeMenuItem("Pay invoice", Res.drawable.qr_code_scanner) { select(onPay) }
+                    }
+                } else if (state.balance?.value?.let { it > 0 } == true && onOpenChannel != null) {
+                    HomeMenuItem("Open channel", Res.drawable.bolt) { select(onOpenChannel) }
+                }
+                HomeMenuItem("Add ADA", Res.drawable.add_circle) { select(onTopUp) }
+                if (state.balance?.value?.let { it > 0 } == true && onTransfer != null) {
+                    HomeMenuItem("Transfer ADA", Res.drawable.account_balance_wallet) { select(onTransfer) }
+                }
+                HorizontalDivider(Modifier.padding(vertical = FerretSpacing.sm))
+                HomeMenuSection("Navigation")
+                HomeMenuItem("History", Res.drawable.history) { select(onHistory) }
+                HomeMenuItem("Wallets", Res.drawable.account_balance_wallet) { select(onWallets) }
+                HomeMenuItem("Settings", Res.drawable.settings) { select(onSettings) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeMenuSection(title: String) {
+    Text(
+        title.uppercase(),
+        Modifier.padding(horizontal = FerretSpacing.md, vertical = FerretSpacing.xs),
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+@Composable
+private fun HomeMenuItem(title: String, icon: DrawableResource, onClick: () -> Unit) {
+    ListItem(
+        headlineContent = { Text(title) },
+        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable(onClick = onClick),
+        leadingContent = {
+            Image(painterResource(icon), contentDescription = null, modifier = Modifier.size(24.dp))
+        },
+    )
 }
 
 internal fun channelRouteAvailable(state: ChannelState) =
