@@ -65,8 +65,17 @@ class AndroidCardanoTransactionEngine(
             is CardanoIntent.CloseChannel -> require(ledger.network.addressMatches(intent.channelInput.address))
         }
         require(intent.validFrom >= ledger.currentSlot && intent.validUntil > intent.validFrom)
-        requireChannelSemantics(intent)
-        val (params, coinsPerUtxoByte) = parseProtocolParameters(ledger.protocolParametersJson)
+        val referenceScript = requireChannelSemantics(intent)
+        val channelIntent = intent is CardanoIntent.OpenChannel ||
+            intent is CardanoIntent.AddChannelFunds ||
+            intent is CardanoIntent.CloseChannel
+        val (params, coinsPerUtxoByte) = try {
+            parseProtocolParameters(ledger.protocolParametersJson)
+        } catch (error: IllegalArgumentException) {
+            if (channelIntent) throw IllegalArgumentException("invalid channel protocol parameters")
+            throw error
+        }
+        if (channelIntent) requireChannelProtocolParameters(params)
         val utxos = ledger.utxos.filter { it.isSpendableBy(intent.sourceAddress) }.map(::toBloxbean)
         val supplier = SnapshotUtxoSupplier(utxos)
         val builder = QuickTxBuilder(supplier, ProtocolParamsSupplier { params }, transactionProcessor)
@@ -83,6 +92,7 @@ class AndroidCardanoTransactionEngine(
                     .payToContract(intent.validatorAddress, intent.amount.amount(), intent.datum.plutus())
                     .withChangeAddress(intent.sourceAddress),
             ).feePayer(intent.sourceAddress)
+                .withReferenceScripts(requireNotNull(referenceScript)).additionalSignersCount(1)
                 .validFrom(intent.validFrom).validTo(intent.validUntil).build()
             is CardanoIntent.AddChannelFunds -> builder.compose(
                 ScriptTx()
@@ -91,6 +101,7 @@ class AndroidCardanoTransactionEngine(
                     .payToContract(intent.channelInput.address, Amount.lovelace(BigInteger.valueOf(Math.addExact(intent.channelInput.lovelace.value, intent.amount.value))), intent.resultingDatum.plutus())
                     .withChangeAddress(intent.sourceAddress),
             ).feePayer(intent.sourceAddress).collateralPayer(intent.sourceAddress)
+                .withReferenceScripts(requireNotNull(referenceScript)).additionalSignersCount(1)
                 .validFrom(intent.validFrom).validTo(intent.validUntil).build()
             is CardanoIntent.CloseChannel -> {
                 val script = ScriptTx()
@@ -103,6 +114,7 @@ class AndroidCardanoTransactionEngine(
                     script.payToContract(intent.channelInput.address, intent.amount.amount(), intent.resultingDatum.plutus())
                 }
                 builder.compose(script).feePayer(intent.sourceAddress).collateralPayer(intent.sourceAddress)
+                    .withReferenceScripts(requireNotNull(referenceScript)).additionalSignersCount(1)
                     .validFrom(intent.validFrom).validTo(intent.validUntil).build()
             }
         }
@@ -143,6 +155,24 @@ class AndroidCardanoTransactionEngine(
         return params to cost
     }
 
+    private fun requireChannelProtocolParameters(params: ProtocolParams) {
+        try {
+            require(listOf(params.priceMem, params.priceStep, params.minFeeRefScriptCostPerByte).all {
+                it != null && it.signum() >= 0
+            })
+            require(listOf(params.maxTxExMem, params.maxTxExSteps).all {
+                it != null && POSITIVE_DECIMAL.matches(it) && it.toLongOrNull() != null
+            })
+            val models = requireNotNull(params.costModelsRaw)
+            require(models["PlutusV3"]?.isNotEmpty() == true)
+            require(models.values.all { model ->
+                model != null && model.size in 1..1024 && model.all { it != null }
+            })
+        } catch (_: Exception) {
+            throw IllegalArgumentException("invalid channel protocol parameters")
+        }
+    }
+
     private fun requireMinimumAda(cbor: ByteArray, coinsPerUtxoByte: Long) {
         val sufficient = try {
             val decoded = CborDecoder(ByteArrayInputStream(cbor)).decode()
@@ -166,7 +196,8 @@ class AndroidCardanoTransactionEngine(
         require(sufficient) { "output below minimum ADA" }
     }
 
-    private fun requireChannelSemantics(intent: CardanoIntent) {
+    private fun requireChannelSemantics(intent: CardanoIntent): PlutusV3Script? {
+        var referenceScript: PlutusV3Script? = null
         val channelIntent = intent as? CardanoIntent.OpenChannel
         val current = when (intent) {
             is CardanoIntent.AddChannelFunds -> intent.currentDatum
@@ -180,7 +211,7 @@ class AndroidCardanoTransactionEngine(
             else -> null
         }
         if (channelIntent != null) {
-            channelIntent.referenceInput.requireChannelReferenceScript(channelIntent.datum.validatorHashHex)
+            referenceScript = channelIntent.referenceInput.requireChannelReferenceScript(channelIntent.datum.validatorHashHex)
             require(channelIntent.datum.stage == ChannelDatumStage.Opened(0))
         }
         if (current != null) {
@@ -196,7 +227,7 @@ class AndroidCardanoTransactionEngine(
             }
             require(channelInput.transactionId != referenceInput.transactionId || channelInput.index != referenceInput.index)
             require(channelInput.datumHex == current.plutus().serializeToHex())
-            referenceInput.requireChannelReferenceScript(current.validatorHashHex)
+            referenceScript = referenceInput.requireChannelReferenceScript(current.validatorHashHex)
             require(resulting == null || resulting.constants == current.constants && resulting.validatorHashHex == current.validatorHashHex)
         }
         when (intent) {
@@ -225,6 +256,7 @@ class AndroidCardanoTransactionEngine(
             }
             else -> Unit
         }
+        return referenceScript
     }
     override fun sign(unsigned: UnsignedTransaction, seed: ByteArray): SignedTransaction {
         require(seed.size == 32)
@@ -356,6 +388,7 @@ class AndroidCardanoTransactionEngine(
         override fun getTxOutput(hash: String, index: Int): Optional<Utxo> = Optional.ofNullable(utxos.firstOrNull { it.txHash == hash && it.outputIndex == index })
     }
 }
+private val POSITIVE_DECIMAL = Regex("[1-9][0-9]*")
 private const val MAX_CHANNEL_EVIDENCE = 10
 
 internal fun LedgerUtxo.requireChannelReferenceScript(expectedValidatorHashHex: String): PlutusV3Script = try {
