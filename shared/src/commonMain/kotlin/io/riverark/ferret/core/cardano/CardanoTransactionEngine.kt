@@ -206,7 +206,8 @@ interface CardanoTransactionEngine {
     suspend fun deriveWallet(entropy: ByteArray, network: CardanoNetwork): DerivedWallet
     suspend fun build(intent: CardanoIntent, ledger: LedgerSnapshot): UnsignedTransaction
     fun requireMinimumAda(cbor: ByteArray, protocolParametersJson: String)
-    fun sign(unsigned: UnsignedTransaction, seed: ByteArray): SignedTransaction
+    fun requireAuthorized(unsigned: UnsignedTransaction, intent: CardanoIntent, ledger: LedgerSnapshot)
+    fun sign(unsigned: UnsignedTransaction, seed: ByteArray, intent: CardanoIntent, ledger: LedgerSnapshot): SignedTransaction
     fun inspect(signedCbor: ByteArray): TransactionSummary
     fun transactionId(signedCbor: ByteArray): String
 }
@@ -231,44 +232,32 @@ fun TransactionSummary.requireMatches(expected: TransactionSemantics) {
 }
 
 fun TransactionSummary.requireMatches(intent: CardanoIntent, network: CardanoNetwork, feeBound: Lovelace) {
+    require(intent is CardanoIntent.Transfer || intent is CardanoIntent.SweepWallet)
     require(this.network == network)
     require(fee.value <= feeBound.value)
     require(validityStart != null && validityStart == intent.validFrom)
     require(validityEnd != null && validityEnd == intent.validUntil)
-    val (destination, expectedAmount, expectedAssets) = when (intent) {
-        is CardanoIntent.Transfer -> Triple(intent.destinationAddress, intent.amount, emptyMap())
-        is CardanoIntent.SweepWallet -> Triple(intent.destinationAddress, intent.amount, emptyMap())
-        is CardanoIntent.OpenChannel -> Triple(intent.validatorAddress, intent.amount, emptyMap())
-        is CardanoIntent.AddChannelFunds -> Triple(
-            intent.channelInput.address,
-            intent.channelInput.lovelace + intent.amount,
-            intent.channelInput.assets,
-        )
-        is CardanoIntent.CloseChannel -> Triple(
-            if (intent.step == CloseChannelStep.CLOSE) intent.channelInput.address else intent.sourceAddress,
-            intent.amount,
-            intent.channelInput.assets,
-        )
+    val destination = when (intent) {
+        is CardanoIntent.Transfer -> intent.destinationAddress
+        is CardanoIntent.SweepWallet -> intent.destinationAddress
     }
-    require(outputs.count { it.address == destination && it.lovelace == expectedAmount && it.assets == expectedAssets } == 1)
+    require(outputs.count { it.address == destination && it.lovelace == intent.amount && it.assets.isEmpty() } == 1)
     require(outputs.size in 1..2)
-    val designated = outputs.indexOfFirst { it.address == destination && it.lovelace == expectedAmount && it.assets == expectedAssets }
+    val designated = outputs.indexOfFirst { it.address == destination && it.lovelace == intent.amount && it.assets.isEmpty() }
     require(outputs.withIndex().all { (index, output) -> index == designated || output.address == intent.sourceAddress })
-    if (intent is CardanoIntent.Transfer || intent is CardanoIntent.SweepWallet) {
-        require(intent.amount.value > 0)
-        require(intent.validFrom < intent.validUntil)
-        require(destination != intent.sourceAddress)
-        require(outputs.all { it.assets.isEmpty() && it.datum == TransactionDatum.Absent && it.scriptReference == null })
-        require(requiredSigners.isEmpty())
-        require(referenceInputs.isEmpty())
-        require(collateralInputs.isEmpty())
-        require(collateralReturn == null)
-        require(totalCollateral == null)
-        require(redeemers.isEmpty())
-        require(scriptDataHashHex == null)
-        require(prohibitedBodyFields.isEmpty())
-        require(!containsNonKeyWitnesses)
-    }
+    require(intent.amount.value > 0)
+    require(intent.validFrom < intent.validUntil)
+    require(destination != intent.sourceAddress)
+    require(outputs.all { it.assets.isEmpty() && it.datum == TransactionDatum.Absent && it.scriptReference == null })
+    require(requiredSigners.isEmpty())
+    require(referenceInputs.isEmpty())
+    require(collateralInputs.isEmpty())
+    require(collateralReturn == null)
+    require(totalCollateral == null)
+    require(redeemers.isEmpty())
+    require(scriptDataHashHex == null)
+    require(prohibitedBodyFields.isEmpty())
+    require(!containsNonKeyWitnesses)
 }
 
 fun TransactionSummary.requireL1Witnesses(expectedPaymentCredentialHex: String, signed: Boolean) {
@@ -301,5 +290,41 @@ fun TransactionSummary.requireL1Funding(intent: CardanoIntent, ledger: LedgerSna
         require(output.assets.isEmpty())
         total + output.lovelace
     }
+    require(inputTotal == outputTotal)
+}
+
+fun TransactionSummary.requireChannelFunding(intent: CardanoIntent, ledger: LedgerSnapshot) {
+    require(intent is CardanoIntent.OpenChannel || intent is CardanoIntent.AddChannelFunds || intent is CardanoIntent.CloseChannel)
+    require(network == ledger.network)
+    require(inputs.isNotEmpty() && inputs.distinct().size == inputs.size)
+    val available = mutableMapOf<TransactionInputReference, LedgerUtxo>()
+    ledger.utxos.forEach { utxo ->
+        require(available.put(TransactionInputReference(utxo.transactionId, utxo.index), utxo) == null) {
+            "duplicate ledger input"
+        }
+    }
+    val referenceInput = when (intent) {
+        is CardanoIntent.OpenChannel -> intent.referenceInput
+        is CardanoIntent.AddChannelFunds -> intent.referenceInput
+        is CardanoIntent.CloseChannel -> intent.referenceInput
+    }.let { TransactionInputReference(it.transactionId, it.index) }
+    require(referenceInput !in inputs)
+    val channelInput = when (intent) {
+        is CardanoIntent.AddChannelFunds -> intent.channelInput
+        is CardanoIntent.CloseChannel -> intent.channelInput
+        else -> null
+    }
+    val channelReference = channelInput?.let { TransactionInputReference(it.transactionId, it.index) }
+    require(channelReference == null || inputs.count { it == channelReference } == 1)
+    val inputTotal = inputs.fold(Lovelace(0)) { total, reference ->
+        val utxo = requireNotNull(available[reference]) { "unknown transaction input" }
+        if (reference == channelReference) {
+            require(utxo == channelInput)
+        } else {
+            require(utxo.isSpendableBy(intent.sourceAddress))
+        }
+        total + utxo.lovelace
+    }
+    val outputTotal = outputs.fold(fee) { total, output -> total + output.lovelace }
     require(inputTotal == outputTotal)
 }

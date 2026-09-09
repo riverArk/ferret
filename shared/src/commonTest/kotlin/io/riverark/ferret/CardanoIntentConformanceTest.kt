@@ -1,10 +1,6 @@
 package io.riverark.ferret
 
 import io.riverark.ferret.core.cardano.CardanoIntent
-import io.riverark.ferret.core.cardano.ChannelConstants
-import io.riverark.ferret.core.cardano.ChannelDatum
-import io.riverark.ferret.core.cardano.ChannelDatumStage
-import io.riverark.ferret.core.cardano.CloseChannelStep
 import io.riverark.ferret.core.cardano.LedgerSnapshot
 import io.riverark.ferret.core.cardano.LedgerUtxo
 import io.riverark.ferret.core.cardano.ProhibitedBodyField
@@ -25,16 +21,8 @@ import kotlin.test.assertFailsWith
 
 class CardanoIntentConformanceTest {
     private val source = "addr_test1source"
-    private val channel = LedgerUtxo("00".repeat(32), 0, "addr_test1channel", Lovelace(4_000_000), mapOf("aa".repeat(28) to 1))
-    private val reference = LedgerUtxo("11".repeat(32), 0, "addr_test1reference", Lovelace(2_000_000))
-    private val constants = ChannelConstants("01".repeat(32), "02".repeat(32), "03".repeat(32), 1_800_000)
-    private val opened = ChannelDatum("04".repeat(28), constants, ChannelDatumStage.Opened(0))
-    private val closed = ChannelDatum("04".repeat(28), constants, ChannelDatumStage.Closed(0, elapseAtEpochMillis = 2_000))
     private val intents = listOf(
         CardanoIntent.Transfer(source, "addr_test1destination", Lovelace(1_000_000), OPERATION_ID, 10, 20),
-        CardanoIntent.OpenChannel(source, "addr_test1validator", reference, opened, Lovelace(3_000_000), OPERATION_ID, 10, 20),
-        CardanoIntent.AddChannelFunds(source, channel, reference, opened, opened, Lovelace(1_000_000), OPERATION_ID, 10, 20),
-        CardanoIntent.CloseChannel(source, channel, reference, opened, CloseChannelStep.CLOSE, closed, Lovelace(4_000_000), OPERATION_ID, 10, 20),
         CardanoIntent.SweepWallet(source, "addr_test1sweep", Lovelace(1_000_000), OPERATION_ID, 10, 20),
     )
 
@@ -62,11 +50,9 @@ class CardanoIntentConformanceTest {
             assertFailsWith<IllegalArgumentException> {
                 original.copy(outputs = original.outputs + change + change).requireMatches(intent, CardanoNetwork.PREPROD, Lovelace(200_000))
             }
-            if (intent !is CardanoIntent.CloseChannel) {
-                assertFailsWith<IllegalArgumentException> {
-                    original.copy(outputs = original.outputs + original.outputs.single().copy(lovelace = Lovelace(123)))
-                        .requireMatches(intent, CardanoNetwork.PREPROD, Lovelace(200_000))
-                }
+            assertFailsWith<IllegalArgumentException> {
+                original.copy(outputs = original.outputs + original.outputs.single().copy(lovelace = Lovelace(123)))
+                    .requireMatches(intent, CardanoNetwork.PREPROD, Lovelace(200_000))
             }
         }
     }
@@ -74,7 +60,7 @@ class CardanoIntentConformanceTest {
     @Test fun l1OutputsAreAdaOnlyAndCannotPaySelf() {
         intents.filter { it is CardanoIntent.Transfer || it is CardanoIntent.SweepWallet }.forEach { intent ->
             assertFailsWith<IllegalArgumentException> {
-                summary(intent).copy(outputs = summary(intent).outputs + TransactionOutputSummary(source, Lovelace(123), channel.assets))
+                summary(intent).copy(outputs = summary(intent).outputs + TransactionOutputSummary(source, Lovelace(123), mapOf("aa".repeat(28) to 1)))
                     .requireMatches(intent, CardanoNetwork.PREPROD, Lovelace(200_000))
             }
             val self = when (intent) {
@@ -121,7 +107,6 @@ class CardanoIntentConformanceTest {
             val emptyValidity = when (intent) {
                 is CardanoIntent.Transfer -> intent.copy(validFrom = intent.validUntil)
                 is CardanoIntent.SweepWallet -> intent.copy(validFrom = intent.validUntil)
-                else -> error("not L1")
             }
             assertFailsWith<IllegalArgumentException> {
                 summary(emptyValidity).requireMatches(emptyValidity, CardanoNetwork.PREPROD, Lovelace(200_000))
@@ -213,9 +198,6 @@ class CardanoIntentConformanceTest {
             }
         }
         assertFailsWith<IllegalArgumentException> {
-            valid.requireL1Funding(intents.filterIsInstance<CardanoIntent.OpenChannel>().single(), LedgerSnapshot(CardanoNetwork.PREPROD, listOf(selected), "", 0))
-        }
-        assertFailsWith<IllegalArgumentException> {
             valid.requireL1Funding(intent.copy(amount = Lovelace(0)), LedgerSnapshot(CardanoNetwork.PREPROD, listOf(selected), "", 0))
         }
     }
@@ -269,14 +251,8 @@ class CardanoIntentConformanceTest {
     private fun summary(intent: CardanoIntent): TransactionSummary {
         val output = when (intent) {
             is CardanoIntent.Transfer -> TransactionOutputSummary(intent.destinationAddress, intent.amount, emptyMap())
-            is CardanoIntent.OpenChannel -> TransactionOutputSummary(intent.validatorAddress, intent.amount, emptyMap())
-            is CardanoIntent.AddChannelFunds -> TransactionOutputSummary(intent.channelInput.address, intent.channelInput.lovelace + intent.amount, intent.channelInput.assets)
-            is CardanoIntent.CloseChannel -> TransactionOutputSummary(
-                if (intent.step == CloseChannelStep.CLOSE) intent.channelInput.address else intent.sourceAddress,
-                intent.amount,
-                intent.channelInput.assets,
-            )
             is CardanoIntent.SweepWallet -> TransactionOutputSummary(intent.destinationAddress, intent.amount, emptyMap())
+            else -> error("not L1")
         }
         return TransactionSummary(CardanoNetwork.PREPROD, listOf(output), Lovelace(100_000), emptySet(), intent.validFrom, intent.validUntil, listOf(TransactionInputReference("22".repeat(32), 0)))
     }

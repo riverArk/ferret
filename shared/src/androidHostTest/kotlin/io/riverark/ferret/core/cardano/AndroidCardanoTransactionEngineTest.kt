@@ -9,6 +9,7 @@ import co.nstant.`in`.cbor.model.SimpleValue
 import co.nstant.`in`.cbor.model.UnsignedInteger
 import co.nstant.`in`.cbor.model.DataItem
 import co.nstant.`in`.cbor.model.Tag
+import com.bloxbean.cardano.client.account.Account
 import com.bloxbean.cardano.client.address.Address
 import com.bloxbean.cardano.client.common.cbor.CborSerializationUtil
 import com.bloxbean.cardano.client.api.ProtocolParamsSupplier
@@ -18,12 +19,18 @@ import com.bloxbean.cardano.client.api.model.ProtocolParams
 import com.bloxbean.cardano.client.api.TransactionProcessor
 import com.bloxbean.cardano.client.api.model.EvaluationResult
 import com.bloxbean.cardano.client.api.model.Result
+import com.bloxbean.cardano.client.common.model.Networks
+import com.bloxbean.cardano.client.crypto.bip39.MnemonicCode
 import com.bloxbean.cardano.client.api.model.Utxo
 import com.bloxbean.cardano.client.transaction.spec.Transaction
 import com.bloxbean.cardano.client.transaction.spec.TransactionInput
 import com.bloxbean.cardano.client.transaction.spec.TransactionOutput
 import com.bloxbean.cardano.client.transaction.spec.Value
 import com.bloxbean.cardano.client.plutus.spec.ExUnits
+import com.bloxbean.cardano.client.plutus.spec.BigIntPlutusData
+import com.bloxbean.cardano.client.plutus.spec.BytesPlutusData
+import com.bloxbean.cardano.client.plutus.spec.ListPlutusData
+import com.bloxbean.cardano.client.plutus.spec.RedeemerTag
 import com.bloxbean.cardano.client.api.common.OrderEnum
 import com.bloxbean.cardano.client.util.HexUtil
 import java.io.ByteArrayInputStream
@@ -87,10 +94,17 @@ class AndroidCardanoTransactionEngineTest {
         ProtocolParamsSupplier { params },
     )
 
-    private fun channelDatum(stage: ChannelDatumStage) = ChannelDatum(
+    private fun channelDatum(stage: ChannelDatumStage, addVerificationKeyHex: String = "02".repeat(32)) = ChannelDatum(
         fixture("validator_hash"),
-        ChannelConstants("01".repeat(32), "02".repeat(32), "03".repeat(32), 1_800_000),
+        ChannelConstants("01".repeat(32), addVerificationKeyHex, "03".repeat(32), 1_800_000),
         stage,
+    )
+
+    private fun walletAddKey(entropy: ByteArray) = HexUtil.encodeHexString(
+        Account.createFromMnemonic(
+            Networks.mainnet(),
+            MnemonicCode.INSTANCE.toMnemonic(entropy).joinToString(" "),
+        ).publicKeyBytes(),
     )
 
     private fun fixtureReference() = ConnectorUtxoDto(
@@ -102,6 +116,20 @@ class AndroidCardanoTransactionEngineTest {
         referenceScriptVersion = 3,
         referenceScript = fixture("reference_script"),
     ).ledger()
+
+    private fun exactEvaluation(cbor: ByteArray, memory: BigInteger = BigInteger.valueOf(10_000), steps: BigInteger = BigInteger.valueOf(10_000_000)) =
+        Transaction.deserialize(cbor).witnessSet?.redeemers.orEmpty().map { redeemer ->
+            EvaluationResult.builder()
+                .redeemerTag(redeemer.tag)
+                .index(redeemer.index.intValueExact())
+                .exUnits(ExUnits.builder().mem(memory).steps(steps).build())
+                .build()
+        }
+
+    private fun processor(evaluate: (ByteArray) -> Result<List<EvaluationResult>>) = object : TransactionProcessor {
+        override fun submitTransaction(cborData: ByteArray): Result<String> = error("submission not used")
+        override fun evaluateTx(cbor: ByteArray, inputUtxos: Set<Utxo>) = evaluate(cbor)
+    }
 
     @Test fun channelCodecMatchesPinnedKonduitVectors() {
         val datums = mapOf(
@@ -168,6 +196,301 @@ class AndroidCardanoTransactionEngineTest {
             .steps(BigInteger.valueOf(10_000_000))
             .build()
         assertEquals(BigInteger.valueOf(1_298), feeCalculator(params).calculateScriptFee(listOf(exUnits), params))
+    }
+
+    @Test fun channelEvaluationRequiresExactCoverageAndChecksFinalBytes() = runBlocking {
+        val requests = mutableListOf<ByteArray>()
+        val engine = AndroidCardanoTransactionEngine(processor { cbor ->
+            requests += cbor.copyOf()
+            @Suppress("UNCHECKED_CAST")
+            (Result.success("fixture").withValue(exactEvaluation(cbor)) as Result<List<EvaluationResult>>)
+        })
+        val entropy = ByteArray(32) { it.toByte() }
+        val source = engine.deriveWallet(entropy, CardanoNetwork.MAINNET)
+        val current = channelDatum(ChannelDatumStage.Opened(0), walletAddKey(entropy))
+        val reference = fixtureReference()
+        val channelInput = LedgerUtxo(
+            "22".repeat(32),
+            0,
+            MAINNET.validatorAddress,
+            Lovelace(5_000_000),
+            datumHex = current.plutus().serializeToHex(),
+        )
+        val intent = CardanoIntent.AddChannelFunds(
+            source.paymentAddress,
+            channelInput,
+            reference,
+            current,
+            current,
+            Lovelace(1_000_000),
+            "00000000-0000-4000-8000-000000000018",
+            4_492_800,
+            4_492_900,
+        )
+        val ledger = LedgerSnapshot(
+            CardanoNetwork.MAINNET,
+            listOf(
+                LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000)),
+                reference,
+                channelInput,
+            ),
+            channelProtocolParameters,
+            4_492_800,
+        )
+
+        val unsigned = engine.build(intent, ledger)
+        assertTrue(requests.size >= 2)
+        assertContentEquals(unsigned.cbor, requests.last())
+        var changingCalls = 0
+        assertEquals(
+            "channel evaluation budget changed",
+            assertFailsWith<IllegalArgumentException> {
+                AndroidCardanoTransactionEngine(processor { cbor ->
+                    changingCalls++
+                    val memory = if (changingCalls == requests.size) BigInteger.valueOf(10_001) else BigInteger.valueOf(10_000)
+                    @Suppress("UNCHECKED_CAST")
+                    (Result.success("fixture").withValue(exactEvaluation(cbor, memory)) as Result<List<EvaluationResult>>)
+                }).build(intent, ledger)
+            }.message,
+        )
+
+        suspend fun reject(response: (ByteArray) -> Result<List<EvaluationResult>>) {
+            assertFailsWith<IllegalArgumentException> {
+                AndroidCardanoTransactionEngine(processor(response)).build(intent, ledger)
+            }
+        }
+        fun success(values: List<EvaluationResult>): Result<List<EvaluationResult>> {
+            @Suppress("UNCHECKED_CAST")
+            return Result.success("fixture").withValue(values) as Result<List<EvaluationResult>>
+        }
+        reject { success(emptyList()) }
+        reject { cbor -> success(exactEvaluation(cbor) + exactEvaluation(cbor)) }
+        reject { cbor ->
+            val row = exactEvaluation(cbor).single()
+            success(listOf(EvaluationResult.builder().redeemerTag(row.redeemerTag).index(row.index + 1).exUnits(row.exUnits).build()))
+        }
+        reject { cbor ->
+            val row = exactEvaluation(cbor).single()
+            success(listOf(EvaluationResult.builder().redeemerTag(RedeemerTag.Mint).index(row.index).exUnits(row.exUnits).build()))
+        }
+        reject { cbor ->
+            val row = exactEvaluation(cbor).single()
+            success(listOf(EvaluationResult.builder().redeemerTag(row.redeemerTag).index(row.index).exUnits(ExUnits.builder().mem(BigInteger.valueOf(-1)).steps(BigInteger.ZERO).build()).build()))
+        }
+
+        reject { cbor ->
+            val row = exactEvaluation(cbor).single()
+            success(listOf(EvaluationResult.builder().redeemerTag(null).index(row.index).exUnits(row.exUnits).build()))
+        }
+        reject { cbor ->
+            val row = exactEvaluation(cbor).single()
+            success(listOf(EvaluationResult.builder().redeemerTag(row.redeemerTag).index(row.index).exUnits(null).build()))
+        }
+        reject { cbor -> success(exactEvaluation(cbor, BigInteger("16500001"), BigInteger.ZERO)) }
+        @Suppress("UNCHECKED_CAST")
+        reject { Result.error("node failure") as Result<List<EvaluationResult>> }
+        reject { error("node failure") }
+    }
+    @Test fun channelSemanticsBindWalletLedgerStagesAndSlotTimes() = runBlocking {
+        val entropy = ByteArray(32) { it.toByte() }
+        val engine = AndroidCardanoTransactionEngine(processor { cbor ->
+            @Suppress("UNCHECKED_CAST")
+            (Result.success("fixture").withValue(exactEvaluation(cbor)) as Result<List<EvaluationResult>>)
+        })
+        val source = engine.deriveWallet(entropy, CardanoNetwork.MAINNET)
+        val constants = ChannelConstants("01".repeat(32), walletAddKey(entropy), "03".repeat(32), 1_800_000)
+        fun datum(stage: ChannelDatumStage) = ChannelDatum(fixture("validator_hash"), constants, stage)
+        val reference = fixtureReference()
+        fun channelInput(stage: ChannelDatumStage, lovelace: Long = 5_000_000) = LedgerUtxo(
+            "22".repeat(32),
+            0,
+            MAINNET.validatorAddress,
+            Lovelace(lovelace),
+            datumHex = datum(stage).plutus().serializeToHex(),
+        )
+        val fuel = LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000))
+        fun ledger(channel: LedgerUtxo, utxos: List<LedgerUtxo> = listOf(fuel, reference, channel), slot: Long = 4_492_800) =
+            LedgerSnapshot(CardanoNetwork.MAINNET, utxos, channelProtocolParameters, slot)
+        suspend fun buildAndSign(intent: CardanoIntent, snapshot: LedgerSnapshot): UnsignedTransaction {
+            val unsigned = engine.build(intent, snapshot)
+            val signed = engine.sign(unsigned, entropy, intent, snapshot)
+            try {
+                val summary = engine.inspect(signed.cbor)
+                summary.requireL1Witnesses(source.paymentCredentialHex, signed = true)
+                assertEquals(engine.transactionId(unsigned.cbor), engine.transactionId(signed.cbor))
+            } finally {
+                signed.cbor.fill(0)
+            }
+            return unsigned
+        }
+
+        val opened = ChannelDatumStage.Opened(0)
+        val input = channelInput(opened)
+        val add = CardanoIntent.AddChannelFunds(
+            source.paymentAddress, input, reference, datum(opened), datum(opened), Lovelace(1_000_000),
+            "00000000-0000-4000-8000-000000000030", 4_492_800, 4_492_900,
+        )
+        buildAndSign(add, ledger(input))
+        assertFailsWith<IllegalArgumentException> {
+            engine.build(add.copy(currentDatum = datum(opened).copy(constants = constants.copy(addVerificationKeyHex = "02".repeat(32)))), ledger(input))
+        }
+        assertFailsWith<IllegalArgumentException> { engine.build(add, ledger(input, listOf(fuel, reference))) }
+        assertFailsWith<IllegalArgumentException> {
+            engine.build(add, ledger(input, listOf(fuel, reference, input.copy(lovelace = Lovelace(5_000_001)))))
+        }
+        assertFailsWith<IllegalArgumentException> {
+            engine.build(add.copy(resultingDatum = datum(ChannelDatumStage.Opened(1))), ledger(input))
+        }
+        assertFailsWith<IllegalArgumentException> {
+            engine.build(add.copy(sourceAddress = MAINNET.validatorAddress), ledger(input))
+        }
+
+        val closeDeadline = 1_596_060_991_000L
+        val closed = ChannelDatumStage.Closed(0, emptyList(), closeDeadline)
+        val close = CardanoIntent.CloseChannel(
+            source.paymentAddress, input, reference, datum(opened), CloseChannelStep.CLOSE, datum(closed),
+            input.lovelace, "00000000-0000-4000-8000-000000000031", 4_492_800, 4_492_900,
+        )
+        buildAndSign(close, ledger(input))
+        assertFailsWith<IllegalArgumentException> {
+            engine.build(close.copy(resultingDatum = datum(closed.copy(elapseAtEpochMillis = closeDeadline - 1))), ledger(input))
+        }
+
+        val elapsedInput = channelInput(closed)
+        val elapse = CardanoIntent.CloseChannel(
+            source.paymentAddress, elapsedInput, reference, datum(closed), CloseChannelStep.ELAPSE, null,
+            elapsedInput.lovelace, "00000000-0000-4000-8000-000000000032", 4_494_700, 4_494_800,
+        )
+        buildAndSign(elapse, ledger(elapsedInput, slot = 4_494_700))
+        assertFailsWith<IllegalArgumentException> {
+            val late = closed.copy(elapseAtEpochMillis = closeDeadline + 1)
+            val lateInput = channelInput(late)
+            engine.build(elapse.copy(channelInput = lateInput, currentDatum = datum(late)), ledger(lateInput, slot = 4_494_700))
+        }
+
+        val endAt = 1_596_060_991_000L
+        val pending = ListPlutusData.of(
+            BigIntPlutusData.of(1),
+            BigIntPlutusData.of(endAt),
+            BytesPlutusData.of(ByteArray(32) { 4 }),
+        ).serializeToHex()
+        val responded = ChannelDatumStage.Responded(0, listOf(pending))
+        val respondedInput = channelInput(responded)
+        val end = CardanoIntent.CloseChannel(
+            source.paymentAddress, respondedInput, reference, datum(responded), CloseChannelStep.END, null,
+            respondedInput.lovelace, "00000000-0000-4000-8000-000000000033", 4_494_700, 4_494_800,
+        )
+        buildAndSign(end, ledger(respondedInput, slot = 4_494_700))
+        val latePending = ListPlutusData.of(
+            BigIntPlutusData.of(1),
+            BigIntPlutusData.of(endAt + 1),
+            BytesPlutusData.of(ByteArray(32) { 4 }),
+        ).serializeToHex()
+        val lateResponded = ChannelDatumStage.Responded(0, listOf(pending, latePending))
+        val lateInput = channelInput(lateResponded)
+        assertFailsWith<IllegalArgumentException> {
+            engine.build(end.copy(channelInput = lateInput, currentDatum = datum(lateResponded)), ledger(lateInput, slot = 4_494_700))
+        }
+        assertFailsWith<IllegalArgumentException> {
+            engine.build(add.copy(validFrom = Long.MAX_VALUE - 1, validUntil = Long.MAX_VALUE), ledger(input, slot = Long.MAX_VALUE - 1))
+        }
+        entropy.fill(0)
+        Unit
+    }
+
+    @Test fun channelAuthorizationRejectsTransactionMutationsBeforeSigning() = runBlocking<Unit> {
+        val entropy = ByteArray(32) { it.toByte() }
+        val otherEntropy = ByteArray(32) { (it + 1).toByte() }
+        val engine = AndroidCardanoTransactionEngine(processor { cbor ->
+            @Suppress("UNCHECKED_CAST")
+            (Result.success("fixture").withValue(exactEvaluation(cbor)) as Result<List<EvaluationResult>>)
+        })
+        try {
+            val source = engine.deriveWallet(entropy, CardanoNetwork.MAINNET)
+            val datum = channelDatum(ChannelDatumStage.Opened(0), walletAddKey(entropy))
+            val reference = fixtureReference()
+            val channel = LedgerUtxo(
+                "22".repeat(32),
+                0,
+                MAINNET.validatorAddress,
+                Lovelace(5_000_000),
+                datumHex = datum.plutus().serializeToHex(),
+            )
+            val fuel = LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000))
+            val ledger = LedgerSnapshot(
+                CardanoNetwork.MAINNET,
+                listOf(fuel, reference, channel),
+                channelProtocolParameters,
+                4_492_800,
+            )
+            val intent = CardanoIntent.AddChannelFunds(
+                source.paymentAddress, channel, reference, datum, datum, Lovelace(1_000_000),
+                "00000000-0000-4000-8000-000000000034", 4_492_800, 4_492_900,
+            )
+            val unsigned = engine.build(intent, ledger)
+            engine.requireAuthorized(unsigned, intent, ledger)
+            val unsignedSummary = engine.inspect(unsigned.cbor)
+            assertEquals(1L, unsignedSummary.redeemers.single().index)
+            assertEquals(setOf(source.paymentCredentialHex), unsignedSummary.requiredSigners)
+            assertTrue(unsignedSummary.keyWitnesses.isEmpty())
+            unsignedSummary.requireChannelFunding(intent, ledger)
+
+            val signed = engine.sign(unsigned, entropy, intent, ledger)
+            try {
+                val signedSummary = engine.inspect(signed.cbor)
+                assertEquals(unsignedSummary.inputs, signedSummary.inputs)
+                assertEquals(unsignedSummary.referenceInputs, signedSummary.referenceInputs)
+                assertEquals(unsignedSummary.redeemers, signedSummary.redeemers)
+                signedSummary.requireL1Witnesses(source.paymentCredentialHex, signed = true)
+                assertEquals(engine.transactionId(unsigned.cbor), engine.transactionId(signed.cbor))
+            } finally {
+                signed.cbor.fill(0)
+            }
+            assertFailsWith<IllegalArgumentException> { engine.sign(unsigned, otherEntropy, intent, ledger) }
+            assertFailsWith<IllegalArgumentException> {
+                engine.requireAuthorized(unsigned, intent, ledger.copy(currentSlot = intent.validUntil))
+            }
+
+            fun reject(bytes: ByteArray, changedIntent: CardanoIntent = intent, changedLedger: LedgerSnapshot = ledger) {
+                assertFailsWith<IllegalArgumentException> {
+                    engine.requireAuthorized(UnsignedTransaction(bytes, unsigned.operationId, unsigned.feeBound), changedIntent, changedLedger)
+                }
+            }
+            reject(unsigned.cbor, intent.copy(amount = Lovelace(2_000_000)))
+            reject(Transaction.deserialize(unsigned.cbor).also {
+                it.body.requiredSigners = listOf(ByteArray(28))
+            }.serialize())
+            reject(Transaction.deserialize(unsigned.cbor).also {
+                it.witnessSet.redeemers.single().setIndex(0)
+            }.serialize())
+            reject(Transaction.deserialize(unsigned.cbor).also {
+                it.witnessSet.redeemers.single().data = ChannelRedeemer.CLOSE.plutus()
+            }.serialize())
+            reject(Transaction.deserialize(unsigned.cbor).also {
+                it.body.referenceInputs = listOf(TransactionInput.builder().transactionId("33".repeat(32)).index(0).build())
+            }.serialize())
+            reject(Transaction.deserialize(unsigned.cbor).also { it.body.collateral = emptyList() }.serialize())
+            reject(Transaction.deserialize(unsigned.cbor).also {
+                it.body.outputs.first { output -> output.address == MAINNET.validatorAddress }.value.coin =
+                    it.body.outputs.first { output -> output.address == MAINNET.validatorAddress }.value.coin.add(BigInteger.ONE)
+            }.serialize())
+            reject(Transaction.deserialize(unsigned.cbor).also {
+                it.body.totalCollateral = it.body.totalCollateral.add(BigInteger.ONE)
+            }.serialize())
+            reject(Transaction.deserialize(unsigned.cbor).also {
+                it.body.scriptDataHash = it.body.scriptDataHash.copyOf().also { hash -> hash[0] = (hash[0].toInt() xor 1).toByte() }
+            }.serialize())
+            reject(mutate(unsigned.cbor) { envelope ->
+                (envelope.dataItems[1] as CborMap).put(UnsignedInteger(1), CborArray())
+            })
+            reject(mutate(unsigned.cbor) { envelope ->
+                (envelope.dataItems[0] as CborMap).put(UnsignedInteger(9), CborMap())
+            })
+            reject(unsigned.cbor + byteArrayOf(0))
+        } finally {
+            entropy.fill(0)
+            otherEntropy.fill(0)
+        }
     }
 
     @Test fun channelSpendRejectsSameReferenceIdentityBeforeEvaluation() = runBlocking {
@@ -327,7 +650,7 @@ class AndroidCardanoTransactionEngineTest {
             assertEquals(PINNED_KONDUIT_COMMIT, fixture("source_commit"))
             val source = engine.deriveWallet(entropy, CardanoNetwork.MAINNET)
             val reference = fixtureReference()
-            val datum = channelDatum(ChannelDatumStage.Opened(0))
+            val datum = channelDatum(ChannelDatumStage.Opened(0), walletAddKey(entropy))
             val intent = CardanoIntent.OpenChannel(
                 source.paymentAddress,
                 MAINNET.validatorAddress,
@@ -335,24 +658,27 @@ class AndroidCardanoTransactionEngineTest {
                 datum,
                 Lovelace(5_000_000),
                 "00000000-0000-4000-8000-000000000018",
-                100,
-                200,
+                4_492_800,
+                4_492_900,
             )
             val ledger = LedgerSnapshot(
                 CardanoNetwork.MAINNET,
-                listOf(LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000))),
+                listOf(
+                    LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000)),
+                    reference,
+                ),
                 channelProtocolParameters,
-                100,
+                4_492_800,
             )
 
             val unsigned = engine.build(intent, ledger)
             val unsignedSummary = engine.inspect(unsigned.cbor)
-            unsignedSummary.requireMatches(intent, CardanoNetwork.MAINNET, unsigned.feeBound)
+            engine.requireAuthorized(unsigned, intent, ledger)
             unsignedSummary.requireL1Witnesses(source.paymentCredentialHex, signed = false)
             val channelOutput = unsignedSummary.outputs.single { it.address == MAINNET.validatorAddress }
             assertEquals(Lovelace(5_000_000), channelOutput.lovelace)
             assertTrue(channelOutput.assets.isEmpty())
-            assertEquals(TransactionDatum.Inline(fixture("datum_opened_empty")), channelOutput.datum)
+            assertEquals(TransactionDatum.Inline(datum.plutus().serializeToHex()), channelOutput.datum)
             val expectedReference = TransactionInputReference(reference.transactionId, reference.index)
             assertEquals(listOf(expectedReference), unsignedSummary.referenceInputs)
             assertTrue(expectedReference !in unsignedSummary.inputs)
@@ -362,7 +688,7 @@ class AndroidCardanoTransactionEngineTest {
             assertEquals(inputTotal, outputAndFeeTotal)
             engine.requireMinimumAda(unsigned.cbor, ledger.protocolParametersJson)
 
-            val signed = engine.sign(unsigned, entropy)
+            val signed = engine.sign(unsigned, entropy, intent, ledger)
             try {
                 val signedSummary = engine.inspect(signed.cbor)
                 assertEquals(engine.transactionId(unsigned.cbor), engine.transactionId(signed.cbor))
@@ -387,8 +713,9 @@ class AndroidCardanoTransactionEngineTest {
                     Json.parseToJsonElement(channelProtocolParameters).jsonObject +
                         ("min_fee_ref_script_cost_per_byte" to JsonPrimitive("0")),
                 ).toString()
-                val zeroUnsigned = engine.build(intent, ledger.copy(protocolParametersJson = zeroReferencePrice))
-                val zeroSigned = engine.sign(zeroUnsigned, entropy)
+                val zeroLedger = ledger.copy(protocolParametersJson = zeroReferencePrice)
+                val zeroUnsigned = engine.build(intent, zeroLedger)
+                val zeroSigned = engine.sign(zeroUnsigned, entropy, intent, zeroLedger)
                 try {
                     val zeroSummary = engine.inspect(zeroSigned.cbor)
                     assertTrue(signedSummary.fee.value > zeroSummary.fee.value)
@@ -560,7 +887,7 @@ class AndroidCardanoTransactionEngineTest {
             100,
         )
         val unsigned = engine.build(intent, ledger)
-        val signed = try { engine.sign(unsigned, entropy) } finally { entropy.fill(0) }
+        val signed = try { engine.sign(unsigned, entropy, intent, ledger) } finally { entropy.fill(0) }
         try {
             val summary = engine.inspect(unsigned.cbor)
             summary.requireMatches(intent, CardanoNetwork.MAINNET, unsigned.feeBound)
@@ -637,13 +964,19 @@ class AndroidCardanoTransactionEngineTest {
                 unsignedSummary.requireMatches(intent, CardanoNetwork.MAINNET, unsigned.feeBound)
                 unsignedSummary.requireL1Witnesses(source.paymentCredentialHex, signed = false)
 
-                val signed = engine.sign(unsigned, entropy).cbor.also(sensitive::add)
+                val signed = engine.sign(unsigned, entropy, intent, ledger).cbor.also(sensitive::add)
                 val signedSummary = engine.inspect(signed)
                 signedSummary.requireMatches(intent, CardanoNetwork.MAINNET, unsigned.feeBound)
                 signedSummary.requireL1Witnesses(source.paymentCredentialHex, signed = true)
                 val bodyId = engine.transactionId(signed)
 
-                val wrongSigner = engine.sign(unsigned, otherEntropy).cbor.also(sensitive::add)
+                assertFailsWith<IllegalArgumentException> {
+                    engine.sign(unsigned, otherEntropy, intent, ledger)
+                }
+                val wrongSigner = Account.createFromMnemonic(
+                    Networks.mainnet(),
+                    MnemonicCode.INSTANCE.toMnemonic(otherEntropy).joinToString(" "),
+                ).sign(Transaction.deserialize(unsigned.cbor)).serialize().also(sensitive::add)
                 val stripped = mutate(signed) { envelope ->
                     (envelope.dataItems[1] as CborMap).remove(UnsignedInteger(0))
                 }.also(sensitive::add)
@@ -898,7 +1231,7 @@ class AndroidCardanoTransactionEngineTest {
                     engine.requireMinimumAda(unsigned.cbor, ledger.protocolParametersJson)
                     assertContentEquals(unsignedBytes, unsigned.cbor)
 
-                    val signed = engine.sign(unsigned, sourceEntropy)
+                    val signed = engine.sign(unsigned, sourceEntropy, intent, ledger)
                     try {
                         engine.inspect(signed.cbor).also {
                             it.requireMatches(intent, CardanoNetwork.MAINNET, unsigned.feeBound)

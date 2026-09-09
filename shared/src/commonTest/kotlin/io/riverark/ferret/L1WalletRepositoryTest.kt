@@ -11,6 +11,9 @@ import io.riverark.ferret.core.cardano.TransactionInputReference
 import io.riverark.ferret.core.cardano.TransactionOutputSummary
 import io.riverark.ferret.core.cardano.TransactionSummary
 import io.riverark.ferret.core.cardano.UnsignedTransaction
+import io.riverark.ferret.core.cardano.requireL1Funding
+import io.riverark.ferret.core.cardano.requireL1Witnesses
+import io.riverark.ferret.core.cardano.requireMatches
 import io.riverark.ferret.core.model.CardanoNetwork
 import io.riverark.ferret.core.model.Lovelace
 import io.riverark.ferret.core.model.TransactionRecord
@@ -849,10 +852,32 @@ class L1WalletRepositoryTest {
             val minimum = protocolParametersJson.toLongOrNull() ?: minimumOutputLovelace
             require(inspect(cbor).outputs.all { it.lovelace.value >= minimum })
         }
-        override fun sign(unsigned: UnsignedTransaction, seed: ByteArray): SignedTransaction {
+        override fun requireAuthorized(unsigned: UnsignedTransaction, intent: CardanoIntent, ledger: LedgerSnapshot) {
+            require(unsigned.operationId == intent.operationId)
+            inspect(unsigned.cbor).also {
+                it.requireMatches(intent, ledger.network, unsigned.feeBound)
+                it.requireL1Funding(intent, ledger)
+                it.requireL1Witnesses(intent.sourceAddress.substringAfterLast('_').repeat(56), signed = false)
+            }
+            requireMinimumAda(unsigned.cbor, ledger.protocolParametersJson)
+        }
+        override fun sign(
+            unsigned: UnsignedTransaction,
+            seed: ByteArray,
+            intent: CardanoIntent,
+            ledger: LedgerSnapshot,
+        ): SignedTransaction {
+            requireAuthorized(unsigned, intent, ledger)
             signs++
             check(!failSigning)
-            return SignedTransaction(byteArrayOf(if (changeSignedBody) 9 else 0, 2, 3))
+            return SignedTransaction(byteArrayOf(if (changeSignedBody) 9 else 0, 2, 3)).also { signed ->
+                inspect(signed.cbor).also {
+                    it.requireMatches(intent, ledger.network, unsigned.feeBound)
+                    it.requireL1Funding(intent, ledger)
+                    it.requireL1Witnesses(intent.sourceAddress.substringAfterLast('_').repeat(56), signed = true)
+                }
+                requireMinimumAda(signed.cbor, ledger.protocolParametersJson)
+            }
         }
         override fun inspect(signedCbor: ByteArray): TransactionSummary {
             val destination = when (val value = intent) {
