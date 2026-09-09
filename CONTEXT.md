@@ -78,6 +78,12 @@ Android installation and manual onboarding verification require an API 36 emulat
 
 ## Session log
 
+### 2026-09-09 — L1 transaction authorization
+
+- Android inspection now requires the modern four-item CBOR envelope, supported Conway body keys, a true validity flag, a consistent explicit network ID, and exposes prohibited raw body and non-key witness entries without normalization.
+- Transfer and SweepWallet reject script, datum, redeemer, collateral, required-signer, auxiliary, and other prohibited contamination. Every unsigned boundary requires zero witnesses; every signed boundary requires exactly one valid spending witness matching the vault profile credential.
+- Focused host checks, `androidCheck`, `:shared:compileKotlinIosSimulatorArm64`, and Konduit's 28 connector-server tests passed on Linux. Financial actions remain gated; the controlled adaptor validator does not match Ferret's pin, and pinned-Konduit golden equivalence, dynamic min-ADA, funded Mainnet interruption, and release OAuth/MASVS acceptance remain outstanding.
+
 ### 2026-09-08 — L1 funding semantic validation
 
 - Transaction inspection now exposes ordered consumed input references. Transfer and SweepWallet construction reject empty, duplicate, unknown, foreign, asset-bearing, datum-bearing, and reference-script inputs and require exact overflow-safe ADA conservation against selected ledger UTxOs.

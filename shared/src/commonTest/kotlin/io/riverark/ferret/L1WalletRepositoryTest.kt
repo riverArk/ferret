@@ -5,6 +5,7 @@ import io.riverark.ferret.core.cardano.CardanoTransactionEngine
 import io.riverark.ferret.core.cardano.DerivedWallet
 import io.riverark.ferret.core.cardano.LedgerSnapshot
 import io.riverark.ferret.core.cardano.LedgerUtxo
+import io.riverark.ferret.core.cardano.TransactionKeyWitness
 import io.riverark.ferret.core.cardano.SignedTransaction
 import io.riverark.ferret.core.cardano.TransactionInputReference
 import io.riverark.ferret.core.cardano.TransactionOutputSummary
@@ -193,11 +194,81 @@ class L1WalletRepositoryTest {
         assertEquals(L1OperationState.REJECTED, restarted.reconcilePending(source.id)?.state)
         assertNull(restarted.operation(source.id)?.expectedTransactionId)
     }
+    @Test fun unsignedWitnessesRejectBothL1PreviewsBeforeSideEffects() = runBlocking {
+        listOf(false, true).forEach { sweep ->
+            val source = profile('0')
+            val destination = profile('1')
+            val vault = FakeVault(listOf(source, destination))
+            val calls = RemoteCalls()
+            val engine = FakeEngine().apply { includeUnsignedWitness = true }
+            val repository = previewRepository(vault, engine, calls = calls)
+
+            assertFailsWith<IllegalArgumentException> {
+                if (sweep) repository.previewSweep(source.id, destination.paymentAddress)
+                else repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+            }
+            assertEquals(0, vault.writes)
+            assertEquals(0, vault.seedRequests)
+            assertEquals(0, engine.signs)
+            assertEquals(0, calls.submissions)
+            assertEquals(0, calls.lookups)
+            assertNull(repository.operation(source.id))
+        }
+    }
+
+    @Test fun invalidSignedWitnessesRejectBothL1SubmissionsAndStayPrepared() = runBlocking {
+        listOf(false, true).forEach { sweep ->
+            SignedWitnessMode.entries.filter { it != SignedWitnessMode.VALID }.forEach { mode ->
+                val source = profile('0')
+                val destination = profile('1')
+                val vault = FakeVault(listOf(source, destination))
+                val calls = RemoteCalls()
+                val engine = FakeEngine().apply { signedWitnessMode = mode }
+                val repository = previewRepository(vault, engine, calls = calls)
+                val preview = if (sweep) {
+                    repository.previewSweep(source.id, destination.paymentAddress)
+                } else {
+                    repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+                }
+
+                assertFailsWith<IllegalArgumentException> {
+                    if (sweep) repository.submitSweep(source.id, preview as io.riverark.ferret.core.cardano.SweepPreview)
+                    else repository.submitTransfer(source.id, preview as io.riverark.ferret.feature.wallet.TransferPreview)
+                }
+                assertEquals(1, vault.seedRequests)
+                assertEquals(1, engine.signs)
+                assertEquals(0, calls.submissions)
+                assertEquals(0, calls.lookups)
+                assertEquals(L1OperationState.PREPARED, repository.operation(source.id)?.state)
+                val restarted = previewRepository(vault, engine, calls = calls)
+                assertEquals(L1OperationState.REJECTED, restarted.reconcilePending(source.id)?.state)
+                assertEquals(0, calls.lookups)
+            }
+        }
+    }
+
+    @Test fun validSweepSubmitsOnceAndReconciles() = runBlocking {
+        val source = profile('0')
+        val destination = profile('1')
+        val vault = FakeVault(listOf(source, destination))
+        val calls = RemoteCalls(allow = true)
+        val repository = previewRepository(vault, FakeEngine(), calls = calls)
+        val preview = repository.previewSweep(source.id, destination.paymentAddress)
+
+        assertEquals(OPERATION_ID, repository.submitSweep(source.id, preview))
+        assertEquals(L1OperationState.PENDING, repository.operation(source.id)?.state)
+        assertEquals(L1OperationState.CONFIRMED, repository.reconcilePending(source.id)?.state)
+        assertEquals(1, calls.submissions)
+        assertEquals(1, calls.lookups)
+    }
+
+
 
     private fun previewRepository(
         vault: FakeVault,
         engine: FakeEngine,
         ledgerInputs: List<LedgerUtxo>? = null,
+        calls: RemoteCalls = RemoteCalls(),
     ) = DefaultL1WalletRepository(
         WalletRepository(), vault,
         { profile ->
@@ -209,8 +280,8 @@ class L1WalletRepositoryTest {
             )
         },
         { emptyList() },
-        { _, _ -> error("submission must not start") },
-        { _, _ -> error("lookup must not run") },
+        { _, request -> calls.submit(request.operationId, request.expectedTransactionId) },
+        { _, operationId -> calls.lookup(operationId) },
         engine, { OPERATION_ID }, { 123L },
     )
 
@@ -675,17 +746,38 @@ class L1WalletRepositoryTest {
         assertNull(parseAdaAmount("1.0000001"))
         assertNull(parseAdaAmount("-1"))
     }
+    private enum class SignedWitnessMode { VALID, MISSING, WRONG, DUPLICATE, INVALID }
+
+    private class RemoteCalls(private val allow: Boolean = false) {
+        var submissions = 0
+        var lookups = 0
+
+        fun submit(operationId: String, transactionId: String): L1OperationDto {
+            submissions++
+            check(allow)
+            return L1OperationDto(operationId, transactionId, transactionId, "accepted", 0)
+        }
+
+        fun lookup(operationId: String): L1OperationDto {
+            lookups++
+            check(allow)
+            return L1OperationDto(operationId, TRANSACTION_ID, TRANSACTION_ID, "confirmed", 5)
+        }
+    }
+
     private class FakeEngine(private val failSigning: Boolean = false) : CardanoTransactionEngine {
-        private lateinit var intent: CardanoIntent.Transfer
+        private lateinit var intent: CardanoIntent
         private lateinit var selectedInput: LedgerUtxo
         var builds = 0
         var signs = 0
         var changeSignedBody = false
         var inputOverride: List<TransactionInputReference>? = null
+        var includeUnsignedWitness = false
+        var signedWitnessMode = SignedWitnessMode.VALID
         override suspend fun deriveWallet(entropy: ByteArray, network: CardanoNetwork): DerivedWallet = error("not used")
         override suspend fun build(intent: CardanoIntent, ledger: LedgerSnapshot): UnsignedTransaction {
             builds++
-            this.intent = intent as CardanoIntent.Transfer
+            this.intent = intent
             selectedInput = ledger.utxos.first()
             return UnsignedTransaction(byteArrayOf(0), intent.operationId, Lovelace(200_000))
         }
@@ -695,11 +787,29 @@ class L1WalletRepositoryTest {
             return SignedTransaction(byteArrayOf(if (changeSignedBody) 9 else 0, 2, 3))
         }
         override fun inspect(signedCbor: ByteArray): TransactionSummary {
+            val destination = when (val value = intent) {
+                is CardanoIntent.Transfer -> value.destinationAddress
+                is CardanoIntent.SweepWallet -> value.destinationAddress
+                else -> error("unsupported intent")
+            }
             val change = selectedInput.lovelace.value - intent.amount.value - 200_000
+            val credential = intent.sourceAddress.substringAfterLast('_').repeat(56)
+            val witness = TransactionKeyWitness("", credential, "", true)
+            val witnesses = if (signedCbor.size == 1) {
+                if (includeUnsignedWitness) listOf(witness) else emptyList()
+            } else {
+                when (signedWitnessMode) {
+                    SignedWitnessMode.VALID -> listOf(witness)
+                    SignedWitnessMode.MISSING -> emptyList()
+                    SignedWitnessMode.WRONG -> listOf(witness.copy(keyHashHex = "f".repeat(56)))
+                    SignedWitnessMode.DUPLICATE -> listOf(witness, witness)
+                    SignedWitnessMode.INVALID -> listOf(witness.copy(signatureValid = false))
+                }
+            }
             return TransactionSummary(
                 CardanoNetwork.PREPROD,
                 listOfNotNull(
-                    TransactionOutputSummary(intent.destinationAddress, intent.amount, emptyMap()),
+                    TransactionOutputSummary(destination, intent.amount, emptyMap()),
                     change.takeIf { it > 0 }?.let { TransactionOutputSummary(intent.sourceAddress, Lovelace(it), emptyMap()) },
                 ),
                 Lovelace(200_000),
@@ -707,6 +817,7 @@ class L1WalletRepositoryTest {
                 intent.validFrom,
                 intent.validUntil,
                 inputOverride ?: listOf(TransactionInputReference(selectedInput.transactionId, selectedInput.index)),
+                keyWitnesses = witnesses,
             )
         }
         override fun transactionId(signedCbor: ByteArray) = if (signedCbor[0] == 0.toByte()) TRANSACTION_ID else OTHER_TRANSACTION_ID

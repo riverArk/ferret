@@ -16,21 +16,21 @@ Later user sessions additionally required the full visual refresh, documentation
 
 **Deployment decision (2026-09-04):** Preprod and all `ferret.channel` services are out of scope because they are not controlled by this project. Networked development, device acceptance, and release evidence use low-value Mainnet wallets against the controlled `crustypants.com` connector/adaptor services only. Existing Preprod model support is not release evidence.
 
-## Android execution record — 2026-09-08
+## Android execution record — 2026-09-09
 
 Evidence references are command or device observations from this worktree. “Blocked” and “Partial” are intentionally not promoted by source presence or a passing build.
 
 | Source item | Result | Evidence / remaining gate |
 |---|---|---|
 | P0.1 | Partial | `./gradlew androidCheck` passed. API 36 cold launch reached the protected Unlock surface; the 4:59/5:00, airplane-mode, and authenticated recovery device matrix was not executed. |
-| P0.2 | Partial | Durable L1 journals, semantic transfer/sweep checks, coordinated local balance/history projection, and focused tests passed. No funded controlled-Mainnet transfer, process-kill, depth-5, or depth-2160 observation was authorized. |
+| P0.2 | Partial | Durable L1 journals, strict Transfer/Sweep transaction envelopes, exact spending-witness authorization, coordinated local balance/history projection, and focused tests passed. No funded controlled-Mainnet transfer, process-kill, depth-5, or depth-2160 observation was authorized. |
 | P0.3 | Partial | Local `:androidApp:verifyReleaseSecurity` passed with a non-production OAuth placeholder; release is non-debuggable/minified, backup and cleartext are disabled, notices are packaged, pin expirations were removed, and a 291-component CycloneDX 1.5 SBOM was generated from `androidApp/gradle.lockfile`. No provisioned signed-release/OAuth/device MASVS inspection was available. |
 | 1 Build/cutover | Complete | `./gradlew androidCheck :shared:compileKotlinIosSimulatorArm64` passed; no web runtime is used. |
 | 2 State/navigation | Partial | One typed `Route` model remains, `Route.OpenChannel` is registered, payment IDs are repository-generated, and removal uses the wallet mutex. Concrete open/add/close/squash controls remain gated pending controlled deployment acceptance. |
 | 3 Custody/onboarding | Partial | Existing deterministic tests passed. No new physical-device create/restore, invalidated-keystore, or cross-network duplicate-credential evidence was captured. |
 | 4 Visual/accessibility | Partial | Existing Ferret primitives and 48/56dp controls are reused; Home and Channel have explicit Refresh controls and sweep has preview/confirm. No 200% font/TalkBack matrix was available. |
 | 5 Transport/deployment | Partial | Strict DTOs, bounded responses, no mutation retry, adaptor/connector isolation, writer fencing, and Android pins are present. The deployed `crustypants.com` revision and pins were not independently operator-verified. |
-| 6 Cardano conformance | Partial | Shared/Android intent tests cover Transfer, Open, Add, Close steps, and Sweep with semantic rejection. Controlled-Mainnet node evaluation was unavailable. |
+| 6 Cardano conformance | Partial | Transfer and Sweep now reject raw body/witness contamination and require exactly one valid wallet spending witness; shared/Android intent tests still cover Open, Add, and Close semantics. Pinned-Konduit golden equivalence and controlled-Mainnet node evaluation remain unavailable. |
 | 7 Home | Partial | Refresh reconciles L1/channel/payment before combined L1+verified-channel spendable projection and merged history. Separate L2 available/locked/reserve presentation still lacks controlled datum/receipt evidence and remains unavailable rather than fabricated. |
 | 8 QR/clipboard | Partial | Address QR and conditional 60-second clipboard clearing remain tested; scanner lifecycle now invalidates late callbacks. No camera/address round-trip device evidence was captured. |
 | 9 Transfer | Partial | Same-network profile-only preview/submission and durable reconciliation tests passed. Funded Mainnet execution remains blocked. |
@@ -82,6 +82,7 @@ The encrypted L1 record preserves its preparation timestamp and local transfer d
 Transfer previews now resolve destination identity from the vault, display actual decoded change, and bind the unsigned body hash to pre-sign revalidation and post-sign submission. Altered metadata or unsigned bytes fail before journal/seed/sign/POST; a signed-body mismatch remains PREPARED for lookup-free rejection after restart. Offline repository and real Android-engine host regressions pass; this does not enable Transfer.
 
 Initial Transfer and SweepWallet bodies now expose every consumed input and validate those references against the exact connector ledger snapshot before preview authorization. Empty, duplicate, unknown, foreign, asset-bearing, datum-bearing, and reference-script inputs fail closed; selected ADA inputs must exactly equal all outputs plus the decoded fee with checked arithmetic. Unselected protected UTxOs are ignored. This closes initial L1 input provenance and value-conservation validation without enabling mutations.
+Transfer and SweepWallet now require a strict four-item CBOR transaction envelope, supported Conway body keys, a true validity flag, matching explicit network ID, no L1 script/datum/redeemer/collateral/prohibited fields, no non-key witness variants, and exactly one valid spending witness matching the vault profile credential. Unsigned bodies require zero witnesses. Every preview, pre-journal, and post-sign boundary rechecks the envelope; post-sign rejection leaves PREPARED for lookup-free restart rejection.
 
 **Missing work:**
 
@@ -236,9 +237,9 @@ Preprod and `ferret.channel` availability must not block or satisfy this gate.
 
 ### 6. Android Cardano engine and semantic conformance — Partial
 
-**Current status:** Common typed intents and Android Bloxbean derivation/build/sign/inspect implementations exist for Transfer, OpenChannel, AddChannelFunds, CloseChannel, and SweepWallet. Shared validation rejects extra designated-destination outputs, foreign outputs, multiple change outputs, and native assets on L1 outputs. Inspection exposes consumed input references; Transfer and SweepWallet builds validate selected-input provenance and exact overflow-safe ADA conservation against the source ledger, and Transfer preview independently repeats that validation. Transfer preview/submission also binds the original unsigned body hash across signing. Real Android host tests cover unsigned/signed input identity, unknown and protected input substitution, and one-lovelace value mutation. Transfer composition remains disabled, and controlled-node evaluation/golden equivalence to pinned Konduit is not evidenced.
+**Current status:** Common typed intents and Android Bloxbean derivation/build/sign/inspect implementations exist for Transfer, OpenChannel, AddChannelFunds, CloseChannel, and SweepWallet. Transfer and SweepWallet enforce selected-input provenance, exact overflow-safe ADA conservation, a strict raw four-item transaction envelope, supported Conway body keys, true validity, matching explicit network ID, script/datum/redeemer/collateral/prohibited-field absence, and no non-key witnesses. Their builders validate unsigned output/funding semantics; repository preview and submission boundaries require zero unsigned witnesses and exactly one cryptographically valid signed witness matching the vault profile credential. Witness-only mutations preserve the body ID but fail before remote submission, with PREPARED operations rejected without lookup after restart. Transfer remains disabled, and controlled-node evaluation/golden equivalence to pinned Konduit is not evidenced.
 
-**Missing work:** Complete signer, script, datum, redeemer, and dynamic min-ADA conformance plus funded P0 transfer acceptance, then channel/removal intents. Add golden semantic fixtures from pinned Konduit commit `a68cfedd4a0188ef9adad970e89c12b2b805b678`, controlled-node ledger evaluation, and exact fee/value/script/datum/redeemer/signer/validity conformance for all five intents. Preview body identity and L1 funding validation do not establish the initial body's signer/script correctness against Konduit.
+**Missing work:** Complete dynamic min-ADA and pinned-Konduit golden conformance plus funded P0 transfer acceptance, then exact channel/removal script, datum, redeemer, signer, fee, and value conformance. Add golden semantic fixtures from pinned Konduit commit `a68cfedd4a0188ef9adad970e89c12b2b805b678` and controlled-node evaluation for all five intents.
 
 **Priority:** P0 transfer; P1 channel; P3 removal; Mainnet release blocker.
 

@@ -1,5 +1,12 @@
 package io.riverark.ferret.core.cardano
 
+import co.nstant.`in`.cbor.CborDecoder
+import co.nstant.`in`.cbor.CborEncoder
+import co.nstant.`in`.cbor.model.Array as CborArray
+import co.nstant.`in`.cbor.model.ByteString
+import co.nstant.`in`.cbor.model.Map as CborMap
+import co.nstant.`in`.cbor.model.SimpleValue
+import co.nstant.`in`.cbor.model.UnsignedInteger
 import com.bloxbean.cardano.client.api.TransactionProcessor
 import com.bloxbean.cardano.client.api.model.EvaluationResult
 import com.bloxbean.cardano.client.api.model.Result
@@ -8,6 +15,8 @@ import com.bloxbean.cardano.client.transaction.spec.Transaction
 import com.bloxbean.cardano.client.transaction.spec.TransactionInput
 import com.bloxbean.cardano.client.transaction.spec.TransactionOutput
 import com.bloxbean.cardano.client.transaction.spec.Value
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.math.BigInteger
 import io.riverark.ferret.core.model.CardanoNetwork
 import io.riverark.ferret.core.model.Lovelace
@@ -215,6 +224,136 @@ class AndroidCardanoTransactionEngineTest {
             signed.cbor.fill(0)
         }
     }
+    @Test fun l1AuthorizationEnvelopeComesFromRawBytes() = runBlocking<Unit> {
+        val engine = AndroidCardanoTransactionEngine(processor)
+        val entropy = ByteArray(32) { it.toByte() }
+        val otherEntropy = ByteArray(32) { (it + 2).toByte() }
+        val destinationEntropy = ByteArray(32) { (it + 1).toByte() }
+        val sensitive = mutableListOf<ByteArray>()
+        try {
+            val source = engine.deriveWallet(entropy, CardanoNetwork.MAINNET)
+            val destination = engine.deriveWallet(destinationEntropy, CardanoNetwork.MAINNET)
+            val ledger = LedgerSnapshot(
+                CardanoNetwork.MAINNET,
+                listOf(LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000))),
+                PROTOCOL_PARAMETERS,
+                100,
+            )
+            listOf<CardanoIntent>(
+                CardanoIntent.Transfer(
+                    source.paymentAddress, destination.paymentAddress, Lovelace(5_000_000),
+                    "00000000-0000-4000-8000-000000000005", 100, 200,
+                ),
+                CardanoIntent.SweepWallet(
+                    source.paymentAddress, destination.paymentAddress, Lovelace(5_000_000),
+                    "00000000-0000-4000-8000-000000000006", 100, 200,
+                ),
+            ).forEach { intent ->
+                val unsigned = engine.build(intent, ledger)
+                val unsignedSummary = engine.inspect(unsigned.cbor)
+                unsignedSummary.requireMatches(intent, CardanoNetwork.MAINNET, unsigned.feeBound)
+                unsignedSummary.requireL1Witnesses(source.paymentCredentialHex, signed = false)
+
+                val signed = engine.sign(unsigned, entropy).cbor.also(sensitive::add)
+                val signedSummary = engine.inspect(signed)
+                signedSummary.requireMatches(intent, CardanoNetwork.MAINNET, unsigned.feeBound)
+                signedSummary.requireL1Witnesses(source.paymentCredentialHex, signed = true)
+                val bodyId = engine.transactionId(signed)
+
+                val wrongSigner = engine.sign(unsigned, otherEntropy).cbor.also(sensitive::add)
+                val stripped = mutate(signed) { envelope ->
+                    (envelope.dataItems[1] as CborMap).remove(UnsignedInteger(0))
+                }.also(sensitive::add)
+                val duplicate = mutate(signed) { envelope ->
+                    val witnesses = (envelope.dataItems[1] as CborMap)[UnsignedInteger(0)] as CborArray
+                    witnesses.add(witnesses.dataItems.single())
+                }.also(sensitive::add)
+                val extra = mutate(signed) { envelope ->
+                    val witnesses = (envelope.dataItems[1] as CborMap)[UnsignedInteger(0)] as CborArray
+                    val otherEnvelope = decode(wrongSigner)
+                    val otherWitnesses = (otherEnvelope.dataItems[1] as CborMap)[UnsignedInteger(0)] as CborArray
+                    witnesses.add(otherWitnesses.dataItems.single())
+                }.also(sensitive::add)
+                val corrupt = mutate(signed) { envelope ->
+                    val witnesses = (envelope.dataItems[1] as CborMap)[UnsignedInteger(0)] as CborArray
+                    val witness = witnesses.dataItems.single() as CborArray
+                    val signature = (witness.dataItems[1] as ByteString).bytes.copyOf()
+                    signature[0] = (signature[0].toInt() xor 1).toByte()
+                    witness.dataItems[1] = ByteString(signature)
+                }.also(sensitive::add)
+
+                listOf(stripped, duplicate, extra, corrupt, wrongSigner).forEach { rejected ->
+                    assertEquals(bodyId, engine.transactionId(rejected))
+                    assertFailsWith<IllegalArgumentException> {
+                        engine.inspect(rejected).requireL1Witnesses(source.paymentCredentialHex, signed = true)
+                    }
+                }
+
+                val nonKeyWitness = mutate(signed) { envelope ->
+                    (envelope.dataItems[1] as CborMap).put(UnsignedInteger(1), CborArray())
+                }.also(sensitive::add)
+                val nonKeySummary = engine.inspect(nonKeyWitness)
+                assertTrue(nonKeySummary.containsNonKeyWitnesses)
+                assertFailsWith<IllegalArgumentException> {
+                    nonKeySummary.requireMatches(intent, CardanoNetwork.MAINNET, unsigned.feeBound)
+                }
+
+                val datumOutput = mutate(unsigned.cbor) { envelope ->
+                    val body = envelope.dataItems[0] as CborMap
+                    val outputs = body[UnsignedInteger(1)] as CborArray
+                    (outputs.dataItems.first() as CborArray).add(ByteString(ByteArray(32) { 1 }))
+                }
+                assertTrue(engine.inspect(datumOutput).outputs.any { it.datum is TransactionDatum.Hash })
+                assertFailsWith<IllegalArgumentException> {
+                    engine.inspect(datumOutput).requireMatches(intent, CardanoNetwork.MAINNET, unsigned.feeBound)
+                }
+
+                val prohibited = mutate(unsigned.cbor) { envelope ->
+                    (envelope.dataItems[0] as CborMap).put(UnsignedInteger(22), UnsignedInteger(1))
+                }
+                assertTrue(ProhibitedBodyField.DONATION in engine.inspect(prohibited).prohibitedBodyFields)
+                assertFailsWith<IllegalArgumentException> {
+                    engine.inspect(prohibited).requireMatches(intent, CardanoNetwork.MAINNET, unsigned.feeBound)
+                }
+                assertFailsWith<IllegalArgumentException> {
+                    engine.inspect(mutate(unsigned.cbor) { envelope ->
+                        (envelope.dataItems[0] as CborMap).put(UnsignedInteger(23), UnsignedInteger(0))
+                    })
+                }
+                val auxiliary = mutate(unsigned.cbor) { it.dataItems[3] = CborMap() }
+                assertTrue(ProhibitedBodyField.AUXILIARY_DATA in engine.inspect(auxiliary).prohibitedBodyFields)
+                assertFailsWith<IllegalArgumentException> {
+                    engine.inspect(mutate(unsigned.cbor) { envelope ->
+                        (envelope.dataItems[0] as CborMap).put(UnsignedInteger(15), UnsignedInteger(0))
+                    })
+                }
+                assertFailsWith<IllegalArgumentException> {
+                    engine.inspect(mutate(unsigned.cbor) { it.dataItems[2] = SimpleValue.FALSE })
+                }
+                assertFailsWith<IllegalArgumentException> {
+                    engine.inspect(mutate(unsigned.cbor) { it.dataItems[2] = UnsignedInteger(1) })
+                }
+                assertFailsWith<IllegalArgumentException> {
+                    engine.inspect(mutate(unsigned.cbor) { it.add(SimpleValue.NULL) })
+                }
+            }
+        } finally {
+            entropy.fill(0)
+            otherEntropy.fill(0)
+            destinationEntropy.fill(0)
+            sensitive.forEach { it.fill(0) }
+        }
+    }
+
+    private fun decode(cbor: ByteArray) =
+        CborDecoder(ByteArrayInputStream(cbor)).decodeNext() as CborArray
+
+    private fun mutate(cbor: ByteArray, mutation: (CborArray) -> Unit): ByteArray {
+        val envelope = decode(cbor)
+        mutation(envelope)
+        return ByteArrayOutputStream().also { CborEncoder(it).encode(envelope) }.toByteArray()
+    }
+
 
     companion object {
         private const val PROTOCOL_PARAMETERS = """{

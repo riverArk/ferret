@@ -114,6 +114,7 @@ data class TransactionSummary(
     val redeemers: List<TransactionRedeemer> = emptyList(),
     val scriptDataHashHex: String? = null,
     val prohibitedBodyFields: Set<ProhibitedBodyField> = emptySet(),
+    val containsNonKeyWitnesses: Boolean = false,
 )
 
 @Serializable
@@ -253,9 +254,30 @@ fun TransactionSummary.requireMatches(intent: CardanoIntent, network: CardanoNet
     val designated = outputs.indexOfFirst { it.address == destination && it.lovelace == expectedAmount && it.assets == expectedAssets }
     require(outputs.withIndex().all { (index, output) -> index == designated || output.address == intent.sourceAddress })
     if (intent is CardanoIntent.Transfer || intent is CardanoIntent.SweepWallet) {
+        require(intent.amount.value > 0)
+        require(intent.validFrom < intent.validUntil)
         require(destination != intent.sourceAddress)
-        require(outputs.all { it.assets.isEmpty() })
+        require(outputs.all { it.assets.isEmpty() && it.datum == TransactionDatum.Absent && it.scriptReference == null })
+        require(requiredSigners.isEmpty())
+        require(referenceInputs.isEmpty())
+        require(collateralInputs.isEmpty())
+        require(collateralReturn == null)
+        require(totalCollateral == null)
+        require(redeemers.isEmpty())
+        require(scriptDataHashHex == null)
+        require(prohibitedBodyFields.isEmpty())
+        require(!containsNonKeyWitnesses)
     }
+}
+
+fun TransactionSummary.requireL1Witnesses(expectedPaymentCredentialHex: String, signed: Boolean) {
+    require(Regex("[0-9a-f]{56}").matches(expectedPaymentCredentialHex))
+    if (!signed) {
+        require(keyWitnesses.isEmpty())
+        return
+    }
+    require(keyWitnesses.size == 1)
+    require(keyWitnesses.single().let { it.signatureValid && it.keyHashHex == expectedPaymentCredentialHex })
 }
 
 fun TransactionSummary.requireL1Funding(intent: CardanoIntent, ledger: LedgerSnapshot) {

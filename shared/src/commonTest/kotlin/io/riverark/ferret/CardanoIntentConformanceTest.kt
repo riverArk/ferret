@@ -7,11 +7,17 @@ import io.riverark.ferret.core.cardano.ChannelDatumStage
 import io.riverark.ferret.core.cardano.CloseChannelStep
 import io.riverark.ferret.core.cardano.LedgerSnapshot
 import io.riverark.ferret.core.cardano.LedgerUtxo
+import io.riverark.ferret.core.cardano.ProhibitedBodyField
+import io.riverark.ferret.core.cardano.TransactionDatum
+import io.riverark.ferret.core.cardano.TransactionKeyWitness
+import io.riverark.ferret.core.cardano.TransactionRedeemer
+import io.riverark.ferret.core.cardano.TransactionScriptReference
 import io.riverark.ferret.core.cardano.TransactionInputReference
 import io.riverark.ferret.core.cardano.TransactionOutputSummary
 import io.riverark.ferret.core.cardano.TransactionSummary
 import io.riverark.ferret.core.cardano.requireMatches
 import io.riverark.ferret.core.cardano.requireL1Funding
+import io.riverark.ferret.core.cardano.requireL1Witnesses
 import io.riverark.ferret.core.model.CardanoNetwork
 import io.riverark.ferret.core.model.Lovelace
 import kotlin.test.Test
@@ -81,6 +87,74 @@ class CardanoIntentConformanceTest {
             }
         }
     }
+    @Test fun l1RejectsScriptAndBodyContamination() {
+        intents.filter { it is CardanoIntent.Transfer || it is CardanoIntent.SweepWallet }.forEach { intent ->
+            val valid = summary(intent)
+            listOf(
+                valid.copy(outputs = listOf(valid.outputs.single().copy(datum = TransactionDatum.Hash("aa".repeat(32))))),
+                valid.copy(outputs = listOf(valid.outputs.single().copy(datum = TransactionDatum.Inline("d87980")))),
+                valid.copy(outputs = listOf(valid.outputs.single().copy(
+                    scriptReference = TransactionScriptReference(1, "00", "bb".repeat(28)),
+                ))),
+                valid.copy(requiredSigners = setOf("cc".repeat(28))),
+                valid.copy(referenceInputs = listOf(TransactionInputReference("33".repeat(32), 0))),
+                valid.copy(collateralInputs = listOf(TransactionInputReference("44".repeat(32), 0))),
+                valid.copy(collateralReturn = valid.outputs.single()),
+                valid.copy(totalCollateral = Lovelace(1)),
+                valid.copy(redeemers = listOf(TransactionRedeemer("spend", 0, "00", 1, 1))),
+                valid.copy(scriptDataHashHex = "dd".repeat(32)),
+                valid.copy(prohibitedBodyFields = setOf(ProhibitedBodyField.MINT)),
+                valid.copy(containsNonKeyWitnesses = true),
+            ).forEach { contaminated ->
+                assertFailsWith<IllegalArgumentException> {
+                    contaminated.requireMatches(intent, CardanoNetwork.PREPROD, Lovelace(200_000))
+                }
+            }
+            val zero = when (intent) {
+                is CardanoIntent.Transfer -> intent.copy(amount = Lovelace(0))
+                is CardanoIntent.SweepWallet -> intent.copy(amount = Lovelace(0))
+                else -> error("not L1")
+            }
+            assertFailsWith<IllegalArgumentException> {
+                summary(zero).requireMatches(zero, CardanoNetwork.PREPROD, Lovelace(200_000))
+            }
+            val emptyValidity = when (intent) {
+                is CardanoIntent.Transfer -> intent.copy(validFrom = intent.validUntil)
+                is CardanoIntent.SweepWallet -> intent.copy(validFrom = intent.validUntil)
+                else -> error("not L1")
+            }
+            assertFailsWith<IllegalArgumentException> {
+                summary(emptyValidity).requireMatches(emptyValidity, CardanoNetwork.PREPROD, Lovelace(200_000))
+            }
+        }
+    }
+
+    @Test fun l1WitnessesRequireTheSingleExpectedValidSpendingKey() {
+        val credential = "ab".repeat(28)
+        val valid = TransactionKeyWitness("01".repeat(32), credential, "02".repeat(64), true)
+        val summary = summary(intents.first())
+        summary.requireL1Witnesses(credential, signed = false)
+        summary.copy(keyWitnesses = listOf(valid)).requireL1Witnesses(credential, signed = true)
+
+        assertFailsWith<IllegalArgumentException> {
+            summary.copy(keyWitnesses = listOf(valid)).requireL1Witnesses(credential, signed = false)
+        }
+        listOf(
+            emptyList(),
+            listOf(valid.copy(keyHashHex = "cd".repeat(28))),
+            listOf(valid, valid),
+            listOf(valid, valid.copy(keyHashHex = "cd".repeat(28))),
+            listOf(valid.copy(signatureValid = false)),
+        ).forEach { witnesses ->
+            assertFailsWith<IllegalArgumentException> {
+                summary.copy(keyWitnesses = witnesses).requireL1Witnesses(credential, signed = true)
+            }
+        }
+        assertFailsWith<IllegalArgumentException> {
+            summary.requireL1Witnesses(credential.uppercase(), signed = false)
+        }
+    }
+
 
     @Test fun l1FundingUsesOnlySelectedInputsAndAllowsExactSpend() {
         val selected = LedgerUtxo("22".repeat(32), 0, source, Lovelace(10_000_000))

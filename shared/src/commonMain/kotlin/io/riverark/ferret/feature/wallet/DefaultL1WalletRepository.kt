@@ -7,6 +7,7 @@ import io.riverark.ferret.core.cardano.UnsignedTransaction
 import io.riverark.ferret.core.cardano.requireMatches
 import io.riverark.ferret.core.cardano.SweepPreview
 import io.riverark.ferret.core.cardano.requireL1Funding
+import io.riverark.ferret.core.cardano.requireL1Witnesses
 import io.riverark.ferret.core.model.Lovelace
 import io.riverark.ferret.core.model.TransactionRecord
 import io.riverark.ferret.core.model.WalletId
@@ -130,6 +131,7 @@ class DefaultL1WalletRepository(
             require(unsigned.operationId == intent.operationId)
             val summary = engine.inspect(unsigned.cbor)
             summary.requireMatches(intent, profile.network, unsigned.feeBound)
+            summary.requireL1Witnesses(profile.id.value.substringAfter('-'), signed = false)
             summary.requireL1Funding(intent, ledger)
             val change = summary.outputs.singleOrNull { it.address == profile.paymentAddress }?.lovelace ?: Lovelace(0)
             TransferPreview(resolvedDestination, amount, unsigned.feeBound, change, intent, unsigned, engine.transactionId(unsigned.cbor))
@@ -149,6 +151,7 @@ class DefaultL1WalletRepository(
             require(preview.feeBound == unsigned.feeBound)
             val summary = engine.inspect(unsigned.cbor)
             summary.requireMatches(intent, profile.network, preview.feeBound)
+            summary.requireL1Witnesses(profile.id.value.substringAfter('-'), signed = false)
             require((summary.outputs.singleOrNull { it.address == profile.paymentAddress }?.lovelace ?: Lovelace(0)) == preview.change)
             require(engine.transactionId(unsigned.cbor) == previewTransactionId)
             val existing = operations(walletId)
@@ -164,7 +167,9 @@ class DefaultL1WalletRepository(
             writeOperation(walletId, prepared)
             val signed = vault.withWalletSeed(walletId) { engine.sign(unsigned, it) }
             try {
-                engine.inspect(signed.cbor).requireMatches(intent, profile.network, preview.feeBound)
+                val signedSummary = engine.inspect(signed.cbor)
+                signedSummary.requireMatches(intent, profile.network, preview.feeBound)
+                signedSummary.requireL1Witnesses(profile.id.value.substringAfter('-'), signed = true)
                 val transactionId = engine.transactionId(signed.cbor)
                 require(transactionId == previewTransactionId)
                 val submitting = prepared.copy(
@@ -205,6 +210,7 @@ class DefaultL1WalletRepository(
                 val unsigned = engine.build(intent, ledger)
                 val summary = engine.inspect(unsigned.cbor)
                 summary.requireMatches(intent, profile.network, unsigned.feeBound)
+                summary.requireL1Witnesses(profile.id.value.substringAfter('-'), signed = false)
                 summary.requireL1Funding(intent, ledger)
                 val nextAmount = total - summary.fee
                 if (nextAmount == amount && summary.outputs.singleOrNull()?.address == destinationAddress) {
@@ -231,6 +237,7 @@ class DefaultL1WalletRepository(
             require(preview.intent.amount == preview.amount && preview.intent.operationId == preview.unsigned.operationId)
             val summary = engine.inspect(preview.unsigned.cbor)
             summary.requireMatches(preview.intent, profile.network, preview.unsigned.feeBound)
+            summary.requireL1Witnesses(profile.id.value.substringAfter('-'), signed = false)
             require(summary.outputs.singleOrNull()?.let {
                 it.address == preview.destinationAddress && it.lovelace == preview.amount && it.assets.isEmpty()
             } == true)
@@ -249,7 +256,9 @@ class DefaultL1WalletRepository(
             writeOperation(walletId, prepared)
             val signed = vault.withWalletSeed(walletId) { engine.sign(preview.unsigned, it) }
             try {
-                engine.inspect(signed.cbor).requireMatches(preview.intent, profile.network, preview.unsigned.feeBound)
+                val signedSummary = engine.inspect(signed.cbor)
+                signedSummary.requireMatches(preview.intent, profile.network, preview.unsigned.feeBound)
+                signedSummary.requireL1Witnesses(profile.id.value.substringAfter('-'), signed = true)
                 val transactionId = engine.transactionId(signed.cbor)
                 require(transactionId == preview.expectedTransactionId)
                 val submitting = prepared.copy(expectedTransactionId = transactionId, state = L1OperationState.SUBMITTING)

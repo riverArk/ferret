@@ -3,6 +3,7 @@ package io.riverark.ferret.core.cardano
 import co.nstant.`in`.cbor.CborDecoder
 import co.nstant.`in`.cbor.model.Array as CborArray
 import co.nstant.`in`.cbor.model.Map as CborMap
+import co.nstant.`in`.cbor.model.SimpleValue
 import co.nstant.`in`.cbor.model.UnsignedInteger
 import com.bloxbean.cardano.client.account.Account
 import com.bloxbean.cardano.client.address.Address
@@ -102,7 +103,9 @@ class AndroidCardanoTransactionEngine(
         val fee = Lovelace(transaction.body.fee.longValueExact())
         val cbor = transaction.serialize()
         if (intent is CardanoIntent.Transfer || intent is CardanoIntent.SweepWallet) {
-            inspect(cbor).requireL1Funding(intent, ledger)
+            val summary = inspect(cbor)
+            summary.requireMatches(intent, ledger.network, fee)
+            summary.requireL1Funding(intent, ledger)
         }
         return UnsignedTransaction(cbor, intent.operationId, fee)
     }
@@ -180,9 +183,26 @@ class AndroidCardanoTransactionEngine(
     }
 
     override fun inspect(signedCbor: ByteArray): TransactionSummary {
+        val envelope = requireNotNull(
+            CborDecoder(ByteArrayInputStream(signedCbor)).decodeNext() as? CborArray,
+        ) { "transaction envelope must be an array" }
+        require(envelope.dataItems.size == 4)
+        val rawBody = requireNotNull(envelope.dataItems[0] as? CborMap) { "transaction body must be a map" }
+        val rawWitnesses = requireNotNull(envelope.dataItems[1] as? CborMap) { "transaction witnesses must be a map" }
+        require(envelope.dataItems[2] == SimpleValue.TRUE)
+        require(rawBody.keys.all { key ->
+            key is UnsignedInteger && key.value.longValueExact() in SUPPORTED_BODY_KEYS
+        })
+
         val transaction = Transaction.deserialize(signedCbor)
         val body = transaction.body
-        val network = inferNetwork(transaction).let { if (it.networkId == Networks.mainnet().networkId) CardanoNetwork.MAINNET else CardanoNetwork.PREPROD }
+        val network = inferNetwork(transaction).let {
+            if (it.networkId == Networks.mainnet().networkId) CardanoNetwork.MAINNET else CardanoNetwork.PREPROD
+        }
+        rawBody[UnsignedInteger(15)]?.let { encoded ->
+            require(encoded is UnsignedInteger)
+            require(encoded.value.longValueExact() == if (network == CardanoNetwork.MAINNET) 1L else 0L)
+        }
         val bodyHash = HexUtil.decodeHexString(TransactionUtil.getTxHash(signedCbor))
         val signingProvider = EdDSASigningProvider()
         return TransactionSummary(
@@ -190,8 +210,8 @@ class AndroidCardanoTransactionEngine(
             outputs = body.outputs.map(::summarize),
             fee = Lovelace(body.fee.longValueExact()),
             requiredSigners = body.requiredSigners.map(HexUtil::encodeHexString).toSet(),
-            validityStart = body.validityStartInterval.takeIf { bodyHasKey(signedCbor, 8) },
-            validityEnd = body.ttl.takeIf { bodyHasKey(signedCbor, 3) },
+            validityStart = body.validityStartInterval.takeIf { rawBody[UnsignedInteger(8)] != null },
+            validityEnd = body.ttl.takeIf { rawBody[UnsignedInteger(3)] != null },
             inputs = body.inputs.map(::reference),
             referenceInputs = body.referenceInputs.map(::reference),
             collateralInputs = body.collateral.map(::reference),
@@ -216,15 +236,16 @@ class AndroidCardanoTransactionEngine(
             },
             scriptDataHashHex = body.scriptDataHash?.let(HexUtil::encodeHexString),
             prohibitedBodyFields = buildSet {
-                if (body.mint.isNotEmpty()) add(ProhibitedBodyField.MINT)
-                if (body.certs.isNotEmpty()) add(ProhibitedBodyField.CERTIFICATES)
-                if (body.withdrawals.isNotEmpty()) add(ProhibitedBodyField.WITHDRAWALS)
-                if (body.update != null) add(ProhibitedBodyField.UPDATE)
-                if (body.votingProcedures != null || !body.proposalProcedures.isNullOrEmpty()) add(ProhibitedBodyField.GOVERNANCE)
-                if (body.auxiliaryDataHash != null || transaction.auxiliaryData != null) add(ProhibitedBodyField.AUXILIARY_DATA)
-                if (body.currentTreasuryValue != null) add(ProhibitedBodyField.TREASURY)
-                if (body.donation != null) add(ProhibitedBodyField.DONATION)
+                if (rawBody[UnsignedInteger(9)] != null) add(ProhibitedBodyField.MINT)
+                if (rawBody[UnsignedInteger(4)] != null) add(ProhibitedBodyField.CERTIFICATES)
+                if (rawBody[UnsignedInteger(5)] != null) add(ProhibitedBodyField.WITHDRAWALS)
+                if (rawBody[UnsignedInteger(6)] != null) add(ProhibitedBodyField.UPDATE)
+                if (rawBody[UnsignedInteger(19)] != null || rawBody[UnsignedInteger(20)] != null) add(ProhibitedBodyField.GOVERNANCE)
+                if (rawBody[UnsignedInteger(7)] != null || envelope.dataItems[3] != SimpleValue.NULL) add(ProhibitedBodyField.AUXILIARY_DATA)
+                if (rawBody[UnsignedInteger(21)] != null) add(ProhibitedBodyField.TREASURY)
+                if (rawBody[UnsignedInteger(22)] != null) add(ProhibitedBodyField.DONATION)
             },
+            containsNonKeyWitnesses = rawWitnesses.keys.any { it != UnsignedInteger(0) },
         )
     }
 
@@ -249,10 +270,8 @@ class AndroidCardanoTransactionEngine(
             },
         )
 
-    private fun bodyHasKey(cbor: ByteArray, key: Long): Boolean {
-        val transaction = CborDecoder(ByteArrayInputStream(cbor)).decodeNext() as CborArray
-        val body = transaction.dataItems.first() as CborMap
-        return body[UnsignedInteger(key)] != null
+    private companion object {
+        val SUPPORTED_BODY_KEYS = setOf(0L, 1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 11L, 13L, 14L, 15L, 16L, 17L, 18L, 19L, 20L, 21L, 22L)
     }
 
     override fun transactionId(signedCbor: ByteArray): String =
