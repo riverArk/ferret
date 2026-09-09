@@ -4,6 +4,7 @@ import co.nstant.`in`.cbor.CborDecoder
 import co.nstant.`in`.cbor.model.Array as CborArray
 import co.nstant.`in`.cbor.model.Map as CborMap
 import co.nstant.`in`.cbor.model.SimpleValue
+import com.bloxbean.cardano.client.common.cbor.CborSerializationUtil
 import co.nstant.`in`.cbor.model.UnsignedInteger
 import com.bloxbean.cardano.client.account.Account
 import com.bloxbean.cardano.client.address.Address
@@ -32,6 +33,7 @@ import com.bloxbean.cardano.client.quicktx.QuickTxBuilder
 import com.bloxbean.cardano.client.quicktx.ScriptTx
 import com.bloxbean.cardano.client.quicktx.Tx
 import com.bloxbean.cardano.client.transaction.spec.Transaction
+import com.bloxbean.cardano.client.transaction.spec.TransactionOutput
 import com.bloxbean.cardano.client.transaction.util.TransactionUtil
 import com.bloxbean.cardano.client.util.HexUtil
 import com.fasterxml.jackson.databind.ObjectMapper
@@ -46,6 +48,8 @@ import java.util.Optional
 class AndroidCardanoTransactionEngine(
     private val transactionProcessor: TransactionProcessor,
 ) : CardanoTransactionEngine {
+    private val objectMapper = ObjectMapper()
+
     override suspend fun deriveWallet(entropy: ByteArray, network: CardanoNetwork) =
         deriveAndroidWallet(entropy, network)
 
@@ -60,9 +64,9 @@ class AndroidCardanoTransactionEngine(
         }
         require(intent.validFrom >= ledger.currentSlot && intent.validUntil > intent.validFrom)
         requireChannelSemantics(intent)
+        val (params, coinsPerUtxoByte) = parseProtocolParameters(ledger.protocolParametersJson)
         val utxos = ledger.utxos.filter { it.isSpendableBy(intent.sourceAddress) }.map(::toBloxbean)
         val supplier = SnapshotUtxoSupplier(utxos)
-        val params = ObjectMapper().readValue(ledger.protocolParametersJson, ProtocolParams::class.java)
         val builder = QuickTxBuilder(supplier, ProtocolParamsSupplier { params }, transactionProcessor)
         val transaction = when (intent) {
             is CardanoIntent.Transfer -> builder.compose(
@@ -102,12 +106,62 @@ class AndroidCardanoTransactionEngine(
         }
         val fee = Lovelace(transaction.body.fee.longValueExact())
         val cbor = transaction.serialize()
+        requireMinimumAda(cbor, coinsPerUtxoByte)
         if (intent is CardanoIntent.Transfer || intent is CardanoIntent.SweepWallet) {
             val summary = inspect(cbor)
             summary.requireMatches(intent, ledger.network, fee)
             summary.requireL1Funding(intent, ledger)
         }
         return UnsignedTransaction(cbor, intent.operationId, fee)
+    }
+
+    override fun requireMinimumAda(cbor: ByteArray, protocolParametersJson: String) {
+        val (_, coinsPerUtxoByte) = parseProtocolParameters(protocolParametersJson)
+        requireMinimumAda(cbor, coinsPerUtxoByte)
+    }
+
+    private fun parseProtocolParameters(json: String): Pair<ProtocolParams, Long> {
+        val tree = try {
+            objectMapper.readTree(json)
+        } catch (_: Exception) {
+            throw IllegalArgumentException("invalid coins_per_utxo_size")
+        }
+        val cost = tree?.get("coins_per_utxo_size")
+            ?.takeIf { it.isTextual }
+            ?.textValue()
+            ?.takeIf { COINS_PER_UTXO_SIZE.matches(it) }
+            ?.toLongOrNull()
+            ?.takeIf { it > 0 }
+            ?: throw IllegalArgumentException("invalid coins_per_utxo_size")
+        val params = try {
+            objectMapper.treeToValue(tree, ProtocolParams::class.java)
+        } catch (_: Exception) {
+            throw IllegalArgumentException("invalid protocol parameters")
+        }
+        return params to cost
+    }
+
+    private fun requireMinimumAda(cbor: ByteArray, coinsPerUtxoByte: Long) {
+        val sufficient = try {
+            val decoded = CborDecoder(ByteArrayInputStream(cbor)).decode()
+            require(decoded.size == 1)
+            val envelope = decoded.single() as? CborArray ?: error("invalid envelope")
+            require(envelope.dataItems.size == 4)
+            val body = envelope.dataItems[0] as? CborMap ?: error("invalid body")
+            require(CborSerializationUtil.serialize(envelope).contentEquals(cbor))
+            val outputs = (body[UnsignedInteger(1)] as? CborArray)?.dataItems
+                ?.takeIf { it.isNotEmpty() }
+                ?: error("invalid outputs")
+            val checked = outputs + listOfNotNull(body[UnsignedInteger(16)])
+            checked.all { output ->
+                val encodedSize = CborSerializationUtil.serialize(output).size.toLong()
+                val minimum = Math.multiplyExact(Math.addExact(160L, encodedSize), coinsPerUtxoByte)
+                TransactionOutput.deserialize(output).value.coin.longValueExact() >= minimum
+            }
+        } catch (_: Exception) {
+            throw IllegalArgumentException("invalid transaction CBOR")
+        }
+        require(sufficient) { "output below minimum ADA" }
     }
 
     private fun requireChannelSemantics(intent: CardanoIntent) {
@@ -271,6 +325,7 @@ class AndroidCardanoTransactionEngine(
         )
 
     private companion object {
+        val COINS_PER_UTXO_SIZE = Regex("[1-9][0-9]*")
         val SUPPORTED_BODY_KEYS = setOf(0L, 1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 11L, 13L, 14L, 15L, 16L, 17L, 18L, 19L, 20L, 21L, 22L)
     }
 

@@ -262,6 +262,66 @@ class L1WalletRepositoryTest {
         assertEquals(1, calls.lookups)
     }
 
+    @Test fun minimumAdaDriftRejectsBothL1SubmissionsBeforeSideEffects() = runBlocking {
+        listOf(false, true).forEach { sweep ->
+            val source = profile('0')
+            val destination = profile('1')
+            val vault = FakeVault(listOf(source, destination))
+            val calls = RemoteCalls()
+            val engine = FakeEngine()
+            var minimum = "0"
+            val repository = previewRepository(vault, engine, calls = calls) { minimum }
+            val preview = if (sweep) {
+                repository.previewSweep(source.id, destination.paymentAddress)
+            } else {
+                repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+            }
+
+            minimum = "10000000"
+            assertFailsWith<IllegalArgumentException> {
+                if (sweep) repository.submitSweep(source.id, preview as io.riverark.ferret.core.cardano.SweepPreview)
+                else repository.submitTransfer(source.id, preview as io.riverark.ferret.feature.wallet.TransferPreview)
+            }
+            assertEquals(0, vault.writes)
+            assertEquals(0, vault.seedRequests)
+            assertEquals(0, engine.signs)
+            assertEquals(0, calls.submissions)
+            assertEquals(0, calls.lookups)
+            assertNull(repository.operation(source.id))
+        }
+    }
+
+    @Test fun postSignMinimumFailureStaysPreparedAndRestartsLookupFree() = runBlocking {
+        listOf(false, true).forEach { sweep ->
+            val source = profile('0')
+            val destination = profile('1')
+            val vault = FakeVault(listOf(source, destination))
+            val calls = RemoteCalls()
+            val engine = FakeEngine().apply { rejectSignedMinimum = true }
+            val repository = previewRepository(vault, engine, calls = calls)
+            val preview = if (sweep) {
+                repository.previewSweep(source.id, destination.paymentAddress)
+            } else {
+                repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+            }
+
+            assertFailsWith<IllegalArgumentException> {
+                if (sweep) repository.submitSweep(source.id, preview as io.riverark.ferret.core.cardano.SweepPreview)
+                else repository.submitTransfer(source.id, preview as io.riverark.ferret.feature.wallet.TransferPreview)
+            }
+            assertEquals(1, vault.seedRequests)
+            assertEquals(1, engine.signs)
+            assertEquals(0, calls.submissions)
+            assertEquals(0, calls.lookups)
+            assertEquals(L1OperationState.PREPARED, repository.operation(source.id)?.state)
+
+            val restarted = previewRepository(vault, engine, calls = calls)
+            assertEquals(L1OperationState.REJECTED, restarted.reconcilePending(source.id)?.state)
+            assertEquals(0, calls.lookups)
+        }
+    }
+
+
 
 
     private fun previewRepository(
@@ -269,13 +329,14 @@ class L1WalletRepositoryTest {
         engine: FakeEngine,
         ledgerInputs: List<LedgerUtxo>? = null,
         calls: RemoteCalls = RemoteCalls(),
+        protocolParameters: () -> String = { "{}" },
     ) = DefaultL1WalletRepository(
         WalletRepository(), vault,
         { profile ->
             LedgerSnapshot(
                 CardanoNetwork.PREPROD,
                 ledgerInputs ?: listOf(LedgerUtxo("00".repeat(32), 0, profile.paymentAddress, Lovelace(10_000_000))),
-                "{}",
+                protocolParameters(),
                 100,
             )
         },
@@ -774,12 +835,19 @@ class L1WalletRepositoryTest {
         var inputOverride: List<TransactionInputReference>? = null
         var includeUnsignedWitness = false
         var signedWitnessMode = SignedWitnessMode.VALID
+        var minimumOutputLovelace = 0L
+        var rejectSignedMinimum = false
         override suspend fun deriveWallet(entropy: ByteArray, network: CardanoNetwork): DerivedWallet = error("not used")
         override suspend fun build(intent: CardanoIntent, ledger: LedgerSnapshot): UnsignedTransaction {
             builds++
             this.intent = intent
             selectedInput = ledger.utxos.first()
             return UnsignedTransaction(byteArrayOf(0), intent.operationId, Lovelace(200_000))
+        }
+        override fun requireMinimumAda(cbor: ByteArray, protocolParametersJson: String) {
+            require(!(rejectSignedMinimum && cbor.size > 1))
+            val minimum = protocolParametersJson.toLongOrNull() ?: minimumOutputLovelace
+            require(inspect(cbor).outputs.all { it.lovelace.value >= minimum })
         }
         override fun sign(unsigned: UnsignedTransaction, seed: ByteArray): SignedTransaction {
             signs++

@@ -205,6 +205,7 @@ sealed interface CardanoIntent {
 interface CardanoTransactionEngine {
     suspend fun deriveWallet(entropy: ByteArray, network: CardanoNetwork): DerivedWallet
     suspend fun build(intent: CardanoIntent, ledger: LedgerSnapshot): UnsignedTransaction
+    fun requireMinimumAda(cbor: ByteArray, protocolParametersJson: String)
     fun sign(unsigned: UnsignedTransaction, seed: ByteArray): SignedTransaction
     fun inspect(signedCbor: ByteArray): TransactionSummary
     fun transactionId(signedCbor: ByteArray): String

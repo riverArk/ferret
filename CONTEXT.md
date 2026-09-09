@@ -78,6 +78,12 @@ Android installation and manual onboarding verification require an API 36 emulat
 
 ## Session log
 
+### 2026-09-09 — Dynamic minimum ADA authorization
+
+- Android now validates every transaction output and collateral return against the live positive `coins_per_utxo_size` and each output's original serializer-stable CBOR size before L1 authorization.
+- Transfer and sweep previews validate minimums; submission reloads ledger inputs and parameters before journaling or seed access, then rechecks signed bytes before remote submission. Parameter drift fails closed without rebuilding confirmed previews.
+- Pinned-Konduit output boundaries, malformed parameters/CBOR, recipient/change/collateral sizing, local build/sign, pre-side-effect drift, and interrupted signing checks passed with `androidCheck` and the shared iOS compile gate. Funded Mainnet transfer acceptance, complete five-intent conformance, channel controls, release credentials/MASVS, and deployment activation remain outstanding.
+
 ### 2026-09-09 — L1 transaction authorization
 
 - Android inspection now requires the modern four-item CBOR envelope, supported Conway body keys, a true validity flag, a consistent explicit network ID, and exposes prohibited raw body and non-key witness entries without normalization.

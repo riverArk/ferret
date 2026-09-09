@@ -7,6 +7,10 @@ import co.nstant.`in`.cbor.model.ByteString
 import co.nstant.`in`.cbor.model.Map as CborMap
 import co.nstant.`in`.cbor.model.SimpleValue
 import co.nstant.`in`.cbor.model.UnsignedInteger
+import co.nstant.`in`.cbor.model.DataItem
+import co.nstant.`in`.cbor.model.Tag
+import com.bloxbean.cardano.client.address.Address
+import com.bloxbean.cardano.client.common.cbor.CborSerializationUtil
 import com.bloxbean.cardano.client.api.TransactionProcessor
 import com.bloxbean.cardano.client.api.model.EvaluationResult
 import com.bloxbean.cardano.client.api.model.Result
@@ -18,6 +22,14 @@ import com.bloxbean.cardano.client.transaction.spec.Value
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.math.BigInteger
+import io.riverark.ferret.core.model.TransactionRecord
+import io.riverark.ferret.core.model.WalletId
+import io.riverark.ferret.core.model.WalletProfile
+import io.riverark.ferret.core.model.WalletRepository
+import io.riverark.ferret.core.security.SecureVault
+import io.riverark.ferret.core.security.WalletEncryptedStateV1
+import io.riverark.ferret.core.security.WalletSecretV1
+import io.riverark.ferret.feature.wallet.DefaultL1WalletRepository
 import io.riverark.ferret.core.model.CardanoNetwork
 import io.riverark.ferret.core.model.Lovelace
 import io.riverark.ferret.core.model.InvalidRecoveryPhraseException
@@ -28,6 +40,8 @@ import java.util.Collections
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
+import kotlin.test.assertContentEquals
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 import kotlinx.coroutines.runBlocking
@@ -345,6 +359,377 @@ class AndroidCardanoTransactionEngineTest {
         }
     }
 
+    @Test fun enforcesPinnedKonduitOutputMinimumsWithoutNormalization() {
+        val engine = AndroidCardanoTransactionEngine(processor)
+        // a68cfedd4a0188ef9adad970e89c12b2b805b678:packages/cardano/sdk/src/cardano/output.rs
+        val vectors = listOf(
+            OutputMinimumVector(ENTERPRISE_ADDRESS, true, 39, 857_690),
+            OutputMinimumVector(BASE_ADDRESS, true, 67, 978_370),
+            OutputMinimumVector(ENTERPRISE_ADDRESS, false, 37, 849_070),
+            OutputMinimumVector(BASE_ADDRESS, false, 65, 969_750),
+        )
+        vectors.forEach { vector ->
+            val exactOutput = output(vector.address, vector.minimum, vector.postAlonzo)
+            assertEquals(vector.encodedSize, CborSerializationUtil.serialize(exactOutput).size)
+            val exact = transaction(listOf(exactOutput))
+            val original = exact.copyOf()
+            engine.requireMinimumAda(exact, protocolParameters("4310"))
+            assertContentEquals(original, exact)
+            assertFailsWith<IllegalArgumentException> {
+                engine.requireMinimumAda(
+                    transaction(listOf(output(vector.address, vector.minimum - 1, vector.postAlonzo))),
+                    protocolParameters("4310"),
+                )
+            }
+
+            engine.requireMinimumAda(
+                transaction(listOf(output(vector.address, vector.minimum * 2, vector.postAlonzo))),
+                protocolParameters("8620"),
+            )
+            assertFailsWith<IllegalArgumentException> {
+                engine.requireMinimumAda(
+                    transaction(listOf(output(vector.address, vector.minimum * 2 - 1, vector.postAlonzo))),
+                    protocolParameters("8620"),
+                )
+            }
+        }
+
+        val lowCost = output(ENTERPRISE_ADDRESS, 194, false)
+        assertEquals(34, CborSerializationUtil.serialize(lowCost).size)
+        engine.requireMinimumAda(transaction(listOf(lowCost)), protocolParameters("1"))
+        assertFailsWith<IllegalArgumentException> {
+            engine.requireMinimumAda(
+                transaction(listOf(output(ENTERPRISE_ADDRESS, 193, false))),
+                protocolParameters("1"),
+            )
+        }
+    }
+
+    @Test fun rejectsInvalidProtocolOutputCostsAndOverflow() {
+        val engine = AndroidCardanoTransactionEngine(processor)
+        val valid = transaction(listOf(output(ENTERPRISE_ADDRESS, 1_000_000, false)))
+        listOf(
+            "{}",
+            """{"coins_per_utxo_size":null}""",
+            """{"coins_per_utxo_size":4310}""",
+            """{"coins_per_utxo_size":"4.310"}""",
+            """{"coins_per_utxo_size":"0"}""",
+            """{"coins_per_utxo_size":"-1"}""",
+            """{"coins_per_utxo_size":"9223372036854775808"}""",
+            "{",
+        ).forEach { invalid ->
+            val failure = assertFailsWith<IllegalArgumentException> {
+                engine.requireMinimumAda(valid, invalid)
+            }
+            assertEquals("invalid coins_per_utxo_size", failure.message)
+        }
+        assertEquals(
+            "invalid transaction CBOR",
+            assertFailsWith<IllegalArgumentException> {
+                engine.requireMinimumAda(valid, protocolParameters(Long.MAX_VALUE.toString()))
+            }.message,
+        )
+    }
+
+    @Test fun checksEveryOutputCollateralDatumAndOriginalEncoding() {
+        val engine = AndroidCardanoTransactionEngine(processor)
+        val recipient = output(ENTERPRISE_ADDRESS, 857_690, true)
+        val change = output(BASE_ADDRESS, 978_370, true)
+        val complete = transaction(listOf(recipient, change), recipient)
+        val original = complete.copyOf()
+        engine.requireMinimumAda(complete, protocolParameters("4310"))
+        assertContentEquals(original, complete)
+
+        listOf(
+            transaction(listOf(output(ENTERPRISE_ADDRESS, 857_689, true), change)),
+            transaction(listOf(recipient, output(BASE_ADDRESS, 978_369, true))),
+            transaction(listOf(recipient, change), output(ENTERPRISE_ADDRESS, 857_689, true)),
+        ).forEach { insufficient ->
+            assertFailsWith<IllegalArgumentException> {
+                engine.requireMinimumAda(insufficient, protocolParameters("4310"))
+            }
+        }
+
+        val provisionalDatum = inlineOutput(ENTERPRISE_ADDRESS, 1_000_000)
+        val datumMinimum = (160L + CborSerializationUtil.serialize(provisionalDatum).size) * 4310
+        val exactDatum = inlineOutput(ENTERPRISE_ADDRESS, datumMinimum)
+        assertEquals(
+            CborSerializationUtil.serialize(provisionalDatum).size,
+            CborSerializationUtil.serialize(exactDatum).size,
+        )
+        assertTrue(datumMinimum > 857_690)
+        engine.requireMinimumAda(transaction(listOf(exactDatum)), protocolParameters("4310"))
+        assertFailsWith<IllegalArgumentException> {
+            engine.requireMinimumAda(
+                transaction(listOf(inlineOutput(ENTERPRISE_ADDRESS, datumMinimum - 1))),
+                protocolParameters("4310"),
+            )
+        }
+
+        val belowUint32 = output(ENTERPRISE_ADDRESS, 4_294_967_295, false)
+        val atUint32 = output(ENTERPRISE_ADDRESS, 4_294_967_296, false)
+        assertEquals(4, CborSerializationUtil.serialize(atUint32).size - CborSerializationUtil.serialize(belowUint32).size)
+        engine.requireMinimumAda(transaction(listOf(atUint32)), protocolParameters("21367996"))
+
+        val canonical = transaction(listOf(output(ENTERPRISE_ADDRESS, 194, false)))
+        val nonminimal = nonminimalCoin(canonical)
+        val nonminimalOriginal = nonminimal.copyOf()
+        assertFailsWith<IllegalArgumentException> {
+            engine.requireMinimumAda(nonminimal, protocolParameters("1"))
+        }
+        assertContentEquals(nonminimalOriginal, nonminimal)
+
+        val missingValue = CborMap().apply {
+            put(UnsignedInteger(0), ByteString(Address(ENTERPRISE_ADDRESS).bytes))
+        }
+        listOf(
+            byteArrayOf(),
+            canonical + byteArrayOf(0),
+            transaction(emptyList()),
+            transaction(listOf(SimpleValue.NULL)),
+            transaction(listOf(missingValue)),
+        ).forEach { malformed ->
+            assertFailsWith<IllegalArgumentException> {
+                engine.requireMinimumAda(malformed, protocolParameters("1"))
+            }
+        }
+    }
+
+    @Test fun localMainnetTransferAndSweepPassAtCurrentAndDoubledCost() = runBlocking {
+        val engine = AndroidCardanoTransactionEngine(processor)
+        val sourceEntropy = ByteArray(32) { it.toByte() }
+        val destinationEntropy = ByteArray(32) { (it + 1).toByte() }
+        try {
+            val source = engine.deriveWallet(sourceEntropy, CardanoNetwork.MAINNET)
+            val destination = engine.deriveWallet(destinationEntropy, CardanoNetwork.MAINNET)
+            listOf("4310", "8620").forEach { cost ->
+                val ledger = LedgerSnapshot(
+                    CardanoNetwork.MAINNET,
+                    listOf(LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000))),
+                    protocolParameters(cost),
+                    100,
+                )
+                listOf<CardanoIntent>(
+                    CardanoIntent.Transfer(
+                        source.paymentAddress, destination.paymentAddress, Lovelace(5_000_000),
+                        "00000000-0000-4000-8000-000000000015", 100, 200,
+                    ),
+                    CardanoIntent.SweepWallet(
+                        source.paymentAddress, destination.paymentAddress, Lovelace(5_000_000),
+                        "00000000-0000-4000-8000-000000000016", 100, 200,
+                    ),
+                ).forEach { intent ->
+                    val unsigned = engine.build(intent, ledger)
+                    val unsignedBytes = unsigned.cbor.copyOf()
+                    engine.inspect(unsigned.cbor).also {
+                        it.requireMatches(intent, CardanoNetwork.MAINNET, unsigned.feeBound)
+                        it.requireL1Funding(intent, ledger)
+                        it.requireL1Witnesses(source.paymentCredentialHex, signed = false)
+                    }
+                    engine.requireMinimumAda(unsigned.cbor, ledger.protocolParametersJson)
+                    assertContentEquals(unsignedBytes, unsigned.cbor)
+
+                    val signed = engine.sign(unsigned, sourceEntropy)
+                    try {
+                        engine.inspect(signed.cbor).also {
+                            it.requireMatches(intent, CardanoNetwork.MAINNET, unsigned.feeBound)
+                            it.requireL1Funding(intent, ledger)
+                            it.requireL1Witnesses(source.paymentCredentialHex, signed = true)
+                        }
+                        engine.requireMinimumAda(signed.cbor, ledger.protocolParametersJson)
+                        assertEquals(engine.transactionId(unsigned.cbor), engine.transactionId(signed.cbor))
+                    } finally {
+                        signed.cbor.fill(0)
+                    }
+                }
+            }
+        } finally {
+            sourceEntropy.fill(0)
+            destinationEntropy.fill(0)
+        }
+    }
+
+    @Test fun repositoryRejectsTransferAndSweepParameterDriftBeforeSideEffects() = runBlocking {
+        val engine = AndroidCardanoTransactionEngine(processor)
+        val sourceEntropy = ByteArray(32) { it.toByte() }
+        val destinationEntropy = ByteArray(32) { (it + 1).toByte() }
+        try {
+            val sourceWallet = engine.deriveWallet(sourceEntropy, CardanoNetwork.MAINNET)
+            val destinationWallet = engine.deriveWallet(destinationEntropy, CardanoNetwork.MAINNET)
+            val source = WalletProfile(
+                WalletId("mainnet-${sourceWallet.paymentCredentialHex}"),
+                "Source",
+                CardanoNetwork.MAINNET,
+                sourceWallet.paymentAddress,
+                sourceWallet.stakeAddress,
+            )
+            val destination = WalletProfile(
+                WalletId("mainnet-${destinationWallet.paymentCredentialHex}"),
+                "Destination",
+                CardanoNetwork.MAINNET,
+                destinationWallet.paymentAddress,
+                destinationWallet.stakeAddress,
+            )
+
+            suspend fun rejectDrift(
+                previewAndSubmit: suspend (
+                    DefaultL1WalletRepository,
+                    LedgerSnapshot,
+                    (LedgerSnapshot) -> Unit,
+                ) -> Unit,
+            ) {
+                val vault = CountingVault(listOf(source, destination))
+                val wallets = WalletRepository().apply { publish(source.id, listOf(source, destination)) }
+                var ledger = LedgerSnapshot(
+                    CardanoNetwork.MAINNET,
+                    listOf(LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000))),
+                    protocolParameters("4310"),
+                    100,
+                )
+                var remoteCalls = 0
+                val repository = DefaultL1WalletRepository(
+                    wallets,
+                    vault,
+                    { ledger },
+                    { emptyList<TransactionRecord>() },
+                    { _, _ -> remoteCalls++; error("submission must not run") },
+                    { _, _ -> remoteCalls++; error("lookup must not run") },
+                    engine,
+                    { "00000000-0000-4000-8000-000000000017" },
+                    { 123L },
+                )
+                previewAndSubmit(repository, ledger) { ledger = it }
+                assertEquals(0, vault.seedRequests)
+                assertEquals(0, vault.writes)
+                assertEquals(0, remoteCalls)
+                assertNull(repository.operation(source.id))
+            }
+
+            rejectDrift { repository, ledger, updateLedger ->
+                val preview = repository.previewTransfer(source.id, destination, Lovelace(1_000_000))
+                engine.requireMinimumAda(preview.unsigned!!.cbor, ledger.protocolParametersJson)
+                updateLedger(ledger.copy(protocolParametersJson = protocolParameters("8620")))
+                assertFailsWith<IllegalArgumentException> {
+                    repository.submitTransfer(source.id, preview)
+                }
+            }
+
+            rejectDrift { repository, ledger, updateLedger ->
+                val intent = CardanoIntent.SweepWallet(
+                    source.paymentAddress,
+                    destination.paymentAddress,
+                    Lovelace(1_000_000),
+                    "00000000-0000-4000-8000-000000000017",
+                    100,
+                    200,
+                )
+                val built = engine.build(intent, ledger)
+                val destinationIndex = engine.inspect(built.cbor).outputs.indexOfFirst {
+                    it.address == destination.paymentAddress && it.lovelace == intent.amount
+                }
+                require(destinationIndex >= 0)
+                val envelope = decode(built.cbor)
+                val outputs = (envelope.dataItems[0] as CborMap)[UnsignedInteger(1)] as CborArray
+                val retained = outputs.dataItems[destinationIndex]
+                outputs.dataItems.clear()
+                outputs.add(retained)
+                val cbor = CborSerializationUtil.serialize(envelope)
+                val summary = engine.inspect(cbor)
+                val exactLedger = ledger.copy(
+                    utxos = listOf(ledger.utxos.single().copy(
+                        lovelace = Lovelace(Math.addExact(intent.amount.value, summary.fee.value)),
+                    )),
+                )
+                summary.requireMatches(intent, CardanoNetwork.MAINNET, summary.fee)
+                summary.requireL1Funding(intent, exactLedger)
+                engine.requireMinimumAda(cbor, exactLedger.protocolParametersJson)
+                val unsigned = UnsignedTransaction(cbor, intent.operationId, summary.fee)
+                val preview = SweepPreview(
+                    destination.paymentAddress,
+                    intent.amount,
+                    summary.fee,
+                    intent,
+                    unsigned,
+                    engine.transactionId(cbor),
+                )
+
+                updateLedger(exactLedger.copy(protocolParametersJson = protocolParameters("8620")))
+                assertFailsWith<IllegalArgumentException> {
+                    repository.submitSweep(source.id, preview)
+                }
+            }
+        } finally {
+            sourceEntropy.fill(0)
+            destinationEntropy.fill(0)
+        }
+    }
+
+
+    private fun output(address: String, lovelace: Long, postAlonzo: Boolean): DataItem {
+        val addressBytes = ByteString(Address(address).bytes)
+        val coin = UnsignedInteger(lovelace)
+        return if (postAlonzo) {
+            CborMap().apply {
+                put(UnsignedInteger(0), addressBytes)
+                put(UnsignedInteger(1), coin)
+            }
+        } else {
+            CborArray().apply {
+                add(addressBytes)
+                add(coin)
+            }
+        }
+    }
+
+    private fun transaction(outputs: List<DataItem>, collateralReturn: DataItem? = null): ByteArray {
+        val body = CborMap().apply {
+            put(UnsignedInteger(1), CborArray().apply { outputs.forEach(::add) })
+            collateralReturn?.let { put(UnsignedInteger(16), it) }
+        }
+        val envelope = CborArray().apply {
+            add(body)
+            add(CborMap())
+
+            add(SimpleValue.TRUE)
+            add(SimpleValue.NULL)
+        }
+        return CborSerializationUtil.serialize(envelope)
+    }
+    private fun inlineOutput(address: String, lovelace: Long): DataItem {
+        val datum = ByteString(CborSerializationUtil.serialize(UnsignedInteger(0))).apply { tag = Tag(24) }
+        return CborMap().apply {
+            put(UnsignedInteger(0), ByteString(Address(address).bytes))
+            put(UnsignedInteger(1), UnsignedInteger(lovelace))
+            put(UnsignedInteger(2), CborArray().apply {
+                add(UnsignedInteger(1))
+                add(datum)
+            })
+        }
+    }
+
+    private fun nonminimalCoin(cbor: ByteArray): ByteArray {
+        val index = (0 until cbor.lastIndex).single {
+            cbor[it] == 0x18.toByte() && cbor[it + 1] == 0xc2.toByte()
+        }
+        return cbor.copyOf(cbor.size + 1).also { result ->
+            cbor.copyInto(result, index + 3, index + 2)
+            result[index] = 0x19
+            result[index + 1] = 0
+            result[index + 2] = 0xc2.toByte()
+        }
+    }
+
+    private fun protocolParameters(coinsPerUtxoSize: String) =
+        PROTOCOL_PARAMETERS.replace("\"4310\"", "\"$coinsPerUtxoSize\"")
+
+    private data class OutputMinimumVector(
+        val address: String,
+        val postAlonzo: Boolean,
+        val encodedSize: Int,
+        val minimum: Long,
+    )
+
+
     private fun decode(cbor: ByteArray) =
         CborDecoder(ByteArrayInputStream(cbor)).decodeNext() as CborArray
 
@@ -354,8 +739,40 @@ class AndroidCardanoTransactionEngineTest {
         return ByteArrayOutputStream().also { CborEncoder(it).encode(envelope) }.toByteArray()
     }
 
+    private class CountingVault(private val storedProfiles: List<WalletProfile>) : SecureVault {
+        private val states = storedProfiles.associate { it.id to WalletEncryptedStateV1() }.toMutableMap()
+        var seedRequests = 0
+        var writes = 0
+        override val isUnlocked = true
+        override suspend fun unlock(wrappedDataKey: ByteArray) = Unit
+        override fun lock() = Unit
+        override suspend fun profiles() = storedProfiles
+        override suspend fun createWallet(profile: WalletProfile, secret: WalletSecretV1) = error("not used")
+        override suspend fun updateProfile(profile: WalletProfile) = error("not used")
+        override suspend fun renameWallet(walletId: WalletId, name: String) = error("not used")
+        override suspend fun deleteWallet(walletId: WalletId) = error("not used")
+        override suspend fun <T> withWalletSeed(walletId: WalletId, action: suspend (ByteArray) -> T): T {
+            seedRequests++
+            return action(ByteArray(32))
+        }
+        override suspend fun walletState(walletId: WalletId): WalletEncryptedStateV1 =
+            states.getValue(walletId).copy(
+                channelRecovery = states.getValue(walletId).channelRecovery.copyOf(),
+                operationJournal = states.getValue(walletId).operationJournal.copyOf(),
+            )
+        override suspend fun updateWalletState(walletId: WalletId, state: WalletEncryptedStateV1) {
+            writes++
+            states[walletId] = state.copy(
+                channelRecovery = state.channelRecovery.copyOf(),
+                operationJournal = state.operationJournal.copyOf(),
+            )
+        }
+    }
+
 
     companion object {
+        private const val ENTERPRISE_ADDRESS = "addr1v83gkkw3nqzakg5xynlurqcfqhgd65vkfvf5xv8tx25ufds2yvy2h"
+        private const val BASE_ADDRESS = "addr1qytp6yfl9wwamcqu3j5kqhjz8hlgkt62nd82d837g9dlsmn85wjc8sjtq2wqxfmahmpn6h85y0ug7mzclf2jl4zyt3vq587s69"
         private const val PROTOCOL_PARAMETERS = """{
           "min_fee_a":44,"min_fee_b":155381,"max_tx_size":16384,
           "key_deposit":"2000000","pool_deposit":"500000000","min_pool_cost":"170000000",

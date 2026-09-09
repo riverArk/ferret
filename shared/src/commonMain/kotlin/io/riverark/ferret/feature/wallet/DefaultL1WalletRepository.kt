@@ -133,6 +133,7 @@ class DefaultL1WalletRepository(
             summary.requireMatches(intent, profile.network, unsigned.feeBound)
             summary.requireL1Witnesses(profile.id.value.substringAfter('-'), signed = false)
             summary.requireL1Funding(intent, ledger)
+            engine.requireMinimumAda(unsigned.cbor, ledger.protocolParametersJson)
             val change = summary.outputs.singleOrNull { it.address == profile.paymentAddress }?.lovelace ?: Lovelace(0)
             TransferPreview(resolvedDestination, amount, unsigned.feeBound, change, intent, unsigned, engine.transactionId(unsigned.cbor))
         }
@@ -154,6 +155,10 @@ class DefaultL1WalletRepository(
             summary.requireL1Witnesses(profile.id.value.substringAfter('-'), signed = false)
             require((summary.outputs.singleOrNull { it.address == profile.paymentAddress }?.lovelace ?: Lovelace(0)) == preview.change)
             require(engine.transactionId(unsigned.cbor) == previewTransactionId)
+            val submitLedger = loadLedger(profile)
+            require(submitLedger.network == profile.network)
+            summary.requireL1Funding(intent, submitLedger)
+            engine.requireMinimumAda(unsigned.cbor, submitLedger.protocolParametersJson)
             val existing = operations(walletId)
             require(existing.none { it.state in UNRESOLVED_STATES }) { "another wallet operation is unresolved" }
             val prepared = L1OperationRecord(
@@ -172,6 +177,7 @@ class DefaultL1WalletRepository(
                 signedSummary.requireL1Witnesses(profile.id.value.substringAfter('-'), signed = true)
                 val transactionId = engine.transactionId(signed.cbor)
                 require(transactionId == previewTransactionId)
+                engine.requireMinimumAda(signed.cbor, submitLedger.protocolParametersJson)
                 val submitting = prepared.copy(
                     expectedTransactionId = transactionId,
                     state = L1OperationState.SUBMITTING,
@@ -212,6 +218,7 @@ class DefaultL1WalletRepository(
                 summary.requireMatches(intent, profile.network, unsigned.feeBound)
                 summary.requireL1Witnesses(profile.id.value.substringAfter('-'), signed = false)
                 summary.requireL1Funding(intent, ledger)
+                engine.requireMinimumAda(unsigned.cbor, ledger.protocolParametersJson)
                 val nextAmount = total - summary.fee
                 if (nextAmount == amount && summary.outputs.singleOrNull()?.address == destinationAddress) {
                     return@withWalletLock SweepPreview(
@@ -243,6 +250,10 @@ class DefaultL1WalletRepository(
             } == true)
             require(summary.fee == preview.fee)
             require(engine.transactionId(preview.unsigned.cbor) == preview.expectedTransactionId)
+            val submitLedger = loadLedger(profile)
+            require(submitLedger.network == profile.network)
+            summary.requireL1Funding(preview.intent, submitLedger)
+            engine.requireMinimumAda(preview.unsigned.cbor, submitLedger.protocolParametersJson)
             val existing = operations(walletId)
             require(existing.none { it.state in UNRESOLVED_STATES }) { "another wallet operation is unresolved" }
             val prepared = L1OperationRecord(
@@ -261,6 +272,7 @@ class DefaultL1WalletRepository(
                 signedSummary.requireL1Witnesses(profile.id.value.substringAfter('-'), signed = true)
                 val transactionId = engine.transactionId(signed.cbor)
                 require(transactionId == preview.expectedTransactionId)
+                engine.requireMinimumAda(signed.cbor, submitLedger.protocolParametersJson)
                 val submitting = prepared.copy(expectedTransactionId = transactionId, state = L1OperationState.SUBMITTING)
                 writeOperation(walletId, submitting)
                 val remote = submitOperation(
