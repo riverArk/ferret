@@ -219,7 +219,10 @@ data class SessionClaimRequest(
         require(Regex("[0-9a-f]{128}").matches(signatureHex))
     }
 }
-@Serializable data class SessionClaimResponse(val lease: String, val expiresAtEpochMillis: Long) {
+@Serializable data class SessionClaimResponse(
+    val lease: String,
+    @SerialName("expires_at_epoch_millis") val expiresAtEpochMillis: Long,
+) {
     init {
         require(Regex("[0-9a-f]{64}").matches(lease))
         require(expiresAtEpochMillis >= 0)

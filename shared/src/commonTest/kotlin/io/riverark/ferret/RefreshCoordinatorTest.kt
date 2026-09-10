@@ -155,6 +155,14 @@ class RefreshCoordinatorTest {
         assertTrue(message.decodeToString().startsWith("${MAINNET.adaptorIdentityHex}\n3\n"))
     }
     @Test
+    fun sessionClaimResponseMatchesAdaptorWireSchema() {
+        val response = Json.decodeFromString<SessionClaimResponse>(
+            """{"lease":"${"a".repeat(64)}","expires_at_epoch_millis":42}""",
+        )
+
+        assertTrue(response.expiresAtEpochMillis == 42L)
+    }
+    @Test
     fun networkResponsesAreStrictAndByteBounded() {
         assertFailsWith<IllegalArgumentException> { SubmitResponse("not-a-transaction-id") }
         assertFailsWith<IllegalArgumentException> { SessionClaimResponse("bad lease", 1) }
