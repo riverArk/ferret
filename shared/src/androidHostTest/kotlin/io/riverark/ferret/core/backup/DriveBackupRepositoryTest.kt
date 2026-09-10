@@ -76,6 +76,37 @@ class DriveBackupRepositoryTest {
         assertEquals(1, drive.list("ferret-").size)
     }
 
+    @Test fun explicitlyReplacesAMissingInitialBackupOnlyFromTheUnchangedLocalSnapshot() = runBlocking {
+        val walletId = WalletId("preprod-" + "00".repeat(28))
+        val vault = FakeVault(walletId, ByteArray(32) { it.toByte() })
+        val crypto = AndroidBackupCrypto()
+        val snapshot = "absent".encodeToByteArray()
+        WalletBackupCoordinator(
+            vault,
+            DriveBackupRepository(FakeDrive(), crypto),
+            crypto,
+            { 1L },
+        ).initialize(walletId, snapshot)
+        val replacementDrive = FakeDrive()
+        val coordinator = WalletBackupCoordinator(
+            vault,
+            DriveBackupRepository(replacementDrive, crypto),
+            crypto,
+            { 2L },
+        )
+
+        val missing = assertFailsWith<MissingBackupException> { coordinator.verify(walletId) }
+        assertTrue(missing.replacementAllowed)
+        assertFails { coordinator.replaceMissing(walletId, "changed".encodeToByteArray()) }
+        assertTrue(replacementDrive.list("ferret-").isEmpty())
+
+        val replaced = coordinator.replaceMissing(walletId, snapshot)
+        assertEquals(1L, replaced.generation)
+        assertEquals(1L, replaced.sequence)
+        assertContentEquals(snapshot, coordinator.verify(walletId).channelSnapshot)
+        assertEquals(1, replacementDrive.list("ferret-").size)
+    }
+
     @Test fun verifiedDeletionClearsRemoteBackupAndLocalCheckpoint() = runBlocking {
         val walletId = WalletId("preprod-" + "00".repeat(28))
         val drive = FakeDrive()

@@ -51,9 +51,11 @@ fun SettingsScreen(
     onVerifyBackup: (() -> Unit)?,
     onTakeoverBackup: (() -> Unit)?,
     onRemove: (() -> Unit)?,
+    onReplaceMissingBackup: (() -> Unit)?,
 ) {
     var name by rememberSaveable(settings.profile.id.value) { mutableStateOf(settings.profile.name) }
     var confirmTakeover by rememberSaveable(settings.profile.id.value) { mutableStateOf(false) }
+    var confirmReplacement by rememberSaveable(settings.profile.id.value) { mutableStateOf(false) }
     FerretScreen {
         FerretTopBar("Settings", navigation = { FerretTextButton("Back", onBack) })
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(FerretSpacing.sm)) {
@@ -77,8 +79,12 @@ fun SettingsScreen(
             section("Backup")
             item { FerretListRow("Drive account", settings.driveAccount ?: "not connected") }
             backupMessage?.let { message -> item { Text(message, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
-            if (settings.driveAccount == null) {
-                item { FerretSecondaryButton("Connect Google Drive", { onConnectBackup?.invoke() }, enabled = !backupBusy && onConnectBackup != null) }
+            item {
+                FerretSecondaryButton(
+                    if (settings.driveAccount == null) "Connect Google Drive" else "Change Google Drive account",
+                    { onConnectBackup?.invoke() },
+                    enabled = !backupBusy && onConnectBackup != null,
+                )
             }
             settings.driveGeneration?.let { generation -> item { FerretListRow("Backup generation", generation.toString()) } }
             settings.driveSequence?.let { sequence -> item { FerretListRow("Last verified backup sequence", sequence.toString()) } }
@@ -89,6 +95,15 @@ fun SettingsScreen(
                         "Take over backup",
                         { confirmTakeover = true },
                         enabled = !backupBusy && onTakeoverBackup != null,
+                    )
+                }
+            }
+            onReplaceMissingBackup?.let {
+                item {
+                    FerretDangerButton(
+                        "Create replacement backup",
+                        { confirmReplacement = true },
+                        enabled = !backupBusy,
                     )
                 }
             }
@@ -114,6 +129,20 @@ fun SettingsScreen(
                 }) { Text("Take over") }
             },
             dismissButton = { TextButton({ confirmTakeover = false }) { Text("Cancel") } },
+        )
+    }
+    if (confirmReplacement) {
+        AlertDialog(
+            onDismissRequest = { confirmReplacement = false },
+            title = { Text("Create a replacement backup?") },
+            text = { Text("No Ferret backup exists in the selected Drive account. Create one only if this is the intended account and this device holds the unchanged initial wallet state.") },
+            confirmButton = {
+                TextButton({
+                    confirmReplacement = false
+                    onReplaceMissingBackup?.invoke()
+                }) { Text("Create backup") }
+            },
+            dismissButton = { TextButton({ confirmReplacement = false }) { Text("Cancel") } },
         )
     }
 }

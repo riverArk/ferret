@@ -370,6 +370,26 @@ class MainActivity : FragmentActivity() {
                             snapshot.fill(0)
                         }
                     },
+                    replaceMissingBackup = { walletId ->
+                        val snapshot = channelJournal.backupSnapshot(walletId)
+                        try {
+                            val checkpoint = backupCoordinator.replaceMissing(walletId, snapshot)
+                            claimWriter(walletId, checkpoint)
+                            try {
+                                checkpoint.sequence
+                            } finally {
+                                checkpoint.ciphertextHash.fill(0)
+                                checkpoint.channelSnapshot.fill(0)
+                            }
+                        } catch (error: CancellationException) {
+                            throw error
+                        } catch (error: Exception) {
+                            diagnostics.record(DiagnosticCode.BACKUP)
+                            throw error
+                        } finally {
+                            snapshot.fill(0)
+                        }
+                    },
                     takeoverBackup = { walletId ->
                         val checkpoint = backupCoordinator.takeover(walletId)
                         try {

@@ -33,6 +33,7 @@ import androidx.navigation.toRoute
 import ferret.shared.generated.resources.Res
 import ferret.shared.generated.resources.splash_ferret
 import io.riverark.ferret.core.backup.StaleBackupWriterException
+import io.riverark.ferret.core.backup.MissingBackupException
 import io.riverark.ferret.core.channel.ChannelSnapshot
 import io.riverark.ferret.core.channel.ChannelPreview
 import io.riverark.ferret.core.channel.PaymentQuote
@@ -107,6 +108,7 @@ data class FerretDependencies(
     val loadSettings: (suspend (WalletProfile) -> WalletSettings)? = null,
     val connectDrive: (suspend () -> String)? = null,
     val verifyBackup: (suspend (WalletId) -> Long)? = null,
+    val replaceMissingBackup: (suspend (WalletId) -> Long)? = null,
     val restoreBackup: (suspend (WalletId) -> Long)? = null,
     val takeoverBackup: (suspend (WalletId) -> Long)? = null,
     val walletRemovalManager: WalletRemovalManager? = null,
@@ -158,6 +160,7 @@ fun FerretApp(
             dependencies.submitOpenChannel,
             dependencies.connectDrive,
             dependencies.verifyBackup,
+            dependencies.replaceMissingBackup,
             dependencies.restoreBackup,
             dependencies.takeoverBackup,
             dependencies.walletRemovalManager,
@@ -189,6 +192,7 @@ private fun WalletNavigation(
     submitOpenChannel: (suspend (WalletId, ChannelPreview) -> String)?,
     connectDrive: (suspend () -> String)?,
     verifyBackup: (suspend (WalletId) -> Long)?,
+    replaceMissingBackup: (suspend (WalletId) -> Long)?,
     restoreBackup: (suspend (WalletId) -> Long)?,
     takeoverBackup: (suspend (WalletId) -> Long)?,
     walletRemovalManager: WalletRemovalManager?,
@@ -597,6 +601,7 @@ private fun WalletNavigation(
                 var backupBusy by remember(profile.id) { mutableStateOf(false) }
                 var backupMessage by remember(profile.id) { mutableStateOf<String?>(null) }
                 var backupStale by remember(profile.id) { mutableStateOf(false) }
+                var backupMissing by remember(profile.id) { mutableStateOf(false) }
                 LaunchedEffect(profile) { settings = loadSettings(profile) }
                 settings?.let { current ->
                     SettingsScreen(
@@ -612,6 +617,7 @@ private fun WalletNavigation(
                                     backupBusy = true
                                     backupMessage = null
                                     backupStale = false
+                                    backupMissing = false
                                     try {
                                         connect()
                                         settings = loadSettings(profile)
@@ -634,16 +640,27 @@ private fun WalletNavigation(
                                     try {
                                         val sequence = verify(profile.id)
                                         backupStale = false
+                                        backupMissing = false
                                         settings = loadSettings(profile)
                                         backupMessage = "Encrypted backup verified (sequence $sequence)."
                                     } catch (error: CancellationException) {
                                         throw error
+                                    } catch (error: MissingBackupException) {
+                                        backupStale = false
+                                        backupMissing = error.replacementAllowed
+                                        backupMessage = if (error.replacementAllowed) {
+                                            "No encrypted backup exists in this Drive account. Choose the original account or create a replacement backup here."
+                                        } else {
+                                            "No encrypted backup exists in this Drive account. Choose the original account."
+                                        }
                                     } catch (error: StaleBackupWriterException) {
+                                        backupMissing = false
                                         backupStale = true
                                         backupMessage = "A newer backup exists (generation ${error.remoteGeneration}, sequence ${error.remoteSequence}). Take over to use this device."
                                     } catch (_: Exception) {
+                                        backupMissing = false
                                         backupStale = false
-                                        backupMessage = "Encrypted backup verification failed because the backup is missing, conflicting, or modified."
+                                        backupMessage = "Encrypted backup verification failed because the backup is conflicting or modified."
                                     } finally {
                                         backupBusy = false
                                     }
@@ -658,6 +675,7 @@ private fun WalletNavigation(
                                     try {
                                         val generation = takeover(profile.id)
                                         backupStale = false
+                                        backupMissing = false
                                         settings = loadSettings(profile)
                                         backupMessage = "Backup takeover complete (generation $generation)."
                                     } catch (error: CancellationException) {
@@ -674,6 +692,27 @@ private fun WalletNavigation(
                             { navController.navigate(Route.RemoveWallet(profile.id.value)) }
                         } else {
                             null
+                        },
+                        replaceMissingBackup?.takeIf { backupMissing }?.let { replace ->
+                            {
+                                settingsScope.launch {
+                                    backupBusy = true
+                                    backupMessage = null
+                                    try {
+                                        val sequence = replace(profile.id)
+                                        backupMissing = false
+                                        backupStale = false
+                                        settings = loadSettings(profile)
+                                        backupMessage = "Replacement encrypted backup created (sequence $sequence)."
+                                    } catch (error: CancellationException) {
+                                        throw error
+                                    } catch (_: Exception) {
+                                        backupMessage = "Replacement backup could not be created. Choose the original Drive account."
+                                    } finally {
+                                        backupBusy = false
+                                    }
+                                }
+                            }
                         },
                     )
                 } ?: FerretScreen {

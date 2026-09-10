@@ -24,6 +24,10 @@ class StaleBackupWriterException(
     val remoteSequence: Long,
 ) : IllegalStateException("a newer encrypted backup exists")
 
+class MissingBackupException(
+    val replacementAllowed: Boolean,
+) : IllegalStateException("encrypted backup is missing")
+
 class WalletBackupCoordinator(
     private val vault: SecureVault,
     private val backups: DriveBackupRepository,
@@ -74,43 +78,69 @@ class WalletBackupCoordinator(
         }
     }
 
+    suspend fun replaceMissing(
+        walletId: WalletId,
+        channelSnapshot: ByteArray,
+    ): BackupCheckpointV1 {
+        val local = requireNotNull(checkpoint(walletId))
+        try {
+            require(!local.pending && local.generation == 1L && local.sequence == 1L)
+            require(local.channelSnapshot.contentEquals(channelSnapshot)) { "local backup state changed" }
+            vault.withWalletSeed(walletId) { seed ->
+                require(backups.discover(walletId, seed).isEmpty()) { "encrypted backup is no longer missing" }
+            }
+            return write(walletId, 1, 1, ByteArray(32), channelSnapshot)
+        } finally {
+            local.ciphertextHash.fill(0)
+            local.channelSnapshot.fill(0)
+            local.previousHash.fill(0)
+            local.snapshotDigest.fill(0)
+        }
+    }
+
     suspend fun verify(walletId: WalletId): BackupCheckpointV1 {
         val local = requireNotNull(checkpoint(walletId))
         if (local.pending) return resumePending(walletId, local)
-        val remote = vault.withWalletSeed(walletId) { seed ->
-            val latest = backups.verifyChain(backups.discover(walletId, seed))
-            val plaintext = backups.decrypt(seed, latest)
-            try {
-                BackupCheckpointV1(
-                    generation = latest.generation,
-                    sequence = latest.sequence,
-                    ciphertextHash = crypto.sha256(latest.ciphertext),
-                    channelSnapshot = plaintext.copyOf(),
-                )
-            } finally {
-                plaintext.fill(0)
-            }
-        }
+        var remote: BackupCheckpointV1? = null
         var verified = false
         try {
-            if (
-                remote.generation > local.generation ||
-                remote.generation == local.generation && remote.sequence > local.sequence
-            ) {
-                throw StaleBackupWriterException(remote.generation, remote.sequence)
+            remote = vault.withWalletSeed(walletId) { seed ->
+                val discovered = backups.discover(walletId, seed)
+                if (discovered.isEmpty()) {
+                    throw MissingBackupException(local.generation == 1L && local.sequence == 1L)
+                }
+                val latest = backups.verifyChain(discovered)
+                val plaintext = backups.decrypt(seed, latest)
+                try {
+                    BackupCheckpointV1(
+                        generation = latest.generation,
+                        sequence = latest.sequence,
+                        ciphertextHash = crypto.sha256(latest.ciphertext),
+                        channelSnapshot = plaintext.copyOf(),
+                    )
+                } finally {
+                    plaintext.fill(0)
+                }
             }
-            require(remote.generation == local.generation && remote.sequence == local.sequence)
-            require(remote.ciphertextHash.contentEquals(local.ciphertextHash) && remote.channelSnapshot.contentEquals(local.channelSnapshot))
+            val stored = checkNotNull(remote)
+            if (
+                stored.generation > local.generation ||
+                stored.generation == local.generation && stored.sequence > local.sequence
+            ) {
+                throw StaleBackupWriterException(stored.generation, stored.sequence)
+            }
+            require(stored.generation == local.generation && stored.sequence == local.sequence)
+            require(stored.ciphertextHash.contentEquals(local.ciphertextHash) && stored.channelSnapshot.contentEquals(local.channelSnapshot))
             verified = true
-            return remote
+            return stored
         } finally {
             local.ciphertextHash.fill(0)
             local.channelSnapshot.fill(0)
             local.previousHash.fill(0)
             local.snapshotDigest.fill(0)
             if (!verified) {
-                remote.ciphertextHash.fill(0)
-                remote.channelSnapshot.fill(0)
+                remote?.ciphertextHash?.fill(0)
+                remote?.channelSnapshot?.fill(0)
             }
         }
     }

@@ -3,7 +3,7 @@
 ## Snapshot
 
 - Date: 2026-09-09
-- Current focus: deployment-gated Android Mainnet Open-channel lifecycle and remaining funded/device acceptance.
+- Current focus: re-establishing the encrypted Drive writer on a real Pixel before funded Mainnet Open-channel acceptance.
 - The live repository is a Kotlin Multiplatform project. This file describes current code only.
 
 ## Product and platforms
@@ -77,6 +77,12 @@ Primary commands:
 Android installation and manual onboarding verification require an API 36 emulator or device. Networked scenarios use low-value Mainnet wallets against the controlled `crustypants.com` services only. Release checks require `FERRET_GOOGLE_SERVER_CLIENT_ID`.
 
 ## Session log
+
+### 2026-09-09 — Missing Drive backup recovery
+
+- Pixel acceptance confirmed the `da3a472` Home sheet and Google account connection, then found a local generation-1/sequence-1 checkpoint whose encrypted object is absent from the selected Drive account; Open preview correctly remained blocked.
+- Backup verification now distinguishes authoritative absence from conflicts, exposes account switching, and permits an explicitly confirmed replacement only when the unchanged local generation-1 snapshot matches and Drive remains empty. Conflicting, advanced, pending, or changed state still fails closed.
+- The focused Android backup regression, `androidCheck`, the shared iOS compile gate, and the API 36 replacement-warning surface passed. Creating the replacement on the Pixel and retrying the funded preview remain outstanding.
 
 ### 2026-09-09 — Gated Android Open-channel lifecycle
 
