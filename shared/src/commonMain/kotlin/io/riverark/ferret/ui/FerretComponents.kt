@@ -112,8 +112,13 @@ fun FerretCard(modifier: Modifier = Modifier, onClick: (() -> Unit)? = null, con
     val colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
     val elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     val border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
-    if (onClick == null) Card(modifier, cardShape, colors, elevation, border) { Column(Modifier.padding(FerretSpacing.md), content = content) }
-    else Card(onClick, modifier, true, cardShape, colors, elevation, border) { Column(Modifier.padding(FerretSpacing.md), content = content) }
+    if (onClick == null) Card(modifier, cardShape, colors, elevation, border) {
+        Column(Modifier.padding(FerretSpacing.md), verticalArrangement = Arrangement.spacedBy(FerretSpacing.sm), content = content)
+    } else {
+        Card(onClick, modifier, true, cardShape, colors, elevation, border) {
+            Column(Modifier.padding(FerretSpacing.md), verticalArrangement = Arrangement.spacedBy(FerretSpacing.sm), content = content)
+        }
+    }
 }
 
 @Composable

@@ -564,7 +564,6 @@ fun OpenChannelScreen(
                     FerretCard(Modifier.fillMaxWidth()) {
                         FerretDataBlock("Deposit", formatAda(preview.amount))
                         FerretDataBlock("Transaction fee", formatAda(preview.actualFee))
-                        FerretDataBlock("Maximum fee", formatAda(preview.feeBound))
                         FerretDataBlock("Wallet change", formatAda(preview.sourceChange))
                         FerretDataBlock("Ledger minimum ADA", formatAda(preview.ledgerMinAda))
                         FerretDataBlock("Protocol reserve", formatAda(preview.protocolReserve))
