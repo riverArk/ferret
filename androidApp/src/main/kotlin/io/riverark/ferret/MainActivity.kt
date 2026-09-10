@@ -354,7 +354,6 @@ class MainActivity : FragmentActivity() {
                         val snapshot = channelJournal.backupSnapshot(walletId)
                         try {
                             val checkpoint = backupCoordinator.initializeOrVerify(walletId, snapshot)
-                            claimWriter(walletId, checkpoint)
                             try {
                                 checkpoint.sequence
                             } finally {
@@ -374,7 +373,6 @@ class MainActivity : FragmentActivity() {
                         val snapshot = channelJournal.backupSnapshot(walletId)
                         try {
                             val checkpoint = backupCoordinator.replaceMissing(walletId, snapshot)
-                            claimWriter(walletId, checkpoint)
                             try {
                                 checkpoint.sequence
                             } finally {
