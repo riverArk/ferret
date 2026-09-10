@@ -667,7 +667,7 @@ private fun WalletNavigation(
                                 }
                             }
                         },
-                        takeoverBackup?.takeIf { backupStale }?.let { takeover ->
+                        takeoverBackup?.takeIf { current.driveAccount != null && current.driveGeneration != null }?.let { takeover ->
                             {
                                 settingsScope.launch {
                                     backupBusy = true

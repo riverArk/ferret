@@ -89,12 +89,12 @@ fun SettingsScreen(
             settings.driveGeneration?.let { generation -> item { FerretListRow("Backup generation", generation.toString()) } }
             settings.driveSequence?.let { sequence -> item { FerretListRow("Last verified backup sequence", sequence.toString()) } }
             item { FerretSecondaryButton("Verify encrypted backup", { onVerifyBackup?.invoke() }, enabled = !backupBusy && onVerifyBackup != null) }
-            if (backupStale) {
+            onTakeoverBackup?.let {
                 item {
                     FerretDangerButton(
-                        "Take over backup",
+                        if (backupStale) "Take over backup" else "Make this device active",
                         { confirmTakeover = true },
-                        enabled = !backupBusy && onTakeoverBackup != null,
+                        enabled = !backupBusy,
                     )
                 }
             }
@@ -120,7 +120,7 @@ fun SettingsScreen(
     if (confirmTakeover) {
         AlertDialog(
             onDismissRequest = { confirmTakeover = false },
-            title = { Text("Take over this backup?") },
+            title = { Text(if (backupStale) "Take over this backup?" else "Make this device active?") },
             text = { Text("Ferret will restore the newest encrypted channel state and start a new backup generation. Other devices must verify again before writing.") },
             confirmButton = {
                 TextButton({
