@@ -118,15 +118,19 @@ class AndroidCardanoTransactionEngine(
             is CardanoIntent.SweepWallet -> builder.compose(
                 Tx().payToAddress(intent.destinationAddress, intent.amount.amount()).from(intent.sourceAddress),
             ).validFrom(intent.validFrom).validTo(intent.validUntil).build()
-            is CardanoIntent.OpenChannel -> builder.compose(
-                Tx().payToContract(intent.validatorAddress, intent.amount.amount(), intent.datum.plutus())
-                    .from(intent.sourceAddress),
-            ).preBalanceTx { _, tx ->
-                tx.body.referenceInputs = mutableListOf(
-                    TransactionInput.builder().transactionId(intent.referenceInput.transactionId).index(intent.referenceInput.index).build(),
-                )
-            }.withReferenceScripts(requireNotNull(referenceScript)).additionalSignersCount(1)
-                .validFrom(intent.validFrom).validTo(intent.validUntil).build()
+            is CardanoIntent.OpenChannel -> try {
+                builder.compose(
+                    Tx().payToContract(intent.validatorAddress, intent.amount.amount(), intent.datum.plutus())
+                        .from(intent.sourceAddress),
+                ).preBalanceTx { _, tx ->
+                    tx.body.referenceInputs = mutableListOf(
+                        TransactionInput.builder().transactionId(intent.referenceInput.transactionId).index(intent.referenceInput.index).build(),
+                    )
+                }.withReferenceScripts(requireNotNull(referenceScript)).additionalSignersCount(1)
+                    .validFrom(intent.validFrom).validTo(intent.validUntil).build()
+            } catch (_: com.bloxbean.cardano.client.api.exception.InsufficientBalanceException) {
+                throw InsufficientFundsException()
+            }
             is CardanoIntent.AddChannelFunds -> builder.compose(
                 ScriptTx()
                     .readFrom(toBloxbean(intent.referenceInput))

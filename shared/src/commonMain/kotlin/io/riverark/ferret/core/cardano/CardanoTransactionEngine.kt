@@ -4,6 +4,8 @@ import io.riverark.ferret.core.model.CardanoNetwork
 import io.riverark.ferret.core.model.Lovelace
 import kotlinx.serialization.Serializable
 
+class InsufficientFundsException : IllegalArgumentException("insufficient confirmed ADA")
+
 @Serializable data class DerivedWallet(val paymentAddress: String, val stakeAddress: String, val paymentCredentialHex: String)
 @Serializable
 data class LedgerUtxo(

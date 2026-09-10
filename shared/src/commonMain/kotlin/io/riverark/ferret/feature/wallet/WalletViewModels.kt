@@ -6,6 +6,7 @@ import io.riverark.ferret.core.channel.ChannelSnapshot
 import io.riverark.ferret.core.channel.ChannelPreview
 import io.riverark.ferret.core.cardano.CardanoIntent
 import io.riverark.ferret.core.cardano.UnsignedTransaction
+import io.riverark.ferret.core.cardano.InsufficientFundsException
 import io.riverark.ferret.core.model.CardanoNetwork
 import io.riverark.ferret.core.model.CreatedWallet
 import io.riverark.ferret.core.model.Lovelace
@@ -286,6 +287,10 @@ class OpenChannelViewModel(
             } catch (cancelled: CancellationException) {
                 mutableState.value = OpenChannelUiState()
                 throw cancelled
+            } catch (_: InsufficientFundsException) {
+                mutableState.value = OpenChannelUiState(
+                    error = "Insufficient confirmed ADA for the channel deposit and transaction fee.",
+                )
             } catch (_: Exception) {
                 mutableState.value = OpenChannelUiState(
                     error = "Unable to preview channel. Check the amount, connection, and backup.",

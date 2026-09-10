@@ -9,6 +9,7 @@ import com.bloxbean.cardano.client.common.model.Networks
 import com.bloxbean.cardano.client.crypto.bip39.MnemonicCode
 import com.bloxbean.cardano.client.util.HexUtil
 import io.riverark.ferret.core.cardano.AndroidCardanoTransactionEngine
+import io.riverark.ferret.core.cardano.InsufficientFundsException
 import io.riverark.ferret.core.cardano.LedgerSnapshot
 import io.riverark.ferret.core.cardano.LedgerUtxo
 import io.riverark.ferret.core.cardano.TransactionDatum
@@ -277,6 +278,25 @@ class OpenChannelTransactionsTest {
         transactions = transactions,
     )
 
+    @Test fun previewReportsInsufficientConfirmedAda() = runBlocking {
+        val vault = TestVault(profile, entropy, mutableListOf())
+        val lowLedger = ledger.copy(
+            utxos = listOf(
+                LedgerUtxo("00".repeat(32), 0, profile.paymentAddress, Lovelace(3_000_000)),
+                reference,
+            ),
+        )
+
+        assertFailsWith<InsufficientFundsException> {
+            transactions(vault, lowLedger).preview(
+                profile.id,
+                Lovelace(5_000_000),
+                "00000000-0000-4000-8000-000000000018",
+            )
+        }
+        Unit
+    }
+
     @Test fun staleOrTamperedPreviewFailsBeforeTransactionSigning() = runBlocking {
         val trace = mutableListOf<String>()
         val vault = TestVault(profile, entropy, trace)
@@ -303,10 +323,10 @@ class OpenChannelTransactionsTest {
         assertEquals(requestsBefore, vault.seedRequests)
     }
 
-    private fun transactions(vault: TestVault) = OpenChannelTransactions(
+    private fun transactions(vault: TestVault, currentLedger: LedgerSnapshot = ledger) = OpenChannelTransactions(
         vault,
         engine,
-        loadLedger = { ledger },
+        loadLedger = { currentLedger },
         loadInfo = { info },
         verificationKey = {
             val account = Account.createFromMnemonic(
