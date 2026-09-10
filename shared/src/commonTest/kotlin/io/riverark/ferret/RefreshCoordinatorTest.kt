@@ -157,7 +157,7 @@ class RefreshCoordinatorTest {
     @Test
     fun sessionClaimResponseMatchesAdaptorWireSchema() {
         val response = Json.decodeFromString<SessionClaimResponse>(
-            """{"lease":"${"a".repeat(64)}","expires_at_epoch_millis":42}""",
+            """{"lease":"${"a".repeat(64)}","expiresAtEpochMillis":42}""",
         )
 
         assertTrue(response.expiresAtEpochMillis == 42L)
