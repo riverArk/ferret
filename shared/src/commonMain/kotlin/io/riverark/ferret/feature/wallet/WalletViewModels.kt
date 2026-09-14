@@ -108,6 +108,7 @@ interface L1WalletRepository {
 data class HomeUiState(
     val profile: WalletProfile,
     val balance: Lovelace? = null,
+    val channelBalance: Lovelace? = null,
     val latestActivity: TransactionRecord? = null,
     val loading: Boolean = true,
     val error: String? = null,
@@ -158,6 +159,7 @@ class HomeViewModel(
             mutableState.value = mutableState.value.copy(
                 profile = profile.copy(channelState = channel.state),
                 balance = balance,
+                channelBalance = channel.spendableBalance,
                 latestActivity = history.firstOrNull(),
                 loading = false,
                 lastRefreshEpochMillis = nowEpochMillis().takeIf { it > 0 },

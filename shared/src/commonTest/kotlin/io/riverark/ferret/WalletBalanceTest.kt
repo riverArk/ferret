@@ -89,15 +89,23 @@ class WalletBalanceTest {
             "stake_test1primary",
         )
         var balance = Lovelace(1_000_000)
+        val channelBalance = Lovelace(3_000_000)
         var history = listOf(
             record("1".repeat(64), 100),
             record("2".repeat(64), 200),
         )
         var now = 300L
-        val viewModel = HomeViewModel(profile, { balance }, { history }, nowEpochMillis = { now })
+        val viewModel = HomeViewModel(
+            profile,
+            { balance },
+            { history },
+            loadChannel = { ChannelSnapshot(ChannelState.Open("channel"), spendableBalance = channelBalance) },
+            nowEpochMillis = { now },
+        )
 
         viewModel.refreshNow()
         assertEquals(balance, viewModel.state.value.balance)
+        assertEquals(channelBalance, viewModel.state.value.channelBalance)
         assertEquals(history[1], viewModel.state.value.latestActivity)
         assertEquals(now, viewModel.state.value.lastRefreshEpochMillis)
 
@@ -106,6 +114,7 @@ class WalletBalanceTest {
         now = 500
         viewModel.refreshNow()
         assertEquals(balance, viewModel.state.value.balance)
+        assertEquals(channelBalance, viewModel.state.value.channelBalance)
         assertEquals(history.single(), viewModel.state.value.latestActivity)
         assertEquals(now, viewModel.state.value.lastRefreshEpochMillis)
     }

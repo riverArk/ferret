@@ -314,7 +314,10 @@ fun HomeScreen(
                 FerretStatusChip(state.profile.network.name)
                 FerretCard(Modifier.fillMaxWidth()) {
                     when {
-                        state.balance != null -> FerretDataBlock("L1 available balance", formatAda(state.balance))
+                        state.balance != null -> {
+                            FerretDataBlock("L1 available balance", formatAda(state.balance))
+                            state.channelBalance?.let { FerretDataBlock("L2 spendable balance", formatAda(it)) }
+                        }
                         state.error != null -> FerretErrorState(state.error)
                         else -> Text("Loading balance")
                     }
