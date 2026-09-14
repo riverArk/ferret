@@ -463,6 +463,7 @@ fun TransferScreen(
     destinations: List<TransferDestination>,
     state: TransferUiState,
     onPreview: (TransferDestination, Lovelace) -> Unit,
+    onPreviewSweep: (String) -> Unit,
     onSubmit: () -> Unit,
     onBack: () -> Unit,
 ) {
@@ -474,57 +475,96 @@ fun TransferScreen(
         savedDestination ?: TransferDestination("External address", it)
     }
     val lovelace = parseAdaAmount(amount)
-    val editable = state.preview == null && !state.busy
+    val editable = state.preview == null && state.sweepPreview == null && !state.busy
     FerretScreen {
-        FerretTopBar("Transfer ADA", navigation = { io.riverark.ferret.ui.FerretTextButton("Back", onBack) })
-        FerretStatusChip(profile.network.name)
-        Text("Send to any ${profile.network.name.lowercase()} address", style = MaterialTheme.typography.titleMedium)
-        OutlinedTextField(
-            recipientAddress,
-            { recipientAddress = it },
-            Modifier.fillMaxWidth(),
-            label = { Text("Recipient address") },
-            singleLine = true,
-            enabled = editable,
-        )
-        destinations.forEach { wallet ->
-            FerretListRow(
-                wallet.name,
-                wallet.address,
-                onClick = { if (editable) recipientAddress = wallet.address },
-                trailing = { if (savedDestination == wallet) Text("Selected") },
-            )
-        }
-        OutlinedTextField(
-            amount,
-            { amount = it },
-            Modifier.fillMaxWidth(),
-            label = { Text("ADA amount") },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-            singleLine = true,
-            enabled = editable,
-        )
-        state.preview?.let { preview ->
-            FerretCard(Modifier.fillMaxWidth()) {
-                FerretDataBlock("Recipient", preview.destination.name)
-                FerretDataBlock("Address", preview.destination.address)
-                FerretDataBlock("Amount", formatAda(preview.amount))
-                FerretDataBlock("Fee", formatAda(preview.feeBound))
-                FerretDataBlock("Change", formatAda(preview.change))
-                FerretDataBlock("Network", profile.network.name)
+        LazyColumn(
+            Modifier.weight(1f).fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(FerretSpacing.sm),
+        ) {
+            item {
+                FerretTopBar("Transfer ADA", navigation = {
+                    io.riverark.ferret.ui.FerretTextButton("Back", onBack)
+                })
             }
-        }
-        state.operationId?.let { FerretDataBlock("Operation submitted", it) }
-        state.error?.let { FerretErrorState(it) }
-        Box(Modifier.weight(1f))
-        if (state.preview == null) {
-            FerretPrimaryButton(
-                "Preview transfer",
-                { onPreview(checkNotNull(destination), checkNotNull(lovelace)) },
-                enabled = destination != null && lovelace != null && !state.busy,
-            )
-        } else {
-            FerretPrimaryButton("Confirm transfer", onSubmit, enabled = !state.busy && state.operationId == null)
+            item { FerretStatusChip(profile.network.name) }
+            item {
+                Text("Send to any ${profile.network.name.lowercase()} address", style = MaterialTheme.typography.titleMedium)
+            }
+            item {
+                OutlinedTextField(
+                    recipientAddress,
+                    { recipientAddress = it },
+                    Modifier.fillMaxWidth(),
+                    label = { Text("Recipient address") },
+                    singleLine = true,
+                    enabled = editable,
+                )
+            }
+            items(destinations, key = TransferDestination::address) { wallet ->
+                FerretListRow(
+                    wallet.name,
+                    wallet.address,
+                    onClick = { if (editable) recipientAddress = wallet.address },
+                    trailing = { if (savedDestination == wallet) Text("Selected") },
+                )
+            }
+            item {
+                OutlinedTextField(
+                    amount,
+                    { amount = it },
+                    Modifier.fillMaxWidth(),
+                    label = { Text("ADA amount") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    singleLine = true,
+                    enabled = editable,
+                )
+            }
+            state.preview?.let { preview ->
+                item {
+                    FerretCard(Modifier.fillMaxWidth()) {
+                        FerretDataBlock("Recipient", preview.destination.name)
+                        FerretDataBlock("Address", preview.destination.address)
+                        FerretDataBlock("Amount", formatAda(preview.amount))
+                        FerretDataBlock("Fee", formatAda(preview.feeBound))
+                        FerretDataBlock("Change", formatAda(preview.change))
+                        FerretDataBlock("Network", profile.network.name)
+                    }
+                }
+            }
+            state.sweepPreview?.let { preview ->
+                item {
+                    FerretCard(Modifier.fillMaxWidth()) {
+                        FerretDataBlock("Recipient", savedDestination?.name ?: "External address")
+                        FerretDataBlock("Address", preview.destinationAddress)
+                        FerretDataBlock("Amount", formatAda(preview.amount))
+                        FerretDataBlock("Fee", formatAda(preview.fee))
+                        FerretDataBlock("Change", formatAda(Lovelace(0)))
+                        FerretDataBlock("Network", profile.network.name)
+                    }
+                }
+            }
+            state.operationId?.let { operationId -> item { FerretDataBlock("Operation submitted", operationId) } }
+            state.error?.let { error -> item { FerretErrorState(error) } }
+            if (state.preview == null && state.sweepPreview == null) {
+                item {
+                    FerretPrimaryButton(
+                        "Preview transfer",
+                        { onPreview(checkNotNull(destination), checkNotNull(lovelace)) },
+                        enabled = destination != null && lovelace != null && !state.busy,
+                    )
+                }
+                item {
+                    FerretSecondaryButton(
+                        "Preview send all",
+                        { onPreviewSweep(trimmedAddress) },
+                        enabled = destination != null && !state.busy,
+                    )
+                }
+            } else {
+                item {
+                    FerretPrimaryButton("Confirm transfer", onSubmit, enabled = !state.busy && state.operationId == null)
+                }
+            }
         }
     }
 }

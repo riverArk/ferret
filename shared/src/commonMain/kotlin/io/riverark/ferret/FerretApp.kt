@@ -454,6 +454,7 @@ private fun WalletNavigation(
                         transferViewModel.destinations(ready.wallets),
                         transferState,
                         transferViewModel::previewAsync,
+                        transferViewModel::previewSweepAsync,
                         transferViewModel::submitAsync,
                         navController::popBackStack,
                     )

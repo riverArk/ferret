@@ -93,6 +93,7 @@ data class TransferPreview(
 data class TransferUiState(
     val preview: TransferPreview? = null,
     val busy: Boolean = false,
+    val sweepPreview: io.riverark.ferret.core.cardano.SweepPreview? = null,
     val error: String? = null,
     val operationId: String? = null,
 )
@@ -242,12 +243,28 @@ class TransferViewModel(private val walletId: WalletId, private val network: Car
         }
     }
 
+    fun previewSweepAsync(destinationAddress: String) {
+        viewModelScope.launch {
+            mutableState.value = TransferUiState(busy = true)
+            try {
+                mutableState.value = TransferUiState(sweepPreview = l1.previewSweep(walletId, destinationAddress))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                mutableState.value = TransferUiState(error = "Unable to preview transfer. Check the address and connection.")
+            }
+        }
+    }
+
     fun submitAsync() {
-        val preview = mutableState.value.preview ?: return
+        val preview = mutableState.value.preview
+        val sweepPreview = mutableState.value.sweepPreview
+        if (preview == null && sweepPreview == null) return
         viewModelScope.launch {
             mutableState.value = mutableState.value.copy(busy = true, error = null)
             try {
-                mutableState.value = TransferUiState(operationId = submit(preview))
+                val operationId = if (preview != null) submit(preview) else l1.submitSweep(walletId, checkNotNull(sweepPreview))
+                mutableState.value = TransferUiState(operationId = operationId)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
