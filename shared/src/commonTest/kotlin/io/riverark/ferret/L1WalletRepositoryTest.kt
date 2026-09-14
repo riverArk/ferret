@@ -281,7 +281,7 @@ class L1WalletRepositoryTest {
 
         assertEquals(Lovelace(1_331_331), preview.amount)
         assertEquals(Lovelace(168_669), preview.fee)
-        assertEquals(2, engine.builds)
+        assertEquals(1, engine.builds)
     }
 
     @Test fun validSweepSubmitsOnceAndReconciles() = runBlocking {
@@ -899,6 +899,13 @@ class L1WalletRepositoryTest {
             selectedInput = ledger.utxos.first()
             return UnsignedTransaction(byteArrayOf(0), intent.operationId, Lovelace(fee))
         }
+        override suspend fun buildSweep(
+            intent: CardanoIntent.SweepWallet,
+            ledger: LedgerSnapshot,
+        ): UnsignedTransaction = build(
+            intent.copy(amount = Lovelace(ledger.utxos.sumOf { it.lovelace.value } - fee)),
+            ledger,
+        )
         override fun requireMinimumAda(cbor: ByteArray, protocolParametersJson: String) {
             require(!(rejectSignedMinimum && cbor.size > 1))
             val minimum = protocolParametersJson.toLongOrNull() ?: minimumOutputLovelace

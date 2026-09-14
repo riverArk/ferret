@@ -26,23 +26,29 @@ class WalletManagerTest {
         val vault = FakeVault()
         val repository = WalletRepository()
         val derivedSeeds = mutableListOf<ByteArray>()
-        val manager = WalletManager(
+        val random = object : SecureRandomSource {
+            override fun bytes(size: Int) = ByteArray(size) { 1 }
+        }
+        val derive: suspend (ByteArray, CardanoNetwork) -> DerivedWallet = { entropy, network ->
+            derivedSeeds += entropy
+            val credential = entropy.first().toUByte().toString(16).padStart(2, '0').repeat(28)
+            DerivedWallet(
+                if (network == CardanoNetwork.MAINNET) "addr1$credential" else "addr_test1$credential",
+                "stake1$credential",
+                credential,
+            )
+        }
+        var persistedWalletId: WalletId? = null
+        fun managerFor(target: WalletRepository) = WalletManager(
             vault,
-            object : SecureRandomSource {
-                override fun bytes(size: Int) = ByteArray(size) { 1 }
-            },
+            random,
             FakePhrases,
-            { entropy, network ->
-                derivedSeeds += entropy
-                val credential = entropy.first().toUByte().toString(16).padStart(2, '0').repeat(28)
-                DerivedWallet(
-                    if (network == CardanoNetwork.MAINNET) "addr1$credential" else "addr_test1$credential",
-                    "stake1$credential",
-                    credential,
-                )
-            },
-            repository,
+            derive,
+            target,
+            { persistedWalletId },
+            { persistedWalletId = it },
         )
+        val manager = managerFor(repository)
 
         val created = manager.create("Alice", CardanoNetwork.PREPROD)
         assertFalse(created.profile.recoveryPhraseConfirmed)
@@ -68,6 +74,11 @@ class WalletManagerTest {
             manager.restore("Cross-network duplicate", CardanoNetwork.MAINNET, restorePhrase)
         }
         assertTrue(derivedSeeds.drop(1).all { seed -> seed.all { it == 0.toByte() } })
+
+        manager.load(created.profile.id)
+        val restartedRepository = WalletRepository()
+        managerFor(restartedRepository).load()
+        assertEquals(created.profile.id, assertIs<AppState.Ready>(restartedRepository.state.value).activeWalletId)
     }
 }
 

@@ -209,6 +209,8 @@ sealed interface CardanoIntent {
 interface CardanoTransactionEngine {
     suspend fun deriveWallet(entropy: ByteArray, network: CardanoNetwork): DerivedWallet
     suspend fun build(intent: CardanoIntent, ledger: LedgerSnapshot): UnsignedTransaction
+    suspend fun buildSweep(intent: CardanoIntent.SweepWallet, ledger: LedgerSnapshot): UnsignedTransaction =
+        build(intent, ledger)
     fun requireMinimumAda(cbor: ByteArray, protocolParametersJson: String)
     fun minimumAdaForOutput(cbor: ByteArray, protocolParametersJson: String, outputIndex: Int): Lovelace
     fun decodeChannelDatum(cborHex: String): ChannelDatum

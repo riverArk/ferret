@@ -204,37 +204,32 @@ class DefaultL1WalletRepository(
                 .filter { it.isSpendableBy(profile.paymentAddress) }
                 .fold(Lovelace(0)) { sum, utxo -> sum + utxo.lovelace }
             require(total.value > INITIAL_SWEEP_FEE)
-            val operationId = newOperationId()
-            var amount = Lovelace(total.value - INITIAL_SWEEP_FEE)
-            repeat(MAX_SWEEP_PASSES) {
-                val intent = CardanoIntent.SweepWallet(
-                    profile.paymentAddress,
-                    destinationAddress,
-                    amount,
-                    operationId,
-                    ledger.currentSlot,
-                    ledger.currentSlot + TRANSFER_VALIDITY_SLOTS,
-                )
-                val unsigned = engine.build(intent, ledger)
-                val summary = engine.inspect(unsigned.cbor)
-                summary.requireMatches(intent, profile.network, unsigned.feeBound)
-                summary.requireL1Witnesses(profile.id.value.substringAfter('-'), signed = false)
-                summary.requireL1Funding(intent, ledger)
-                val nextAmount = total - summary.fee
-                if (nextAmount == amount && summary.outputs.singleOrNull()?.address == destinationAddress) {
-                    engine.requireMinimumAda(unsigned.cbor, ledger.protocolParametersJson)
-                    return@withWalletLock SweepPreview(
-                        destinationAddress,
-                        amount,
-                        summary.fee,
-                        intent,
-                        unsigned,
-                        engine.transactionId(unsigned.cbor),
-                    )
-                }
-                amount = nextAmount
-            }
-            error("sweep fee did not converge")
+            val provisional = CardanoIntent.SweepWallet(
+                profile.paymentAddress,
+                destinationAddress,
+                Lovelace(total.value - INITIAL_SWEEP_FEE),
+                newOperationId(),
+                ledger.currentSlot,
+                ledger.currentSlot + TRANSFER_VALIDITY_SLOTS,
+            )
+            val unsigned = engine.buildSweep(provisional, ledger)
+            val summary = engine.inspect(unsigned.cbor)
+            val amount = summary.outputs.singleOrNull()?.takeIf { it.address == destinationAddress }?.lovelace
+                ?: error("sweep must have one destination output")
+            val intent = provisional.copy(amount = amount)
+            summary.requireMatches(intent, profile.network, unsigned.feeBound)
+            summary.requireL1Witnesses(profile.id.value.substringAfter('-'), signed = false)
+            summary.requireL1Funding(intent, ledger)
+            require(amount + summary.fee == total)
+            engine.requireMinimumAda(unsigned.cbor, ledger.protocolParametersJson)
+            SweepPreview(
+                destinationAddress,
+                amount,
+                summary.fee,
+                intent,
+                unsigned,
+                engine.transactionId(unsigned.cbor),
+            )
         }
 
     override suspend fun submitSweep(walletId: WalletId, preview: SweepPreview): String =
@@ -382,7 +377,6 @@ class DefaultL1WalletRepository(
 
     private companion object {
         const val INITIAL_SWEEP_FEE = 500_000L
-        const val MAX_SWEEP_PASSES = 4
         const val TRANSFER_VALIDITY_SLOTS = 3_600L
         val UNRESOLVED_STATES = setOf(
             L1OperationState.PREPARED,

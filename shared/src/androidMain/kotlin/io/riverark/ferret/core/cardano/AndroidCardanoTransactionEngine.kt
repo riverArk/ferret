@@ -43,7 +43,10 @@ import com.bloxbean.cardano.client.quicktx.Tx
 import com.bloxbean.cardano.client.plutus.util.ScriptDataHashGenerator
 import com.bloxbean.cardano.client.spec.Era
 import com.bloxbean.cardano.client.transaction.spec.Transaction
+import com.bloxbean.cardano.client.transaction.spec.TransactionBody
+import com.bloxbean.cardano.client.transaction.spec.TransactionInput
 import com.bloxbean.cardano.client.transaction.spec.TransactionOutput
+import com.bloxbean.cardano.client.transaction.spec.Value
 import com.bloxbean.cardano.client.transaction.util.TransactionUtil
 import com.bloxbean.cardano.client.util.HexUtil
 import com.bloxbean.cardano.client.transaction.spec.TransactionWitnessSet
@@ -68,6 +71,64 @@ class AndroidCardanoTransactionEngine(
 
     override suspend fun deriveWallet(entropy: ByteArray, network: CardanoNetwork) =
         deriveAndroidWallet(entropy, network)
+    override suspend fun buildSweep(
+        intent: CardanoIntent.SweepWallet,
+        ledger: LedgerSnapshot,
+    ): UnsignedTransaction {
+        require(ledger.network.addressMatches(intent.sourceAddress))
+        require(ledger.network.addressMatches(intent.destinationAddress))
+        require(intent.destinationAddress != intent.sourceAddress)
+        require(intent.validFrom >= ledger.currentSlot && intent.validUntil > intent.validFrom)
+        val (params, coinsPerUtxoByte) = parseProtocolParameters(ledger.protocolParametersJson)
+        val owned = ledger.utxos.filter { it.isSpendableBy(intent.sourceAddress) }
+        require(owned.isNotEmpty() && owned.none { it.assets.isNotEmpty() })
+        val total = owned.fold(0L) { sum, utxo -> Math.addExact(sum, utxo.lovelace.value) }
+        val output = TransactionOutput(
+            intent.destinationAddress,
+            Value.builder().coin(BigInteger.valueOf(total)).build(),
+        )
+        val body = TransactionBody.builder()
+            .inputs(owned.map { TransactionInput(it.transactionId, it.index) })
+            .outputs(mutableListOf(output))
+            .fee(BigInteger.ZERO)
+            .validityStartInterval(intent.validFrom)
+            .ttl(intent.validUntil)
+            .build()
+        val transaction = Transaction.builder().body(body).witnessSet(TransactionWitnessSet()).build()
+        val calculator = FeeCalculationServiceImpl(
+            SnapshotUtxoSupplier(owned.map(::toBloxbean)),
+            ProtocolParamsSupplier { params },
+        )
+        var fee = BigInteger.ZERO
+        var pass = 0
+        while (true) {
+            body.fee = fee
+            output.value.coin = BigInteger.valueOf(total).subtract(fee)
+            transaction.witnessSet = TransactionWitnessSet().also {
+                it.vkeyWitnesses = mutableListOf(
+                    VkeyWitness.builder().vkey(ByteArray(32)).signature(ByteArray(64)).build(),
+                )
+            }
+            val required = calculator.calculateFee(transaction.serialize(), params)
+            transaction.witnessSet = TransactionWitnessSet()
+            if (required == fee) break
+            fee = required
+            require(++pass < 4) { "sweep fee did not converge" }
+        }
+        output.value.coin = BigInteger.valueOf(total).subtract(fee)
+        require(output.value.coin.signum() > 0)
+        transaction.witnessSet = TransactionWitnessSet()
+        val cbor = transaction.serialize()
+        requireMinimumAda(cbor, coinsPerUtxoByte)
+        val amount = Lovelace(output.value.coin.longValueExact())
+        val exactIntent = intent.copy(amount = amount)
+        val summary = inspect(cbor)
+        summary.requireMatches(exactIntent, ledger.network, Lovelace(fee.longValueExact()))
+        summary.requireL1Funding(exactIntent, ledger)
+        requireTransactionAuthorization(cbor, exactIntent, ledger, summary.fee, signed = false)
+        return UnsignedTransaction(cbor, intent.operationId, summary.fee)
+    }
+
 
     override suspend fun build(intent: CardanoIntent, ledger: LedgerSnapshot): UnsignedTransaction {
         require(ledger.network.addressMatches(intent.sourceAddress))

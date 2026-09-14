@@ -1238,6 +1238,57 @@ class AndroidCardanoTransactionEngineTest {
         }
     }
 
+    @Test fun lowBalanceSweepConvergesToOneOutput() = runBlocking {
+        val engine = AndroidCardanoTransactionEngine(processor)
+        val sourceEntropy = ByteArray(32) { it.toByte() }
+        val destinationEntropy = ByteArray(32) { (it + 1).toByte() }
+        try {
+            val sourceWallet = engine.deriveWallet(sourceEntropy, CardanoNetwork.MAINNET)
+            val destinationWallet = engine.deriveWallet(destinationEntropy, CardanoNetwork.MAINNET)
+            val source = WalletProfile(
+                WalletId("mainnet-${sourceWallet.paymentCredentialHex}"),
+                "Source",
+                CardanoNetwork.MAINNET,
+                sourceWallet.paymentAddress,
+                sourceWallet.stakeAddress,
+            )
+            val ledger = LedgerSnapshot(
+                CardanoNetwork.MAINNET,
+                listOf(LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(1_500_000))),
+                protocolParameters("4310"),
+                100,
+            )
+            val vault = CountingVault(listOf(source))
+            val repository = DefaultL1WalletRepository(
+                WalletRepository().apply { publish(source.id, listOf(source)) },
+                vault,
+                { ledger },
+                { emptyList() },
+                { _, _ -> error("submission must not run") },
+                { _, _ -> error("lookup must not run") },
+                engine,
+                { "00000000-0000-4000-8000-000000000019" },
+                { 123L },
+            )
+
+            val preview = repository.previewSweep(source.id, destinationWallet.paymentAddress)
+            val summary = engine.inspect(preview.unsigned.cbor)
+
+            assertEquals(Lovelace(1_500_000), preview.amount + preview.fee)
+            assertEquals(1, summary.outputs.size)
+            assertEquals(destinationWallet.paymentAddress, summary.outputs.single().address)
+            val signed = engine.sign(preview.unsigned, sourceEntropy, preview.intent, ledger)
+            try {
+                engine.inspect(signed.cbor).requireMatches(preview.intent, CardanoNetwork.MAINNET, preview.fee)
+            } finally {
+                signed.cbor.fill(0)
+            }
+        } finally {
+            sourceEntropy.fill(0)
+            destinationEntropy.fill(0)
+        }
+    }
+
     @Test fun repositoryRejectsTransferAndSweepParameterDriftBeforeSideEffects() = runBlocking {
         val engine = AndroidCardanoTransactionEngine(processor)
         val sourceEntropy = ByteArray(32) { it.toByte() }

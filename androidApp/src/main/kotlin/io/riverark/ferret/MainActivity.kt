@@ -127,12 +127,17 @@ class MainActivity : FragmentActivity() {
         enableEdgeToEdge()
         vault = AndroidSecureVault(this)
         authenticator = AndroidUserAuthenticator(this)
+        val walletSelection = getSharedPreferences("wallet-selection", Context.MODE_PRIVATE)
         walletManager = WalletManager(
             vault,
             AndroidSecureRandomSource(),
             AndroidRecoveryPhraseCodec(),
             ::deriveAndroidWallet,
             wallets,
+            { walletSelection.getString("active-wallet-id", null)?.let(::WalletId) },
+            { walletId ->
+                walletSelection.edit().putString("active-wallet-id", walletId?.value).apply()
+            },
         )
         driveTokens = AndroidGoogleOAuthTokenProvider(this)
         deviceIdentity = AndroidDeviceIdentity(this)
@@ -515,10 +520,10 @@ class MainActivity : FragmentActivity() {
                     diagnostics.record(DiagnosticCode.CONNECTIVITY)
                     error("validated network unavailable")
                 }
-                val selected = profiles.firstOrNull { it.id == wallets.selectedWalletId() } ?: profiles.first()
+                val selected = requireNotNull(walletManager.selectedProfile(profiles))
                 coordinators.getValue(selected.network).validate(selected)
                 l1WalletRepository.reconcilePending(selected.id)
-                wallets.publish(selected.id, profiles)
+                walletManager.load(selected.id)
                 diagnostics.clear()
             } catch (error: CancellationException) {
                 throw error

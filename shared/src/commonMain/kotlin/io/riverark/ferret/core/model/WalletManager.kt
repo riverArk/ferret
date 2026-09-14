@@ -20,11 +20,20 @@ class WalletManager(
     private val phrases: RecoveryPhraseCodec,
     private val deriveWallet: suspend (ByteArray, CardanoNetwork) -> DerivedWallet,
     private val repository: WalletRepository,
+    private val loadSelectedWalletId: suspend () -> WalletId? = { null },
+    private val saveSelectedWalletId: suspend (WalletId?) -> Unit = {},
 ) {
+    suspend fun selectedProfile(profiles: List<WalletProfile>): WalletProfile? {
+        val selected = repository.selectedWalletId() ?: loadSelectedWalletId()
+        return profiles.firstOrNull { it.id == selected } ?: profiles.firstOrNull()
+    }
+
     suspend fun load(activeWalletId: WalletId? = null): List<WalletProfile> {
         val profiles = vault.profiles()
-        val active = (activeWalletId ?: repository.selectedWalletId())?.takeIf { id -> profiles.any { it.id == id } }
-        repository.publish(active ?: profiles.firstOrNull()?.id, profiles)
+        val active = activeWalletId?.let { id -> profiles.firstOrNull { it.id == id } }
+            ?: selectedProfile(profiles)
+        repository.publish(active?.id, profiles)
+        saveSelectedWalletId(active?.id)
         return profiles
     }
 
