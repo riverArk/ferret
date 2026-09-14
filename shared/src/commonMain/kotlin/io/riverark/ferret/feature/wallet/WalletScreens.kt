@@ -497,7 +497,7 @@ fun TransferScreen(
             FerretCard(Modifier.fillMaxWidth()) {
                 FerretDataBlock("Recipient", preview.destination.name)
                 FerretDataBlock("Amount", formatAda(preview.amount))
-                FerretDataBlock("Maximum fee", formatAda(preview.feeBound))
+                FerretDataBlock("Fee", formatAda(preview.feeBound))
                 FerretDataBlock("Change", formatAda(preview.change))
                 FerretDataBlock("Network", preview.destination.network.name)
             }
