@@ -6,6 +6,7 @@ import io.riverark.ferret.core.model.TransactionRecord
 import io.riverark.ferret.core.model.WalletId
 import io.riverark.ferret.core.model.WalletProfile
 import io.riverark.ferret.feature.wallet.L1WalletRepository
+import io.riverark.ferret.feature.wallet.TransferDestination
 import io.riverark.ferret.feature.wallet.TransferPreview
 import io.riverark.ferret.feature.wallet.TransferViewModel
 import kotlinx.coroutines.runBlocking
@@ -21,13 +22,15 @@ class TransferViewModelTest {
     private val viewModel = TransferViewModel(source.id, source.network, repository)
 
     @Test fun destinationsContainOnlyOtherWalletsOnTheSameNetwork() {
-        assertEquals(listOf(destination), viewModel.destinations(listOf(source, destination, mainnet)))
+        assertEquals(
+            listOf(TransferDestination(destination.name, destination.paymentAddress)),
+            viewModel.destinations(listOf(source, destination, mainnet)),
+        )
     }
 
-    @Test fun invalidDestinationFailsBeforeTransactionPreview() = runBlocking {
-        assertFailsWith<IllegalArgumentException> { viewModel.preview(mainnet, Lovelace(1)) }
-        assertFailsWith<IllegalArgumentException> { viewModel.preview(source, Lovelace(1)) }
-        assertEquals(0, repository.previewCalls)
+    @Test fun arbitraryAddressCanBePreviewed() = runBlocking {
+        viewModel.preview(TransferDestination("External address", "addr_test1external"), Lovelace(1))
+        assertEquals(1, repository.previewCalls)
     }
 
     private fun profile(suffix: Char, network: CardanoNetwork) = WalletProfile(
@@ -43,7 +46,7 @@ class TransferViewModelTest {
 
         override suspend fun balance(walletId: WalletId) = error("not used")
         override suspend fun history(walletId: WalletId): List<TransactionRecord> = error("not used")
-        override suspend fun previewTransfer(walletId: WalletId, destination: WalletProfile, amount: Lovelace): TransferPreview {
+        override suspend fun previewTransfer(walletId: WalletId, destination: TransferDestination, amount: Lovelace): TransferPreview {
             previewCalls++
             return TransferPreview(destination, amount, Lovelace(1), Lovelace(0))
         }

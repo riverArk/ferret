@@ -460,30 +460,40 @@ internal fun OperationState.label() = name.lowercase().replace('_', ' ').replace
 @Composable
 fun TransferScreen(
     profile: WalletProfile,
-    destinations: List<WalletProfile>,
+    destinations: List<TransferDestination>,
     state: TransferUiState,
-    onPreview: (WalletProfile, Lovelace) -> Unit,
+    onPreview: (TransferDestination, Lovelace) -> Unit,
     onSubmit: () -> Unit,
     onBack: () -> Unit,
 ) {
-    var selectedWalletId by rememberSaveable { mutableStateOf<String?>(null) }
+    var recipientAddress by rememberSaveable { mutableStateOf("") }
     var amount by rememberSaveable { mutableStateOf("") }
-    val destination = destinations.firstOrNull { it.id.value == selectedWalletId }
+    val trimmedAddress = recipientAddress.trim()
+    val savedDestination = destinations.firstOrNull { it.address == trimmedAddress }
+    val destination = trimmedAddress.takeIf(String::isNotBlank)?.let {
+        savedDestination ?: TransferDestination("External address", it)
+    }
     val lovelace = parseAdaAmount(amount)
+    val editable = state.preview == null && !state.busy
     FerretScreen {
         FerretTopBar("Transfer ADA", navigation = { io.riverark.ferret.ui.FerretTextButton("Back", onBack) })
         FerretStatusChip(profile.network.name)
-        Text("Send to another ${profile.network.name.lowercase()} wallet", style = MaterialTheme.typography.titleMedium)
+        Text("Send to any ${profile.network.name.lowercase()} address", style = MaterialTheme.typography.titleMedium)
+        OutlinedTextField(
+            recipientAddress,
+            { recipientAddress = it },
+            Modifier.fillMaxWidth(),
+            label = { Text("Recipient address") },
+            singleLine = true,
+            enabled = editable,
+        )
         destinations.forEach { wallet ->
             FerretListRow(
                 wallet.name,
-                wallet.paymentAddress,
-                onClick = { selectedWalletId = wallet.id.value },
-                trailing = { if (selectedWalletId == wallet.id.value) Text("Selected") },
+                wallet.address,
+                onClick = { if (editable) recipientAddress = wallet.address },
+                trailing = { if (savedDestination == wallet) Text("Selected") },
             )
-        }
-        if (destinations.isEmpty()) {
-            FerretEmptyState("No destination wallet", "Create or restore another wallet on this network.")
         }
         OutlinedTextField(
             amount,
@@ -492,14 +502,16 @@ fun TransferScreen(
             label = { Text("ADA amount") },
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
             singleLine = true,
+            enabled = editable,
         )
         state.preview?.let { preview ->
             FerretCard(Modifier.fillMaxWidth()) {
                 FerretDataBlock("Recipient", preview.destination.name)
+                FerretDataBlock("Address", preview.destination.address)
                 FerretDataBlock("Amount", formatAda(preview.amount))
                 FerretDataBlock("Fee", formatAda(preview.feeBound))
                 FerretDataBlock("Change", formatAda(preview.change))
-                FerretDataBlock("Network", preview.destination.network.name)
+                FerretDataBlock("Network", profile.network.name)
             }
         }
         state.operationId?.let { FerretDataBlock("Operation submitted", it) }

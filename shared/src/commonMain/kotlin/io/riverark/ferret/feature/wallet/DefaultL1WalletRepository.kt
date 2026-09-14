@@ -115,16 +115,16 @@ class DefaultL1WalletRepository(
             }).sortedWith(compareByDescending<TransactionRecord> { it.timestampEpochMillis }.thenByDescending { it.id })
     }
 
-    override suspend fun previewTransfer(walletId: WalletId, destination: WalletProfile, amount: Lovelace): TransferPreview =
+    override suspend fun previewTransfer(walletId: WalletId, destination: TransferDestination, amount: Lovelace): TransferPreview =
         wallets.withWalletLock(walletId) {
             val profile = profile(walletId)
-            val resolvedDestination = transferDestination(profile, destination)
+            require(profile.network.accepts(destination.address) && destination.address != profile.paymentAddress)
             require(amount.value > 0)
             val ledger = loadLedger(profile)
             require(ledger.currentSlot <= Long.MAX_VALUE - TRANSFER_VALIDITY_SLOTS)
             val intent = CardanoIntent.Transfer(
                 profile.paymentAddress,
-                resolvedDestination.paymentAddress,
+                destination.address,
                 amount,
                 newOperationId(),
                 ledger.currentSlot,
@@ -138,19 +138,19 @@ class DefaultL1WalletRepository(
             summary.requireL1Funding(intent, ledger)
             engine.requireMinimumAda(unsigned.cbor, ledger.protocolParametersJson)
             val change = summary.outputs.singleOrNull { it.address == profile.paymentAddress }?.lovelace ?: Lovelace(0)
-            TransferPreview(resolvedDestination, amount, unsigned.feeBound, change, intent, unsigned, engine.transactionId(unsigned.cbor))
+            TransferPreview(destination, amount, unsigned.feeBound, change, intent, unsigned, engine.transactionId(unsigned.cbor))
         }
 
     override suspend fun submitTransfer(walletId: WalletId, preview: TransferPreview): String =
         wallets.withWalletLock(walletId) {
             val profile = profile(walletId)
-            val destination = transferDestination(profile, preview.destination)
+            require(profile.network.accepts(preview.destination.address))
             val intent = requireNotNull(preview.intent)
             val unsigned = requireNotNull(preview.unsigned)
             val previewTransactionId = requireNotNull(preview.transactionId)
             require(intent.sourceAddress == profile.paymentAddress)
             require(intent.operationId == unsigned.operationId)
-            require(intent.destinationAddress == destination.paymentAddress)
+            require(intent.destinationAddress == preview.destination.address)
             require(intent.amount == preview.amount && preview.amount.value > 0)
             require(preview.feeBound == unsigned.feeBound)
             val summary = engine.inspect(unsigned.cbor)
@@ -166,7 +166,10 @@ class DefaultL1WalletRepository(
             require(!hasPendingChannel(walletId)) { "channel operation is unresolved" }
             val prepared = L1OperationRecord(
                 intent.operationId,
-                destinationWalletId = preview.destination.id,
+                destinationWalletId = vault.profiles()
+                    .singleOrNull { it.network == profile.network && it.paymentAddress == preview.destination.address }
+                    ?.id,
+                destinationAddress = preview.destination.address,
                 amount = preview.amount,
                 fee = preview.feeBound,
                 createdAtEpochMillis = nowEpochMillis(),
@@ -353,13 +356,6 @@ class DefaultL1WalletRepository(
     private suspend fun profile(walletId: WalletId): WalletProfile =
         vault.profiles().single { it.id == walletId }
 
-    private suspend fun transferDestination(source: WalletProfile, supplied: WalletProfile): WalletProfile {
-        val resolved = profile(supplied.id)
-        require(resolved.id != source.id)
-        require(supplied.network == source.network && resolved.network == source.network)
-        require(supplied.paymentAddress == resolved.paymentAddress && resolved.paymentAddress != source.paymentAddress)
-        return resolved
-    }
 
     private fun L1OperationRecord.withRemote(remote: L1OperationDto): L1OperationRecord {
         require(remote.operationId == operationId && remote.expectedTransactionId == expectedTransactionId) {

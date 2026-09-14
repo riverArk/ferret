@@ -46,6 +46,7 @@ import io.riverark.ferret.core.security.SecureVault
 import io.riverark.ferret.core.security.WalletEncryptedStateV1
 import io.riverark.ferret.core.security.WalletSecretV1
 import io.riverark.ferret.feature.wallet.DefaultL1WalletRepository
+import io.riverark.ferret.feature.wallet.TransferDestination
 import io.riverark.ferret.core.model.CardanoNetwork
 import io.riverark.ferret.core.model.Lovelace
 import io.riverark.ferret.core.model.InvalidRecoveryPhraseException
@@ -1294,7 +1295,7 @@ class AndroidCardanoTransactionEngineTest {
             }
 
             rejectDrift { repository, ledger, updateLedger ->
-                val preview = repository.previewTransfer(source.id, destination, Lovelace(1_000_000))
+                val preview = repository.previewTransfer(source.id, TransferDestination(destination.name, destination.paymentAddress), Lovelace(1_000_000))
                 engine.requireMinimumAda(preview.unsigned!!.cbor, ledger.protocolParametersJson)
                 updateLedger(ledger.copy(protocolParametersJson = protocolParameters("8620")))
                 assertFailsWith<IllegalArgumentException> {

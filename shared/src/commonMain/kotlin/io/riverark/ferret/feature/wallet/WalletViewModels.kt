@@ -79,8 +79,9 @@ class WalletPickerViewModel(private val manager: WalletManager) : ViewModel() {
 }
 
 data class WalletBalance(val spendable: Lovelace, val pending: Lovelace)
+data class TransferDestination(val name: String, val address: String)
 data class TransferPreview(
-    val destination: WalletProfile,
+    val destination: TransferDestination,
     val amount: Lovelace,
     val feeBound: Lovelace,
     val change: Lovelace,
@@ -99,7 +100,7 @@ data class TransferUiState(
 interface L1WalletRepository {
     suspend fun balance(walletId: WalletId): WalletBalance
     suspend fun history(walletId: WalletId): List<TransactionRecord>
-    suspend fun previewTransfer(walletId: WalletId, destination: WalletProfile, amount: Lovelace): TransferPreview
+    suspend fun previewTransfer(walletId: WalletId, destination: TransferDestination, amount: Lovelace): TransferPreview
     suspend fun submitTransfer(walletId: WalletId, preview: TransferPreview): String
     suspend fun previewSweep(walletId: WalletId, destinationAddress: String): io.riverark.ferret.core.cardano.SweepPreview
     suspend fun submitSweep(walletId: WalletId, preview: io.riverark.ferret.core.cardano.SweepPreview): String
@@ -228,7 +229,7 @@ class TransferViewModel(private val walletId: WalletId, private val network: Car
     private val mutableState = MutableStateFlow(TransferUiState())
     val state = mutableState.asStateFlow()
 
-    fun previewAsync(destination: WalletProfile, amount: Lovelace) {
+    fun previewAsync(destination: TransferDestination, amount: Lovelace) {
         viewModelScope.launch {
             mutableState.value = TransferUiState(busy = true)
             try {
@@ -256,9 +257,9 @@ class TransferViewModel(private val walletId: WalletId, private val network: Car
     }
     fun destinations(profiles: List<WalletProfile>) =
         profiles.filter { it.id != walletId && it.network == network }
+            .map { TransferDestination(it.name, it.paymentAddress) }
 
-    suspend fun preview(destination: WalletProfile, amount: Lovelace): TransferPreview {
-        require(destination.id != walletId && destination.network == network) { "invalid transfer destination" }
+    suspend fun preview(destination: TransferDestination, amount: Lovelace): TransferPreview {
         return l1.previewTransfer(walletId, destination, amount)
     }
 

@@ -26,6 +26,7 @@ import io.riverark.ferret.core.security.SecureVault
 import io.riverark.ferret.core.security.WalletEncryptedStateV1
 import io.riverark.ferret.core.security.WalletSecretV1
 import io.riverark.ferret.feature.wallet.DefaultL1WalletRepository
+import io.riverark.ferret.feature.wallet.TransferDestination
 import io.riverark.ferret.feature.wallet.L1OperationState
 import io.riverark.ferret.feature.wallet.parseAdaAmount
 import kotlinx.coroutines.runBlocking
@@ -75,13 +76,11 @@ class L1WalletRepositoryTest {
         val unselected = LedgerUtxo("11".repeat(32), 0, source.paymentAddress, Lovelace(90_000_000))
         assertEquals(
             Lovelace(4_800_000),
-            previewRepository(vault, FakeEngine(), listOf(selected, unselected))
-                .previewTransfer(source.id, destination, Lovelace(5_000_000)).change,
+            previewRepository(vault, FakeEngine(), listOf(selected, unselected)).previewTransfer(source.id, TransferDestination(destination.name, destination.paymentAddress), Lovelace(5_000_000)).change,
         )
         assertEquals(
             Lovelace(0),
-            previewRepository(vault, FakeEngine(), listOf(selected.copy(lovelace = Lovelace(5_200_000))))
-                .previewTransfer(source.id, destination, Lovelace(5_000_000)).change,
+            previewRepository(vault, FakeEngine(), listOf(selected.copy(lovelace = Lovelace(5_200_000)))).previewTransfer(source.id, TransferDestination(destination.name, destination.paymentAddress), Lovelace(5_000_000)).change,
         )
     }
 
@@ -99,7 +98,7 @@ class L1WalletRepositoryTest {
             val repository = previewRepository(vault, engine)
 
             assertFailsWith<IllegalArgumentException> {
-                repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+                repository.previewTransfer(source.id, TransferDestination(destination.name, destination.paymentAddress), Lovelace(5_000_000))
             }
             assertEquals(1, engine.builds)
             assertEquals(0, vault.writes)
@@ -109,25 +108,30 @@ class L1WalletRepositoryTest {
         }
     }
 
-    @Test fun previewRejectsDestinationsOutsideVaultIdentity() = runBlocking {
+    @Test fun previewAcceptsArbitraryAddressesOnTheSourceNetwork() = runBlocking {
         val source = profile('0')
-        val destination = profile('1')
-        val vault = FakeVault(listOf(source, destination))
+        val vault = FakeVault(listOf(source))
         val engine = FakeEngine()
         val repository = previewRepository(vault, engine)
-        for (invalid in listOf(profile('2'), source, destination.copy(network = CardanoNetwork.MAINNET),
-            destination.copy(paymentAddress = "addr_test1forged"))) {
-            assertFailsWith<RuntimeException> { repository.previewTransfer(source.id, invalid, Lovelace(5_000_000)) }
-        }
-        vault.storedProfiles = listOf(source, destination.copy(network = CardanoNetwork.MAINNET))
-        assertFailsWith<IllegalArgumentException> { repository.previewTransfer(source.id, destination, Lovelace(5_000_000)) }
-        vault.storedProfiles = listOf(source, destination.copy(paymentAddress = source.paymentAddress))
+        val external = TransferDestination("External address", "addr_test1external")
+
+        assertEquals(external, repository.previewTransfer(source.id, external, Lovelace(5_000_000)).destination)
         assertFailsWith<IllegalArgumentException> {
-            repository.previewTransfer(source.id, vault.storedProfiles.last(), Lovelace(5_000_000))
+            repository.previewTransfer(
+                source.id,
+                TransferDestination(source.name, source.paymentAddress),
+                Lovelace(5_000_000),
+            )
         }
-        assertEquals(0, engine.builds)
+        assertFailsWith<IllegalArgumentException> {
+            repository.previewTransfer(
+                source.id,
+                TransferDestination("Wrong network", "addr1external"),
+                Lovelace(5_000_000),
+            )
+        }
+        assertEquals(1, engine.builds)
         assertEquals(0, vault.seedRequests)
-        assertNull(repository.operation(source.id))
     }
 
     @Test fun submissionRejectsAlteredPreviewBeforeAnySideEffect() = runBlocking {
@@ -136,7 +140,7 @@ class L1WalletRepositoryTest {
         val vault = FakeVault(listOf(source, destination))
         val engine = FakeEngine()
         val repository = previewRepository(vault, engine)
-        val preview = repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+        val preview = repository.previewTransfer(source.id, TransferDestination(destination.name, destination.paymentAddress), Lovelace(5_000_000))
         for (altered in listOf(
             preview.copy(intent = preview.intent!!.copy(sourceAddress = "addr_test1forged")),
             preview.copy(feeBound = Lovelace(300_000)),
@@ -144,8 +148,8 @@ class L1WalletRepositoryTest {
             preview.copy(amount = Lovelace(0)),
             preview.copy(transactionId = null),
             preview.copy(unsigned = preview.unsigned!!.copy(operationId = NEXT_OPERATION_ID)),
-            preview.copy(destination = destination.copy(paymentAddress = "addr_test1forged")),
-            preview.copy(destination = source),
+            preview.copy(destination = preview.destination.copy(address = "addr1forged")),
+            preview.copy(destination = TransferDestination(source.name, source.paymentAddress)),
         )) {
             assertFailsWith<IllegalArgumentException> { repository.submitTransfer(source.id, altered) }
             assertEquals(0, vault.writes)
@@ -162,25 +166,32 @@ class L1WalletRepositoryTest {
         assertNull(repository.operation(source.id))
     }
 
-    @Test fun submissionRevalidatesCurrentVaultMembershipAndAddresses() = runBlocking {
+    @Test fun submissionAcceptsDestinationOutsideTheVault() = runBlocking {
         val source = profile('0')
-        val destination = profile('1')
-        val vault = FakeVault(listOf(source, destination))
+        val vault = FakeVault(listOf(source))
+        val repository = previewRepository(vault, FakeEngine(), calls = RemoteCalls(true))
+        val destination = TransferDestination("External address", "addr_test1external")
+        val preview = repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+
+        repository.submitTransfer(source.id, preview)
+
+        assertEquals(destination.address, repository.operation(source.id)?.destinationAddress)
+        assertNull(repository.operation(source.id)?.destinationWalletId)
+    }
+
+    @Test fun submissionRevalidatesTheSourceWallet() = runBlocking {
+        val source = profile('0')
+        val destination = TransferDestination("External address", "addr_test1external")
+        val vault = FakeVault(listOf(source))
         val engine = FakeEngine()
         val repository = previewRepository(vault, engine)
         val preview = repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
-        for (profiles in listOf(
-            listOf(source),
-            listOf(source, destination.copy(network = CardanoNetwork.MAINNET)),
-            listOf(source, destination.copy(paymentAddress = "addr_test1changed")),
-            listOf(source.copy(paymentAddress = "addr_test1changed"), destination),
-        )) {
-            vault.storedProfiles = profiles
-            assertFailsWith<RuntimeException> { repository.submitTransfer(source.id, preview) }
-            assertEquals(0, vault.writes)
-            assertEquals(0, vault.seedRequests)
-            assertEquals(0, engine.signs)
-        }
+        vault.storedProfiles = listOf(source.copy(paymentAddress = "addr_test1changed"))
+
+        assertFailsWith<IllegalArgumentException> { repository.submitTransfer(source.id, preview) }
+        assertEquals(0, vault.writes)
+        assertEquals(0, vault.seedRequests)
+        assertEquals(0, engine.signs)
     }
 
     @Test fun signedBodyMismatchRemainsPreparedAndRejectsAfterRestartWithoutLookup() = runBlocking {
@@ -189,7 +200,7 @@ class L1WalletRepositoryTest {
         val vault = FakeVault(listOf(source, destination))
         val engine = FakeEngine().apply { changeSignedBody = true }
         val repository = previewRepository(vault, engine)
-        val preview = repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+        val preview = repository.previewTransfer(source.id, TransferDestination(destination.name, destination.paymentAddress), Lovelace(5_000_000))
         assertFailsWith<IllegalArgumentException> { repository.submitTransfer(source.id, preview) }
         assertEquals(L1OperationState.PREPARED, repository.operation(source.id)?.state)
         assertNull(repository.operation(source.id)?.expectedTransactionId)
@@ -208,7 +219,7 @@ class L1WalletRepositoryTest {
 
             assertFailsWith<IllegalArgumentException> {
                 if (sweep) repository.previewSweep(source.id, destination.paymentAddress)
-                else repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+                else repository.previewTransfer(source.id, TransferDestination(destination.name, destination.paymentAddress), Lovelace(5_000_000))
             }
             assertEquals(0, vault.writes)
             assertEquals(0, vault.seedRequests)
@@ -231,7 +242,7 @@ class L1WalletRepositoryTest {
                 val preview = if (sweep) {
                     repository.previewSweep(source.id, destination.paymentAddress)
                 } else {
-                    repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+                    repository.previewTransfer(source.id, TransferDestination(destination.name, destination.paymentAddress), Lovelace(5_000_000))
                 }
 
                 assertFailsWith<IllegalArgumentException> {
@@ -277,7 +288,7 @@ class L1WalletRepositoryTest {
             val preview = if (sweep) {
                 repository.previewSweep(source.id, destination.paymentAddress)
             } else {
-                repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+                repository.previewTransfer(source.id, TransferDestination(destination.name, destination.paymentAddress), Lovelace(5_000_000))
             }
 
             minimum = "10000000"
@@ -305,7 +316,7 @@ class L1WalletRepositoryTest {
             val preview = if (sweep) {
                 repository.previewSweep(source.id, destination.paymentAddress)
             } else {
-                repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+                repository.previewTransfer(source.id, TransferDestination(destination.name, destination.paymentAddress), Lovelace(5_000_000))
             }
 
             assertFailsWith<IllegalArgumentException> {
@@ -330,7 +341,7 @@ class L1WalletRepositoryTest {
         val vault = FakeVault(listOf(source, destination))
         val engine = FakeEngine()
         val repository = previewRepository(vault, engine, hasPendingChannel = { true })
-        val preview = repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+        val preview = repository.previewTransfer(source.id, TransferDestination(destination.name, destination.paymentAddress), Lovelace(5_000_000))
         val writesBefore = vault.writes
 
         assertFailsWith<IllegalArgumentException> { repository.submitTransfer(source.id, preview) }
@@ -388,7 +399,7 @@ class L1WalletRepositoryTest {
             { 123L },
         )
 
-        val preview = repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+        val preview = repository.previewTransfer(source.id, TransferDestination(destination.name, destination.paymentAddress), Lovelace(5_000_000))
         assertEquals(Lovelace(200_000), preview.feeBound)
         assertEquals(Lovelace(4_800_000), preview.change)
         assertEquals(OPERATION_ID, repository.submitTransfer(source.id, preview))
@@ -423,7 +434,7 @@ class L1WalletRepositoryTest {
             { NEXT_OPERATION_ID },
             { 1_000L },
         )
-        val nextPreview = next.previewTransfer(source.id, destination, Lovelace(4_000_000))
+        val nextPreview = next.previewTransfer(source.id, TransferDestination(destination.name, destination.paymentAddress), Lovelace(4_000_000))
         assertEquals(NEXT_OPERATION_ID, next.submitTransfer(source.id, nextPreview))
         assertEquals(2, submissions)
         assertEquals(2, next.operations(source.id).size)
@@ -448,7 +459,7 @@ class L1WalletRepositoryTest {
             { OPERATION_ID },
             { ++clock },
         )
-        val preview = repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+        val preview = repository.previewTransfer(source.id, TransferDestination(destination.name, destination.paymentAddress), Lovelace(5_000_000))
         repository.submitTransfer(source.id, preview)
 
         val accepted = repository.operation(source.id)!!
@@ -486,7 +497,7 @@ class L1WalletRepositoryTest {
             { OPERATION_ID },
             { ++clock },
         )
-        val preview = repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+        val preview = repository.previewTransfer(source.id, TransferDestination(destination.name, destination.paymentAddress), Lovelace(5_000_000))
 
         assertFailsWith<IllegalStateException> { repository.submitTransfer(source.id, preview) }
         val submitting = repository.operation(source.id)!!
@@ -600,7 +611,7 @@ class L1WalletRepositoryTest {
             { OPERATION_ID },
             { 123L },
         )
-        val preview = repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+        val preview = repository.previewTransfer(source.id, TransferDestination(destination.name, destination.paymentAddress), Lovelace(5_000_000))
         repository.submitTransfer(source.id, preview)
         assertEquals(L1OperationState.CONFIRMED, repository.reconcilePending(source.id)?.state)
 
@@ -637,7 +648,7 @@ class L1WalletRepositoryTest {
             { OPERATION_ID },
             { 123L },
         )
-        val preview = repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+        val preview = repository.previewTransfer(source.id, TransferDestination(destination.name, destination.paymentAddress), Lovelace(5_000_000))
         repository.submitTransfer(source.id, preview)
         assertEquals(L1OperationState.CONFIRMED, repository.reconcilePending(source.id)?.state)
 
@@ -676,7 +687,7 @@ class L1WalletRepositoryTest {
             { OPERATION_ID },
             { 123L },
         )
-        val preview = repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+        val preview = repository.previewTransfer(source.id, TransferDestination(destination.name, destination.paymentAddress), Lovelace(5_000_000))
         assertFailsWith<IllegalArgumentException> { repository.submitTransfer(source.id, preview) }
 
         val restarted = DefaultL1WalletRepository(
@@ -710,7 +721,7 @@ class L1WalletRepositoryTest {
             { OPERATION_ID },
             { 123L },
         )
-        val preview = repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+        val preview = repository.previewTransfer(source.id, TransferDestination(destination.name, destination.paymentAddress), Lovelace(5_000_000))
         assertFailsWith<IllegalArgumentException> { repository.submitTransfer(source.id, preview) }
 
         val restarted = DefaultL1WalletRepository(
@@ -744,7 +755,7 @@ class L1WalletRepositoryTest {
             { OPERATION_ID },
             { 123L },
         )
-        val preview = repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+        val preview = repository.previewTransfer(source.id, TransferDestination(destination.name, destination.paymentAddress), Lovelace(5_000_000))
         repository.submitTransfer(source.id, preview)
         assertFailsWith<IllegalArgumentException> { repository.reconcilePending(source.id) }
 
@@ -779,7 +790,7 @@ class L1WalletRepositoryTest {
             { OPERATION_ID },
             { 123L },
         )
-        val preview = repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+        val preview = repository.previewTransfer(source.id, TransferDestination(destination.name, destination.paymentAddress), Lovelace(5_000_000))
         repository.submitTransfer(source.id, preview)
         assertFailsWith<IllegalArgumentException> { repository.reconcilePending(source.id) }
 
@@ -814,7 +825,7 @@ class L1WalletRepositoryTest {
             { 123L },
         )
 
-        val preview = repository.previewTransfer(source.id, destination, Lovelace(5_000_000))
+        val preview = repository.previewTransfer(source.id, TransferDestination(destination.name, destination.paymentAddress), Lovelace(5_000_000))
         assertFailsWith<IllegalStateException> { repository.submitTransfer(source.id, preview) }
         assertEquals(L1OperationState.PREPARED, repository.operation(source.id)?.state)
         assertEquals(L1OperationState.REJECTED, repository.reconcilePending(source.id)?.state)
