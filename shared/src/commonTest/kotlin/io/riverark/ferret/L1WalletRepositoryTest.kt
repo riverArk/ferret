@@ -261,6 +261,29 @@ class L1WalletRepositoryTest {
         }
     }
 
+    @Test fun sweepConvergesBeforeCheckingMinimumAda() = runBlocking {
+        val source = profile('0')
+        val destination = profile('1')
+        val vault = FakeVault(listOf(source, destination))
+        val engine = FakeEngine().apply {
+            fee = 168_669
+            minimumOutputLovelace = 1_000_000
+        }
+        val repository = previewRepository(
+            vault,
+            engine,
+            ledgerInputs = listOf(
+                LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(1_500_000)),
+            ),
+        )
+
+        val preview = repository.previewSweep(source.id, destination.paymentAddress)
+
+        assertEquals(Lovelace(1_331_331), preview.amount)
+        assertEquals(Lovelace(168_669), preview.fee)
+        assertEquals(2, engine.builds)
+    }
+
     @Test fun validSweepSubmitsOnceAndReconciles() = runBlocking {
         val source = profile('0')
         val destination = profile('1')
@@ -867,13 +890,14 @@ class L1WalletRepositoryTest {
         var includeUnsignedWitness = false
         var signedWitnessMode = SignedWitnessMode.VALID
         var minimumOutputLovelace = 0L
+        var fee = 200_000L
         var rejectSignedMinimum = false
         override suspend fun deriveWallet(entropy: ByteArray, network: CardanoNetwork): DerivedWallet = error("not used")
         override suspend fun build(intent: CardanoIntent, ledger: LedgerSnapshot): UnsignedTransaction {
             builds++
             this.intent = intent
             selectedInput = ledger.utxos.first()
-            return UnsignedTransaction(byteArrayOf(0), intent.operationId, Lovelace(200_000))
+            return UnsignedTransaction(byteArrayOf(0), intent.operationId, Lovelace(fee))
         }
         override fun requireMinimumAda(cbor: ByteArray, protocolParametersJson: String) {
             require(!(rejectSignedMinimum && cbor.size > 1))
@@ -920,7 +944,7 @@ class L1WalletRepositoryTest {
                 is CardanoIntent.SweepWallet -> value.destinationAddress
                 else -> error("unsupported intent")
             }
-            val change = selectedInput.lovelace.value - intent.amount.value - 200_000
+            val change = selectedInput.lovelace.value - intent.amount.value - fee
             val credential = intent.sourceAddress.substringAfterLast('_').repeat(56)
             val witness = TransactionKeyWitness("", credential, "", true)
             val witnesses = if (signedCbor.size == 1) {
@@ -940,7 +964,7 @@ class L1WalletRepositoryTest {
                     TransactionOutputSummary(destination, intent.amount, emptyMap()),
                     change.takeIf { it > 0 }?.let { TransactionOutputSummary(intent.sourceAddress, Lovelace(it), emptyMap()) },
                 ),
-                Lovelace(200_000),
+                Lovelace(fee),
                 emptySet(),
                 intent.validFrom,
                 intent.validUntil,

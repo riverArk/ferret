@@ -220,9 +220,9 @@ class DefaultL1WalletRepository(
                 summary.requireMatches(intent, profile.network, unsigned.feeBound)
                 summary.requireL1Witnesses(profile.id.value.substringAfter('-'), signed = false)
                 summary.requireL1Funding(intent, ledger)
-                engine.requireMinimumAda(unsigned.cbor, ledger.protocolParametersJson)
                 val nextAmount = total - summary.fee
                 if (nextAmount == amount && summary.outputs.singleOrNull()?.address == destinationAddress) {
+                    engine.requireMinimumAda(unsigned.cbor, ledger.protocolParametersJson)
                     return@withWalletLock SweepPreview(
                         destinationAddress,
                         amount,
