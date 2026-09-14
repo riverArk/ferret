@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -26,6 +27,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -299,49 +302,61 @@ fun HomeScreen(
         action()
     }
 
-    FerretScreen {
-        FerretTopBar("Ferret")
-        PullToRefreshBox(
-            isRefreshing = state.loading,
-            onRefresh = onRefresh,
-            modifier = Modifier.weight(1f).fillMaxWidth(),
-        ) {
-            Column(
-                Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(FerretSpacing.md),
+    Box(Modifier.fillMaxSize()) {
+        FerretScreen {
+            FerretTopBar("Ferret")
+            PullToRefreshBox(
+                isRefreshing = state.loading,
+                onRefresh = onRefresh,
+                modifier = Modifier.weight(1f).fillMaxWidth(),
             ) {
-                Text(state.profile.name, style = MaterialTheme.typography.headlineLarge)
-                FerretStatusChip(state.profile.network.name)
-                FerretCard(Modifier.fillMaxWidth()) {
-                    when {
-                        state.balance != null -> {
-                            FerretDataBlock("L1 available balance", formatAda(state.balance))
-                            state.channelBalance?.let { FerretDataBlock("L2 spendable balance", formatAda(it)) }
+                Column(
+                    Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(FerretSpacing.md),
+                ) {
+                    Text(state.profile.name, style = MaterialTheme.typography.headlineLarge)
+                    FerretStatusChip(state.profile.network.name)
+                    FerretCard(Modifier.fillMaxWidth()) {
+                        when {
+                            state.balance != null -> {
+                                FerretDataBlock("L1 available balance", formatAda(state.balance))
+                                state.channelBalance?.let { FerretDataBlock("L2 spendable balance", formatAda(it)) }
+                            }
+                            state.error != null -> FerretErrorState(state.error)
+                            else -> Text("Loading balance")
                         }
-                        state.error != null -> FerretErrorState(state.error)
-                        else -> Text("Loading balance")
+                    }
+                    FerretCard(Modifier.fillMaxWidth()) {
+                        Text("Latest activity", style = MaterialTheme.typography.titleMedium)
+                        state.latestActivity?.let { activity ->
+                            Text("${activity.realm}: ${formatAda(activity.amount)}")
+                            Text("${activity.state} · fee ${formatAda(activity.fee)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        } ?: Text("No activity yet", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    FerretCard(Modifier.fillMaxWidth()) {
+                        SelectionContainer { FerretDataBlock("Payment address", state.profile.paymentAddress) }
+                    }
+                    if (state.balance != null && state.error != null) {
+                        FerretErrorState(state.error)
                     }
                 }
-                FerretCard(Modifier.fillMaxWidth()) {
-                    Text("Latest activity", style = MaterialTheme.typography.titleMedium)
-                    state.latestActivity?.let { activity ->
-                        Text("${activity.realm}: ${formatAda(activity.amount)}")
-                        Text("${activity.state} · fee ${formatAda(activity.fee)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    } ?: Text("No activity yet", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                FerretCard(Modifier.fillMaxWidth()) {
-                    SelectionContainer { FerretDataBlock("Payment address", state.profile.paymentAddress) }
-                }
-                if (state.balance != null && state.error != null) {
-                    FerretErrorState(state.error)
-                }
+            }
+            FerretSecondaryButton(
+                "Menu",
+                { showMenu = true },
+                Modifier.semantics { stateDescription = if (showMenu) "Expanded" else "Collapsed" },
+            )
+        }
+        if (state.profile.channelState is ChannelState.Open && onPay != null) {
+            FloatingActionButton(
+                onClick = onPay,
+                modifier = Modifier.align(Alignment.BottomEnd)
+                    .safeDrawingPadding()
+                    .padding(end = FerretSpacing.md, bottom = 72.dp),
+            ) {
+                Icon(painterResource(Res.drawable.qr_code_scanner), contentDescription = "Pay invoice")
             }
         }
-        FerretSecondaryButton(
-            "Menu",
-            { showMenu = true },
-            Modifier.semantics { stateDescription = if (showMenu) "Expanded" else "Collapsed" },
-        )
     }
 
     if (showMenu) {
