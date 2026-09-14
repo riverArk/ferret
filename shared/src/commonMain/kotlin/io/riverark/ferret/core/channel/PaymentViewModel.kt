@@ -166,7 +166,10 @@ class PaymentViewModel(
                 }
                 require(normalized.startsWith("ln", ignoreCase = true))
                 val parsed = Bolt11Invoice.read(normalized).get()
-                require(!parsed.isExpired(nowEpochMillis / 1000)) { "Invoice expired." }
+                if (parsed.isExpired(nowEpochMillis / 1000)) {
+                    mutableState.value = PaymentUiState.Error("This BOLT11 invoice has expired.")
+                    return@launch
+                }
                 val paymentHash = parsed.paymentHash.toString()
                 val expectedChain = gateway.lightningChain().lowercase()
                 require(parsed.chain.toString().lowercase() == expectedChain) { "Invoice network does not match the adaptor." }
