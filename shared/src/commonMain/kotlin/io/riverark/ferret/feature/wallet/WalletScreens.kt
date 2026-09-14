@@ -427,6 +427,7 @@ fun ChannelScreen(
                 val status = channelStateLabel(snapshot.state)
                 FerretCard(Modifier.fillMaxWidth().semantics { stateDescription = status }) {
                     FerretDataBlock("Status", status)
+                    FerretDataBlock("Spendable capacity", formatAda(snapshot.spendableBalance))
                     when (val state = snapshot.state) {
                         is ChannelState.Opening -> FerretDataBlock("Opening transaction", state.txId)
                         is ChannelState.Open -> FerretDataBlock("Channel", state.channelId)

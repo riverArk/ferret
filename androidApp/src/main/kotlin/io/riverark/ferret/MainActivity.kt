@@ -254,8 +254,7 @@ class MainActivity : FragmentActivity() {
                                 l1WalletRepository.reconcilePending(profile.id)
                                 channelRepository.reconcile(profile.id)
                                 channelRepository.load(profile.id)
-                                l1WalletRepository.balance(profile.id).spendable +
-                                    channelRepository.snapshots.value.getValue(profile.id).spendableBalance
+                                l1WalletRepository.balance(profile.id).spendable
                             }
                         } catch (error: CancellationException) {
                             throw error
