@@ -158,8 +158,13 @@ class PaymentViewModel(
         acceptingScan = true
         viewModelScope.launch {
             try {
-                require(raw.startsWith("ln", ignoreCase = true))
-                val normalized = raw.trim()
+                val rawInvoice = raw.trim()
+                val normalized = if (rawInvoice.startsWith("lightning:", ignoreCase = true)) {
+                    rawInvoice.substringAfter(':')
+                } else {
+                    rawInvoice
+                }
+                require(normalized.startsWith("ln", ignoreCase = true))
                 val parsed = Bolt11Invoice.read(normalized).get()
                 require(!parsed.isExpired(nowEpochMillis / 1000)) { "Invoice expired." }
                 val paymentHash = parsed.paymentHash.toString()
@@ -167,7 +172,14 @@ class PaymentViewModel(
                 require(parsed.chain.toString().lowercase() == expectedChain) { "Invoice network does not match the adaptor." }
                 val amountMsat = parsed.amount?.msat ?: error("Amountless invoices are unsupported.")
                 require(!payments.isPaid(walletId, paymentHash) && payments.pending(walletId)?.paymentHash != paymentHash) { "Invoice already paid." }
-                val quote = gateway.quote(walletId, normalized, paymentHash, amountMsat)
+                val quote = try {
+                    gateway.quote(walletId, normalized, paymentHash, amountMsat)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    mutableState.value = PaymentUiState.Error("Unable to obtain a payment quote.")
+                    return@launch
+                }
                 require(quote.invoiceHash == paymentHash && quote.invoiceAmountMsat == amountMsat && quote.expiresAtEpochMillis > nowEpochMillis)
                 invoice = normalized
                 mutableState.value = PaymentUiState.Confirming(parsed.description, quote, nowEpochMillis + 3_000)
