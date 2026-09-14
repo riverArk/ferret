@@ -47,6 +47,7 @@ kotlin {
             implementation(libs.androidx.camera.lifecycle)
             implementation(libs.androidx.camera.view)
             implementation(libs.mlkit.barcode)
+            implementation(libs.secp256k1.android)
             implementation(libs.bloxbean.core)
             implementation(libs.zxing.core)
         }
