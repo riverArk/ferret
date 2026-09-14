@@ -679,9 +679,11 @@ class AndroidCardanoTransactionEngineTest {
             assertEquals(Lovelace(5_000_000), channelOutput.lovelace)
             assertTrue(channelOutput.assets.isEmpty())
             assertEquals(TransactionDatum.Inline(datum.plutus().serializeToHex()), channelOutput.datum)
+            assertTrue(unsignedSummary.referenceInputs.isEmpty())
             val expectedReference = TransactionInputReference(reference.transactionId, reference.index)
-            assertEquals(listOf(expectedReference), unsignedSummary.referenceInputs)
             assertTrue(expectedReference !in unsignedSummary.inputs)
+            assertTrue(unsignedSummary.redeemers.isEmpty())
+            assertNull(unsignedSummary.scriptDataHashHex)
             val inputs = ledger.utxos.associateBy { TransactionInputReference(it.transactionId, it.index) }
             val inputTotal = unsignedSummary.inputs.sumOf { requireNotNull(inputs[it]).lovelace.value }
             val outputAndFeeTotal = unsignedSummary.outputs.sumOf { it.lovelace.value } + unsignedSummary.fee.value
@@ -693,56 +695,14 @@ class AndroidCardanoTransactionEngineTest {
                 val signedSummary = engine.inspect(signed.cbor)
                 assertEquals(engine.transactionId(unsigned.cbor), engine.transactionId(signed.cbor))
                 assertEquals(unsignedSummary.inputs, signedSummary.inputs)
-                assertEquals(unsignedSummary.referenceInputs, signedSummary.referenceInputs)
+                assertTrue(signedSummary.referenceInputs.isEmpty())
                 assertEquals(unsignedSummary.outputs, signedSummary.outputs)
                 signedSummary.requireL1Witnesses(source.paymentCredentialHex, signed = true)
                 engine.requireMinimumAda(signed.cbor, ledger.protocolParametersJson)
 
                 val highParams = protocolParams(channelProtocolParameters)
-                val calculator = feeCalculator(highParams)
-                val referenceScriptBytes = reference
-                    .requireChannelReferenceScript(fixture("validator_hash"))
-                    .scriptRefBytes()
-                    .size
-                    .toLong()
-                val requiredFee = calculator.calculateFee(signed.cbor, highParams)
-                    .add(calculator.tierRefScriptFee(referenceScriptBytes))
+                val requiredFee = feeCalculator(highParams).calculateFee(signed.cbor, highParams)
                 assertTrue(BigInteger.valueOf(signedSummary.fee.value) >= requiredFee)
-
-                val zeroReferencePrice = JsonObject(
-                    Json.parseToJsonElement(channelProtocolParameters).jsonObject +
-                        ("min_fee_ref_script_cost_per_byte" to JsonPrimitive("0")),
-                ).toString()
-                val zeroLedger = ledger.copy(protocolParametersJson = zeroReferencePrice)
-                val zeroUnsigned = engine.build(intent, zeroLedger)
-                val zeroSigned = engine.sign(zeroUnsigned, entropy, intent, zeroLedger)
-                try {
-                    val zeroSummary = engine.inspect(zeroSigned.cbor)
-                    assertTrue(signedSummary.fee.value > zeroSummary.fee.value)
-                    val zeroParams = protocolParams(zeroReferencePrice)
-                    val zeroCalculator = feeCalculator(zeroParams)
-                    val zeroRequiredFee = zeroCalculator.calculateFee(zeroSigned.cbor, zeroParams)
-                        .add(zeroCalculator.tierRefScriptFee(referenceScriptBytes))
-                    assertTrue(BigInteger.valueOf(zeroSummary.fee.value) >= zeroRequiredFee)
-                    assertEquals(
-                        requiredFee.subtract(zeroRequiredFee).longValueExact(),
-                        signedSummary.fee.value - zeroSummary.fee.value,
-                    )
-                    assertEquals(
-                        zeroSummary.outputs.filterNot { it.address == source.paymentAddress },
-                        signedSummary.outputs.filterNot { it.address == source.paymentAddress },
-                    )
-                    val zeroChange = zeroSummary.outputs.single { it.address == source.paymentAddress }
-                    val highChange = signedSummary.outputs.single { it.address == source.paymentAddress }
-                    assertEquals(zeroChange.assets, highChange.assets)
-                    assertEquals(zeroChange.datum, highChange.datum)
-                    assertEquals(
-                        zeroChange.lovelace.value - (signedSummary.fee.value - zeroSummary.fee.value),
-                        highChange.lovelace.value,
-                    )
-                } finally {
-                    zeroSigned.cbor.fill(0)
-                }
             } finally {
                 signed.cbor.fill(0)
             }

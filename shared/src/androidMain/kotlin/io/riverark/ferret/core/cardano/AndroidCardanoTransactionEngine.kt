@@ -46,7 +46,6 @@ import com.bloxbean.cardano.client.transaction.spec.Transaction
 import com.bloxbean.cardano.client.transaction.spec.TransactionOutput
 import com.bloxbean.cardano.client.transaction.util.TransactionUtil
 import com.bloxbean.cardano.client.util.HexUtil
-import com.bloxbean.cardano.client.transaction.spec.TransactionInput
 import com.bloxbean.cardano.client.transaction.spec.TransactionWitnessSet
 import com.bloxbean.cardano.client.transaction.spec.VkeyWitness
 import com.fasterxml.jackson.databind.ObjectMapper
@@ -122,11 +121,7 @@ class AndroidCardanoTransactionEngine(
                 builder.compose(
                     Tx().payToContract(intent.validatorAddress, intent.amount.amount(), intent.datum.plutus())
                         .from(intent.sourceAddress),
-                ).preBalanceTx { _, tx ->
-                    tx.body.referenceInputs = mutableListOf(
-                        TransactionInput.builder().transactionId(intent.referenceInput.transactionId).index(intent.referenceInput.index).build(),
-                    )
-                }.withReferenceScripts(requireNotNull(referenceScript)).additionalSignersCount(1)
+                ).additionalSignersCount(1)
                     .validFrom(intent.validFrom).validTo(intent.validUntil).build()
             } catch (_: com.bloxbean.cardano.client.api.exception.InsufficientBalanceException) {
                 throw InsufficientFundsException()
@@ -525,13 +520,13 @@ class AndroidCardanoTransactionEngine(
             summary.requireL1Witnesses(sourceCredentialHex, signed)
 
             val reference = when (intent) {
-                is CardanoIntent.OpenChannel -> intent.referenceInput
+                is CardanoIntent.OpenChannel -> null
                 is CardanoIntent.AddChannelFunds -> intent.referenceInput
                 is CardanoIntent.CloseChannel -> intent.referenceInput
                 else -> error("unreachable")
-            }.let { TransactionInputReference(it.transactionId, it.index) }
-            require(summary.referenceInputs == listOf(reference))
-            require(reference !in summary.inputs && reference !in summary.collateralInputs)
+            }?.let { TransactionInputReference(it.transactionId, it.index) }
+            require(summary.referenceInputs == reference?.let(::listOf).orEmpty())
+            require(reference == null || reference !in summary.inputs && reference !in summary.collateralInputs)
 
             val rawRequiredSigners = (rawBody[UnsignedInteger(14)] as? CborArray)?.dataItems.orEmpty().map {
                 HexUtil.encodeHexString((it as ByteString).bytes.also { bytes -> require(bytes.size == 28) })
@@ -610,7 +605,7 @@ class AndroidCardanoTransactionEngine(
                 require(summary.redeemers.isEmpty() && summary.scriptDataHashHex == null)
                 require(summary.collateralInputs.isEmpty() && summary.collateralReturn == null && summary.totalCollateral == null)
             }
-            requireChannelFee(cbor, summary, ledger, params, script, signed)
+            requireChannelFee(cbor, summary, ledger, params, if (spend) script.scriptRefBytes().size.toLong() else 0, signed)
         } catch (error: CancellationException) {
             throw error
         } catch (_: Exception) {
@@ -663,7 +658,7 @@ class AndroidCardanoTransactionEngine(
         summary: TransactionSummary,
         ledger: LedgerSnapshot,
         params: ProtocolParams,
-        script: PlutusV3Script,
+        referenceScriptBytes: Long,
         signed: Boolean,
     ) {
         val pricedBytes = if (signed) cbor else Transaction.deserialize(cbor).also { transaction ->
@@ -678,7 +673,7 @@ class AndroidCardanoTransactionEngine(
         )
         val required = calculator.calculateFee(pricedBytes, params)
             .add(calculator.calculateScriptFee(Transaction.deserialize(cbor).witnessSet?.redeemers.orEmpty().map { it.exUnits }, params))
-            .add(calculator.tierRefScriptFee(script.scriptRefBytes().size.toLong()))
+            .add(calculator.tierRefScriptFee(referenceScriptBytes))
         require(BigInteger.valueOf(summary.fee.value) >= required)
         require(pricedBytes.size <= requireNotNull(params.maxTxSize))
         requireMinimumAda(cbor, ledger.protocolParametersJson)
