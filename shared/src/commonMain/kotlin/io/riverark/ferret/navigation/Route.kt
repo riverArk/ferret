@@ -20,7 +20,7 @@ import kotlinx.serialization.Serializable
     @Serializable data class Channel(val walletId: String) : Route
     @Serializable data class ScanInvoice(val walletId: String) : Route
     @Serializable data class ConfirmPayment(val walletId: String) : Route
-    @Serializable data class PaymentReceipt(val walletId: String, val operationId: String) : Route
+    @Serializable data class PaymentReceipt(val walletId: String, val channelKeytag: String, val operationId: String) : Route
     @Serializable data class Settings(val walletId: String) : Route
     @Serializable data class RemoveWallet(val walletId: String) : Route
 }

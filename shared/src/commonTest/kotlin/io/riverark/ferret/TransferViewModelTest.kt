@@ -1,7 +1,9 @@
 package io.riverark.ferret
 
+import io.riverark.ferret.core.model.AssetAmount
+import io.riverark.ferret.core.model.AssetPricing
 import io.riverark.ferret.core.model.CardanoNetwork
-import io.riverark.ferret.core.model.Lovelace
+import io.riverark.ferret.core.model.ChannelAsset
 import io.riverark.ferret.core.model.TransactionRecord
 import io.riverark.ferret.core.model.WalletId
 import io.riverark.ferret.core.model.WalletProfile
@@ -19,6 +21,7 @@ class TransferViewModelTest {
     private val destination = profile('1', CardanoNetwork.PREPROD)
     private val mainnet = profile('2', CardanoNetwork.MAINNET)
     private val repository = RecordingL1Repository()
+    private val ada = ChannelAsset("ada", null, null, 6, AssetPricing.ADA, "0".repeat(64))
     private val viewModel = TransferViewModel(source.id, source.network, repository)
 
     @Test fun destinationsContainOnlyOtherWalletsOnTheSameNetwork() {
@@ -29,7 +32,7 @@ class TransferViewModelTest {
     }
 
     @Test fun arbitraryAddressCanBePreviewed() = runBlocking {
-        viewModel.preview(TransferDestination("External address", "addr_test1external"), Lovelace(1))
+        viewModel.preview(TransferDestination("External address", "addr_test1external"), AssetAmount(ada, 1))
         assertEquals(1, repository.previewCalls)
     }
 
@@ -46,9 +49,9 @@ class TransferViewModelTest {
 
         override suspend fun balance(walletId: WalletId) = error("not used")
         override suspend fun history(walletId: WalletId): List<TransactionRecord> = error("not used")
-        override suspend fun previewTransfer(walletId: WalletId, destination: TransferDestination, amount: Lovelace): TransferPreview {
+        override suspend fun previewTransfer(walletId: WalletId, destination: TransferDestination, amount: AssetAmount): TransferPreview {
             previewCalls++
-            return TransferPreview(destination, amount, Lovelace(1), Lovelace(0))
+            return TransferPreview(destination, amount, AssetAmount(amount.asset, 1), AssetAmount(amount.asset, 0))
         }
         override suspend fun submitTransfer(walletId: WalletId, preview: TransferPreview) = error("not used")
         override suspend fun previewSweep(walletId: WalletId, destinationAddress: String) = error("not used")

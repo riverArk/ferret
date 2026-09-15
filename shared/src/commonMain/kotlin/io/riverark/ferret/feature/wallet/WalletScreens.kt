@@ -57,6 +57,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import ferret.shared.generated.resources.Res
 import ferret.shared.generated.resources.account_balance_wallet
+import ferret.shared.generated.resources.asset_1f3aec8bfe7ea4fe14c5f121e2a92e301afe414147860d557cac7e34_5553444378
+import ferret.shared.generated.resources.asset_c48cbb3d5e57ed56e276bc45f99ab39abe94e6cd7ac39fb402da47ad_0014df105553444d
+import ferret.shared.generated.resources.asset_fe7c786ab321f41c654ef6c1af7b3250a613c24e4213e0425a7ae456_55534441
 import ferret.shared.generated.resources.add_circle
 import ferret.shared.generated.resources.bolt
 import ferret.shared.generated.resources.history
@@ -65,13 +68,16 @@ import ferret.shared.generated.resources.settings
 import ferret.shared.generated.resources.empty_activity_ferret
 import ferret.shared.generated.resources.ferret_unpack
 import ferret.shared.generated.resources.splash_ferret
+import io.riverark.ferret.core.model.AssetAmount
+import io.riverark.ferret.core.model.AssetCatalog
 import io.riverark.ferret.core.model.CardanoNetwork
+import io.riverark.ferret.core.channel.ChannelCollectionV3
 import io.riverark.ferret.core.channel.ChannelSnapshot
+import io.riverark.ferret.core.model.ChannelAsset
 import io.riverark.ferret.core.model.ChannelState
 import io.riverark.ferret.core.model.OperationState
-import io.riverark.ferret.core.model.Lovelace
-import io.riverark.ferret.core.model.TransactionRecord
 import io.riverark.ferret.core.model.WalletProfile
+import io.riverark.ferret.core.model.parseAmount
 import io.riverark.ferret.ui.FerretCard
 import io.riverark.ferret.ui.FerretDataBlock
 import io.riverark.ferret.ui.FerretEmptyState
@@ -285,6 +291,7 @@ fun VerifyRecoveryScreen(words: List<String>, busy: Boolean, error: String?, onC
 @Composable
 fun HomeScreen(
     state: HomeUiState,
+    catalog: AssetCatalog,
     onRefresh: () -> Unit,
     onTopUp: () -> Unit,
     onOpenChannel: (() -> Unit)?,
@@ -297,6 +304,12 @@ fun HomeScreen(
 ) {
     var showMenu by rememberSaveable { mutableStateOf(false) }
     val menuState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val entries = channelDisplayOrder(state.channels?.channels?.values.orEmpty())
+    val adaBalance = state.balance?.assets?.singleOrNull { it.total.asset == catalog.ada }
+    val canPay = state.channels?.unresolvedLegacy?.isEmpty() == true && entries.any {
+        it.asset == catalog.ada && it.state is ChannelState.Open && it.pending == null &&
+            it.payments.pending == null && it.spendableBalance.baseUnits > 0
+    }
     fun select(action: () -> Unit) {
         showMenu = false
         action()
@@ -316,29 +329,52 @@ fun HomeScreen(
                 ) {
                     Text(state.profile.name, style = MaterialTheme.typography.headlineLarge)
                     FerretStatusChip(state.profile.network.name)
-                    FerretCard(Modifier.fillMaxWidth()) {
-                        when {
-                            state.balance != null -> {
-                                FerretDataBlock("L1 available balance", formatAda(state.balance))
-                                state.channelBalance?.let { FerretDataBlock("L2 spendable balance", formatAda(it)) }
+                    when {
+                        state.balance != null -> {
+                            state.balance.assets.forEach { balance ->
+                                AssetHoldingRow(balance, channelBalance(balance.total.asset, entries), catalog)
                             }
-                            state.error != null -> FerretErrorState(state.error)
-                            else -> Text("Loading balance")
+                            if (state.balance.unsupportedAssets.isNotEmpty()) {
+                                FerretErrorState("Unsupported native assets present.")
+                            }
+                        }
+                        state.error != null -> FerretErrorState(state.error)
+                        else -> FerretCard(Modifier.fillMaxWidth()) { Text("Loading balances") }
+                    }
+                    if (entries.isNotEmpty() || state.channels?.unresolvedLegacy?.isNotEmpty() == true) {
+                        val labels = distinctKeytagSuffixes(entries.map { it.keytag.value })
+                        entries.filter { it.state != ChannelState.Absent }.takeIf { it.isNotEmpty() }?.let { active ->
+                            Text("Channels", style = MaterialTheme.typography.titleMedium)
+                            active.forEach { channel ->
+                                ChannelSummary(channel, labels.getValue(channel.keytag.value), catalog)
+                            }
+                        }
+                        entries.filter { it.state == ChannelState.Absent }.let { notOpened ->
+                            if (notOpened.isNotEmpty() || state.channels?.unresolvedLegacy?.isNotEmpty() == true) {
+                                Text("Not opened channels", style = MaterialTheme.typography.titleMedium)
+                                if (state.channels?.unresolvedLegacy?.isNotEmpty() == true) {
+                                    FerretErrorState(LEGACY_CHANNEL_MESSAGE)
+                                }
+                                notOpened.forEach { channel ->
+                                    ChannelSummary(channel, labels.getValue(channel.keytag.value), catalog)
+                                }
+                            }
                         }
                     }
                     FerretCard(Modifier.fillMaxWidth()) {
                         Text("Latest activity", style = MaterialTheme.typography.titleMedium)
                         state.latestActivity?.let { activity ->
-                            Text("${activity.realm}: ${formatAda(activity.amount)}")
-                            Text("${activity.state} · fee ${formatAda(activity.fee)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            activity.amounts.forEach { Text("${activity.realm}: ${formatAsset(it, catalog)}") }
+                            Text(
+                                "${activity.state} · fee ${formatAsset(activity.fee, catalog)}",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         } ?: Text("No activity yet", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     FerretCard(Modifier.fillMaxWidth()) {
                         SelectionContainer { FerretDataBlock("Payment address", state.profile.paymentAddress) }
                     }
-                    if (state.balance != null && state.error != null) {
-                        FerretErrorState(state.error)
-                    }
+                    if (state.balance != null && state.error != null) FerretErrorState(state.error)
                 }
             }
             FerretSecondaryButton(
@@ -347,7 +383,7 @@ fun HomeScreen(
                 Modifier.semantics { stateDescription = if (showMenu) "Expanded" else "Collapsed" },
             )
         }
-        if (state.profile.channelState is ChannelState.Open && onPay != null) {
+        if (canPay && onPay != null) {
             FloatingActionButton(
                 onClick = onPay,
                 modifier = Modifier.align(Alignment.BottomEnd)
@@ -360,27 +396,25 @@ fun HomeScreen(
     }
 
     if (showMenu) {
-        ModalBottomSheet(
-            onDismissRequest = { showMenu = false },
-            sheetState = menuState,
-        ) {
+        ModalBottomSheet(onDismissRequest = { showMenu = false }, sheetState = menuState) {
             Column(
-                Modifier.fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
-                    .navigationBarsPadding()
+                Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).navigationBarsPadding()
                     .padding(horizontal = FerretSpacing.md, vertical = FerretSpacing.sm),
             ) {
                 HomeMenuSection("Wallet actions")
-                if (channelRouteAvailable(state.profile.channelState) && onChannel != null) {
-                    HomeMenuItem("View channel", Res.drawable.bolt) { select(onChannel) }
-                    if (state.profile.channelState is ChannelState.Open && onPay != null) {
-                        HomeMenuItem("Pay invoice", Res.drawable.qr_code_scanner) { select(onPay) }
-                    }
-                } else if (state.balance?.value?.let { it > 0 } == true && onOpenChannel != null) {
-                    HomeMenuItem("Open channel", Res.drawable.bolt) { select(onOpenChannel) }
+                if (state.channels?.let(::channelRouteAvailable) == true && onChannel != null) {
+                    HomeMenuItem("View channels", Res.drawable.bolt) { select(onChannel) }
                 }
+                if (
+                    state.channels?.unresolvedLegacy?.isEmpty() == true &&
+                    adaBalance?.spendable?.baseUnits?.let { it > 0 } == true &&
+                    onOpenChannel != null
+                ) {
+                    HomeMenuItem("Open ADA channel", Res.drawable.bolt) { select(onOpenChannel) }
+                }
+                if (canPay && onPay != null) HomeMenuItem("Pay invoice", Res.drawable.qr_code_scanner) { select(onPay) }
                 HomeMenuItem("Add ADA", Res.drawable.add_circle) { select(onTopUp) }
-                if (state.balance?.value?.let { it > 0 } == true && onTransfer != null) {
+                if (adaBalance?.spendable?.baseUnits?.let { it > 0 } == true && onTransfer != null) {
                     HomeMenuItem("Transfer ADA", Res.drawable.account_balance_wallet) { select(onTransfer) }
                 }
                 HorizontalDivider(Modifier.padding(vertical = FerretSpacing.sm))
@@ -414,8 +448,8 @@ private fun HomeMenuItem(title: String, icon: DrawableResource, onClick: () -> U
     )
 }
 
-internal fun channelRouteAvailable(state: ChannelState) =
-    state != ChannelState.Absent && state != ChannelState.Closed
+internal fun channelRouteAvailable(collection: ChannelCollectionV3) =
+    collection.channels.isNotEmpty() || collection.unresolvedLegacy.isNotEmpty()
 
 internal fun channelStateLabel(state: ChannelState) = when (state) {
     ChannelState.Absent -> "Not opened"
@@ -430,44 +464,186 @@ internal fun channelStateLabel(state: ChannelState) = when (state) {
 @Composable
 fun ChannelScreen(
     profile: WalletProfile,
-    snapshot: ChannelSnapshot?,
+    collection: ChannelCollectionV3?,
+    catalog: AssetCatalog,
     error: String?,
+    cleaning: Boolean,
+    onCleanupInactive: (() -> Unit)?,
     onRetry: () -> Unit,
     onBack: () -> Unit,
 ) {
+    var confirmingCleanup by rememberSaveable(collection?.unresolvedLegacy?.contentHashCode()) {
+        mutableStateOf(false)
+    }
     FerretScreen {
-        FerretTopBar("Channel", navigation = { io.riverark.ferret.ui.FerretTextButton("Back", onBack) })
+        FerretTopBar("Channels", navigation = { io.riverark.ferret.ui.FerretTextButton("Back", onBack) })
         FerretStatusChip(profile.network.name)
         when {
             error != null -> FerretErrorState(error, "Retry", onRetry)
-            snapshot == null -> FerretLoadingState("Loading channel")
+            collection == null -> FerretLoadingState("Loading channels")
             else -> {
-                val status = channelStateLabel(snapshot.state)
-                FerretCard(Modifier.fillMaxWidth().semantics { stateDescription = status }) {
-                    FerretDataBlock("Status", status)
-                    FerretDataBlock("Spendable capacity", formatAda(snapshot.spendableBalance))
-                    when (val state = snapshot.state) {
-                        is ChannelState.Opening -> FerretDataBlock("Opening transaction", state.txId)
-                        is ChannelState.Open -> FerretDataBlock("Channel", state.channelId)
-                        is ChannelState.Closing -> FerretDataBlock("Closing transaction", state.txId)
-                        else -> Unit
+                if (collection.channels.isEmpty() && collection.unresolvedLegacy.isEmpty()) {
+                    FerretEmptyState("No channels", "Open an ADA channel from the wallet menu.")
+                } else {
+                    val entries = channelDisplayOrder(collection.channels.values)
+                    val active = entries.filter { it.state != ChannelState.Absent }
+                    val notOpened = entries.filter { it.state == ChannelState.Absent }
+                    val labels = distinctKeytagSuffixes(entries.map { it.keytag.value })
+                    LazyColumn(
+                        Modifier.weight(1f).fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(FerretSpacing.sm),
+                    ) {
+                        if (active.isNotEmpty()) {
+                            item { Text("Channels", style = MaterialTheme.typography.titleMedium) }
+                            items(active, key = { it.keytag.value }) { channel ->
+                                ChannelSummary(channel, labels.getValue(channel.keytag.value), catalog, detailed = true)
+                            }
+                        }
+                        if (notOpened.isNotEmpty() || collection.unresolvedLegacy.isNotEmpty()) {
+                            item { Text("Not opened channels", style = MaterialTheme.typography.titleMedium) }
+                            if (collection.unresolvedLegacy.isNotEmpty()) {
+                                item { FerretErrorState(LEGACY_CHANNEL_MESSAGE) }
+                                if (notOpened.isNotEmpty() && onCleanupInactive != null) {
+                                    item {
+                                        if (confirmingCleanup) {
+                                            FerretCard(Modifier.fillMaxWidth()) {
+                                                Text("This removes only failed, zero-balance channel attempts.")
+                                                Text("Your wallet and open channel are not removed.")
+                                                FerretSecondaryButton(
+                                                    "Confirm cleanup",
+                                                    {
+                                                        confirmingCleanup = false
+                                                        onCleanupInactive()
+                                                    },
+                                                    enabled = !cleaning,
+                                                )
+                                                io.riverark.ferret.ui.FerretTextButton(
+                                                    "Cancel",
+                                                    { confirmingCleanup = false },
+                                                    enabled = !cleaning,
+                                                )
+                                            }
+                                        } else {
+                                            FerretSecondaryButton(
+                                                "Clean up failed channel attempts",
+                                                { confirmingCleanup = true },
+                                                enabled = !cleaning,
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                            items(notOpened, key = { it.keytag.value }) { channel ->
+                                ChannelSummary(channel, labels.getValue(channel.keytag.value), catalog, detailed = true)
+                            }
+                        }
                     }
                 }
-                snapshot.pending?.let { pending ->
-                    FerretCard(Modifier.fillMaxWidth()) {
-                        FerretDataBlock("Pending operation", pending.operationId)
-                        FerretDataBlock("Reconciliation", pending.state.label())
-                    }
-                }
-                Text(
-                    "Channel transactions remain unavailable until the controlled Mainnet deployment passes its mutation and reconciliation checks.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             }
         }
         FerretSecondaryButton("Refresh", onRetry)
-        Box(Modifier.weight(1f))
     }
+}
+
+@Composable
+private fun AssetHoldingRow(balance: AssetBalance, channelBalance: AssetAmount?, catalog: AssetCatalog) {
+    val asset = catalog.requireAsset(balance.total.asset)
+    FerretCard(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(FerretSpacing.sm),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Image(painterResource(assetDrawable(asset)), null, Modifier.size(36.dp))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(FerretSpacing.sm)) {
+                Text(assetName(asset, catalog), style = MaterialTheme.typography.titleMedium)
+                FerretDataBlock("Total holdings", formatAsset(balance.total, catalog))
+                FerretDataBlock("Transfer available", formatAsset(balance.spendable, catalog))
+                channelBalance?.let { FerretDataBlock("In channels", formatAsset(it, catalog)) }
+                if (balance.pending.baseUnits > 0) FerretDataBlock("Pending", formatAsset(balance.pending, catalog))
+                if (asset != catalog.ada) {
+                    Text("Read-only", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChannelSummary(
+    snapshot: ChannelSnapshot,
+    shortKeytag: String,
+    catalog: AssetCatalog,
+    detailed: Boolean = false,
+) {
+    val status = channelStateLabel(snapshot.state)
+    FerretCard(Modifier.fillMaxWidth().semantics { stateDescription = status }) {
+        FerretDataBlock("Channel", shortKeytag)
+        FerretDataBlock("Asset", assetName(snapshot.asset, catalog))
+        FerretDataBlock("Spendable capacity", formatAsset(snapshot.spendableBalance, catalog))
+        FerretDataBlock("Status", status)
+        snapshot.pending?.let {
+            FerretDataBlock("Pending operation", it.operationId)
+            FerretDataBlock("Reconciliation", it.state.label())
+        }
+        snapshot.payments.pending?.let { FerretDataBlock("Pending payment", it.operationId) }
+        if (detailed) {
+            when (val state = snapshot.state) {
+                is ChannelState.Opening -> FerretDataBlock("Opening transaction", state.txId)
+                is ChannelState.Open -> FerretDataBlock("Opening reference", state.channelId)
+                is ChannelState.Closing -> FerretDataBlock("Closing transaction", state.txId)
+                else -> Unit
+            }
+        }
+    }
+
+}
+internal fun channelDisplayOrder(channels: Collection<ChannelSnapshot>): List<ChannelSnapshot> =
+    channels.sortedWith(
+        compareBy<ChannelSnapshot> {
+            when (it.state) {
+                is ChannelState.Open -> 0
+                ChannelState.Absent -> 2
+                else -> 1
+            }
+        }.thenBy { it.keytag.value },
+    )
+
+internal fun channelBalance(asset: ChannelAsset, channels: Collection<ChannelSnapshot>): AssetAmount? {
+    var total: AssetAmount? = null
+    channels.forEach { channel ->
+        if (channel.asset == asset) total = (total ?: AssetAmount(asset, 0)) + channel.spendableBalance
+    }
+    return total
+}
+
+internal fun distinctKeytagSuffixes(keytags: Collection<String>): Map<String, String> {
+    require(keytags.size == keytags.toSet().size)
+    var length = 12
+    while (keytags.map { it.takeLast(length.coerceAtMost(it.length)) }.distinct().size != keytags.size) length += 4
+    return keytags.associateWith { it.takeLast(length.coerceAtMost(it.length)) }
+}
+
+internal fun formatAsset(amount: AssetAmount, catalog: AssetCatalog): String {
+    val asset = catalog.requireAsset(amount.asset)
+    return if (asset == catalog.ada) "₳ ${amount.format()}" else "${amount.format()} ${assetTicker(asset, catalog)}"
+}
+
+internal fun assetName(asset: ChannelAsset, catalog: AssetCatalog): String =
+    if (catalog.requireAsset(asset) == catalog.ada) "Cardano" else requireNotNull(catalog.presentations[asset.alias]).name
+
+private fun assetTicker(asset: ChannelAsset, catalog: AssetCatalog): String =
+    if (catalog.requireAsset(asset) == catalog.ada) "ADA" else requireNotNull(catalog.presentations[asset.alias]).ticker
+
+private fun assetDrawable(asset: ChannelAsset): DrawableResource = when (asset.connectorUnit) {
+    "lovelace" -> Res.drawable.account_balance_wallet
+    "1f3aec8bfe7ea4fe14c5f121e2a92e301afe414147860d557cac7e345553444378" ->
+        Res.drawable.asset_1f3aec8bfe7ea4fe14c5f121e2a92e301afe414147860d557cac7e34_5553444378
+    "c48cbb3d5e57ed56e276bc45f99ab39abe94e6cd7ac39fb402da47ad0014df105553444d" ->
+        Res.drawable.asset_c48cbb3d5e57ed56e276bc45f99ab39abe94e6cd7ac39fb402da47ad_0014df105553444d
+    "fe7c786ab321f41c654ef6c1af7b3250a613c24e4213e0425a7ae45655534441" ->
+        Res.drawable.asset_fe7c786ab321f41c654ef6c1af7b3250a613c24e4213e0425a7ae456_55534441
+    else -> error("Asset catalog unavailable.")
 }
 
 internal fun OperationState.label() = name.lowercase().replace('_', ' ').replaceFirstChar(Char::uppercase)
@@ -475,9 +651,10 @@ internal fun OperationState.label() = name.lowercase().replace('_', ' ').replace
 @Composable
 fun TransferScreen(
     profile: WalletProfile,
+    catalog: AssetCatalog,
     destinations: List<TransferDestination>,
     state: TransferUiState,
-    onPreview: (TransferDestination, Lovelace) -> Unit,
+    onPreview: (TransferDestination, AssetAmount) -> Unit,
     onPreviewSweep: (String) -> Unit,
     onSubmit: () -> Unit,
     onBack: () -> Unit,
@@ -489,7 +666,7 @@ fun TransferScreen(
     val destination = trimmedAddress.takeIf(String::isNotBlank)?.let {
         savedDestination ?: TransferDestination("External address", it)
     }
-    val lovelace = parseAdaAmount(amount)
+    val adaAmount = parseAssetAmount(catalog.ada, amount)
     val editable = state.preview == null && state.sweepPreview == null && !state.busy
     FerretScreen {
         LazyColumn(
@@ -539,9 +716,9 @@ fun TransferScreen(
                     FerretCard(Modifier.fillMaxWidth()) {
                         FerretDataBlock("Recipient", preview.destination.name)
                         FerretDataBlock("Address", preview.destination.address)
-                        FerretDataBlock("Amount", formatAda(preview.amount))
-                        FerretDataBlock("Fee", formatAda(preview.feeBound))
-                        FerretDataBlock("Change", formatAda(preview.change))
+                        FerretDataBlock("Amount", formatAsset(preview.amount, catalog))
+                        FerretDataBlock("Fee", formatAsset(preview.feeBound, catalog))
+                        FerretDataBlock("Change", formatAsset(preview.change, catalog))
                         FerretDataBlock("Network", profile.network.name)
                     }
                 }
@@ -551,9 +728,9 @@ fun TransferScreen(
                     FerretCard(Modifier.fillMaxWidth()) {
                         FerretDataBlock("Recipient", savedDestination?.name ?: "External address")
                         FerretDataBlock("Address", preview.destinationAddress)
-                        FerretDataBlock("Amount", formatAda(preview.amount))
-                        FerretDataBlock("Fee", formatAda(preview.fee))
-                        FerretDataBlock("Change", formatAda(Lovelace(0)))
+                        FerretDataBlock("Amount", formatAsset(preview.amount, catalog))
+                        FerretDataBlock("Fee", formatAsset(preview.fee, catalog))
+                        FerretDataBlock("Change", formatAsset(AssetAmount(catalog.ada, 0), catalog))
                         FerretDataBlock("Network", profile.network.name)
                     }
                 }
@@ -564,8 +741,8 @@ fun TransferScreen(
                 item {
                     FerretPrimaryButton(
                         "Preview transfer",
-                        { onPreview(checkNotNull(destination), checkNotNull(lovelace)) },
-                        enabled = destination != null && lovelace != null && !state.busy,
+                        { onPreview(checkNotNull(destination), checkNotNull(adaAmount)) },
+                        enabled = destination != null && adaAmount != null && !state.busy,
                     )
                 }
                 item {
@@ -587,16 +764,17 @@ fun TransferScreen(
 @Composable
 fun OpenChannelScreen(
     profile: WalletProfile,
+    catalog: AssetCatalog,
     state: OpenChannelUiState,
     onAmountChanged: () -> Unit,
-    onPreview: (Lovelace) -> Unit,
+    onPreview: (AssetAmount) -> Unit,
     onSubmit: () -> Unit,
     onStatus: () -> Unit,
     onSettings: () -> Unit,
     onBack: () -> Unit,
 ) {
     var amount by remember { mutableStateOf("") }
-    val lovelace = parseAdaAmount(amount)
+    val adaAmount = parseAssetAmount(catalog.ada, amount)
     FerretScreen {
         LazyColumn(
             Modifier.weight(1f).fillMaxWidth(),
@@ -633,12 +811,12 @@ fun OpenChannelScreen(
             state.preview?.let { preview ->
                 item {
                     FerretCard(Modifier.fillMaxWidth()) {
-                        FerretDataBlock("Deposit", formatAda(preview.amount))
-                        FerretDataBlock("Transaction fee", formatAda(preview.actualFee))
-                        FerretDataBlock("Wallet change", formatAda(preview.sourceChange))
-                        FerretDataBlock("Ledger minimum ADA", formatAda(preview.ledgerMinAda))
-                        FerretDataBlock("Protocol reserve", formatAda(preview.protocolReserve))
-                        FerretDataBlock("Channel capacity", formatAda(preview.resultingSpendableBalance))
+                        FerretDataBlock("Deposit", formatAsset(preview.amount, catalog))
+                        FerretDataBlock("Transaction fee", formatAsset(preview.actualFee, catalog))
+                        FerretDataBlock("Wallet change", formatAsset(preview.sourceChange, catalog))
+                        FerretDataBlock("Ledger minimum ADA", formatAsset(preview.ledgerMinAda, catalog))
+                        FerretDataBlock("Protocol reserve", formatAsset(preview.protocolReserve, catalog))
+                        FerretDataBlock("Channel capacity", formatAsset(preview.resultingSpendableBalance, catalog))
                     }
                 }
             }
@@ -653,8 +831,8 @@ fun OpenChannelScreen(
                     else ->
                         FerretPrimaryButton(
                             "Preview channel",
-                            { onPreview(checkNotNull(lovelace)) },
-                            enabled = lovelace != null && !state.busy,
+                            { onPreview(checkNotNull(adaAmount)) },
+                            enabled = adaAmount != null && !state.busy,
                         )
                 }
             }
@@ -665,21 +843,8 @@ fun OpenChannelScreen(
     }
 }
 
-internal fun parseAdaAmount(value: String): Lovelace? {
-    if (!Regex("(0|[1-9][0-9]*)(\\.[0-9]{0,6})?").matches(value)) return null
-    val parts = value.split('.', limit = 2)
-    val whole = parts[0].toLongOrNull() ?: return null
-    val fraction = parts.getOrElse(1) { "" }.padEnd(6, '0').toLongOrNull() ?: 0
-    if (whole > (Long.MAX_VALUE - fraction) / 1_000_000) return null
-    val total = whole * 1_000_000 + fraction
-    return total.takeIf { it > 0 }?.let(::Lovelace)
-}
-
-internal fun formatAda(lovelace: Lovelace): String {
-    val whole = lovelace.value / 1_000_000
-    val fraction = (lovelace.value % 1_000_000).toString().padStart(6, '0').trimEnd('0')
-    return "₳ $whole" + if (fraction.isEmpty()) "" else ".$fraction"
-}
+internal fun parseAssetAmount(asset: ChannelAsset, value: String): AssetAmount? =
+    runCatching { asset.parseAmount(value) }.getOrNull()?.takeIf { it.baseUnits > 0 }
 
 data class QrCode(val size: Int, val modules: BooleanArray) {
     init {
@@ -723,10 +888,12 @@ fun TopUpScreen(profile: WalletProfile, qrCode: QrCode, onBack: () -> Unit, onCo
 @Composable
 fun HistoryScreen(
     state: HistoryUiState,
+    catalog: AssetCatalog,
     onRefresh: () -> Unit,
     onBack: () -> Unit,
 ) {
     var expandedId by remember { mutableStateOf<String?>(null) }
+    val channelLabels = distinctKeytagSuffixes(state.records.mapNotNull { it.channelKeytag?.value }.distinct())
     FerretScreen {
         FerretTopBar("History", navigation = { io.riverark.ferret.ui.FerretTextButton("Back", onBack) })
         state.lastRefreshEpochMillis?.let { Text("Last refreshed: $it", color = MaterialTheme.colorScheme.onSurfaceVariant) }
@@ -740,15 +907,22 @@ fun HistoryScreen(
                     Modifier.fillMaxSize(),
                     verticalArrangement = Arrangement.spacedBy(FerretSpacing.sm),
                 ) {
-                    items(state.records, key = TransactionRecord::id) { record ->
+                    items(state.records, key = { "${it.realm}:${it.channelKeytag?.value.orEmpty()}:${it.id}" }) { record ->
+                        val rowId = "${record.realm}:${record.channelKeytag?.value.orEmpty()}:${record.id}"
                         FerretCard(
                             Modifier.fillMaxWidth(),
-                            onClick = { expandedId = record.id.takeUnless { it == expandedId } },
+                            onClick = { expandedId = rowId.takeUnless { it == expandedId } },
                         ) {
-                            Text("${record.realm}: ${formatAda(record.amount)}", style = MaterialTheme.typography.titleMedium)
-                            Text("${record.state} · fee ${formatAda(record.fee)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(record.id, maxLines = if (expandedId == record.id) Int.MAX_VALUE else 1, overflow = TextOverflow.Ellipsis)
-                            if (expandedId == record.id) {
+                            record.amounts.forEach {
+                                Text("${record.realm}: ${formatAsset(it, catalog)}", style = MaterialTheme.typography.titleMedium)
+                            }
+                            record.channelKeytag?.let { FerretDataBlock("Channel", channelLabels.getValue(it.value)) }
+                            Text(
+                                "${record.state} · fee ${formatAsset(record.fee, catalog)}",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Text(record.id, maxLines = if (expandedId == rowId) Int.MAX_VALUE else 1, overflow = TextOverflow.Ellipsis)
+                            if (expandedId == rowId) {
                                 FerretDataBlock("Recorded at", record.timestampEpochMillis.toString())
                                 FerretDataBlock("Realm", record.realm.name)
                             }
@@ -772,7 +946,10 @@ fun HistoryScreen(
             FerretErrorState(state.error, "Retry", onRefresh)
         }
     }
+
 }
+private const val LEGACY_CHANNEL_MESSAGE =
+    "Legacy channel recovery requires verified identity. Some older channel records could not be safely matched, so channel actions are disabled. Recovered balances remain visible."
 
 internal fun recoveryVerificationIndexes(wordCount: Int, random: Random = Random.Default): List<Int> {
     require(wordCount >= 3)

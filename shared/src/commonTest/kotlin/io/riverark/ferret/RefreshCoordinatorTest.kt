@@ -2,6 +2,9 @@ package io.riverark.ferret
 
 import io.riverark.ferret.core.cardano.LedgerUtxo
 import io.riverark.ferret.core.model.CardanoNetwork
+import io.riverark.ferret.core.model.AssetCatalog
+import io.riverark.ferret.core.model.AssetPricing
+import io.riverark.ferret.core.model.ChannelAsset
 import io.riverark.ferret.core.model.Lovelace
 import io.riverark.ferret.core.model.WalletId
 import io.riverark.ferret.core.model.WalletProfile
@@ -84,6 +87,7 @@ class RefreshCoordinatorTest {
         assertTrue(utxo.ledger().scriptRefHashHex == MAINNET.validatorHashHex)
         RefreshCoordinator(
             MAINNET,
+            testAssetCatalog(),
             { HealthDto("ok") },
             { NetworkDto("mainnet") },
             { info },
@@ -195,6 +199,12 @@ class RefreshCoordinatorTest {
         assertFailsWith<IllegalArgumentException> {
             validCoordinator(identity = "1".repeat(64)).validate(profile)
         }
+        assertFailsWith<IllegalArgumentException> {
+            validCoordinator(catalogDigest = null).validate(profile)
+        }
+        assertFailsWith<IllegalArgumentException> {
+            validCoordinator(catalogDigest = "b".repeat(64)).validate(profile)
+        }
         Unit
     }
 
@@ -225,8 +235,10 @@ class RefreshCoordinatorTest {
     private fun validCoordinator(
         network: String = "preprod",
         identity: String = PREPROD.adaptorIdentityHex,
+        catalogDigest: String? = testAssetCatalog().digest,
     ) = RefreshCoordinator(
         PREPROD,
+        testAssetCatalog(),
         { HealthDto("ok") },
         { NetworkDto(network) },
         {
@@ -234,7 +246,22 @@ class RefreshCoordinatorTest {
                 AdaptorTermsDto(14),
                 AdaptorChannelParametersDto(identity, AdaptorClosePeriodDto(300, 0), 32),
                 AdaptorTransactionHelpDto(PREPROD.scriptDeploymentAddress, PREPROD.validatorHashHex),
+                catalogDigest,
             )
         },
+    )
+}
+
+private fun testAssetCatalog(): AssetCatalog {
+    val digest = "a".repeat(64)
+    return AssetCatalog(
+        listOf(
+            ChannelAsset("ada", null, null, 6, AssetPricing.ADA, digest),
+            ChannelAsset("usda", "1".repeat(56), "", 6, AssetPricing.USD_PEG, digest),
+            ChannelAsset("usdcx", "2".repeat(56), "", 6, AssetPricing.USD_PEG, digest),
+            ChannelAsset("usdm", "3".repeat(56), "", 6, AssetPricing.USD_PEG, digest),
+        ),
+        digest,
+        emptyMap(),
     )
 }

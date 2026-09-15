@@ -1,6 +1,7 @@
 package io.riverark.ferret.core.model
 
 import kotlinx.serialization.Serializable
+import io.riverark.ferret.core.channel.ProtocolKeytag
 import kotlin.jvm.JvmInline
 
 @Serializable
@@ -47,7 +48,6 @@ data class WalletProfile(
     val network: CardanoNetwork,
     val paymentAddress: String,
     val stakeAddress: String,
-    val channelState: ChannelState = ChannelState.Absent,
     val backupStatus: BackupStatus = BackupStatus.DISCONNECTED,
     val recoveryPhraseConfirmed: Boolean = true,
 )
@@ -68,20 +68,26 @@ data class PendingOperation(
 data class TransactionRecord(
     val id: String,
     val timestampEpochMillis: Long,
-    val amount: Lovelace,
-    val fee: Lovelace,
+    val amounts: List<AssetAmount>,
+    val fee: AssetAmount,
     val realm: Realm,
     val state: TransactionState,
+    val channelKeytag: ProtocolKeytag? = null,
 )
 
 @Serializable enum class Realm { L1, L2 }
 @Serializable enum class TransactionState { PENDING, CONFIRMED, SETTLED, FAILED }
 
-@Serializable
-data class Quote(val id: String, val amount: Lovelace, val routingFee: Lovelace, val adaptorFee: Lovelace, val expiresAtEpochMillis: Long)
 
 @Serializable
-data class Receipt(val operationId: String, val paymentHash: String, val amount: Lovelace, val fee: Lovelace, val verified: Boolean)
+data class Receipt(
+    val operationId: String,
+    val paymentHash: String,
+    val keytag: ProtocolKeytag,
+    val amount: AssetAmount,
+    val fee: AssetAmount,
+    val verified: Boolean,
+)
 
 sealed interface AppState {
     data object Locked : AppState

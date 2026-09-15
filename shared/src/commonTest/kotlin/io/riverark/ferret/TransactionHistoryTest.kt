@@ -1,6 +1,9 @@
 package io.riverark.ferret
 
-import io.riverark.ferret.core.model.Lovelace
+import io.riverark.ferret.core.model.AssetAmount
+import io.riverark.ferret.core.model.AssetCatalog
+import io.riverark.ferret.core.model.AssetPricing
+import io.riverark.ferret.core.model.ChannelAsset
 import io.riverark.ferret.core.model.Realm
 import io.riverark.ferret.core.model.TransactionRecord
 import io.riverark.ferret.core.model.TransactionState
@@ -14,6 +17,9 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFails
 
 class TransactionHistoryTest {
+    private val catalog = testCatalog()
+    private fun ada(baseUnits: Long) = AssetAmount(catalog.ada, baseUnits)
+
     private val wallet = "addr_test1wallet"
     private val response = """[{
         "id":"${"a".repeat(64)}",
@@ -43,9 +49,9 @@ class TransactionHistoryTest {
         )
 
         expectedStates.forEach { (depth, expectedState) ->
-            val record = listOf(transaction.copy(depth = depth)).transactionRecords(wallet).single()
-            assertEquals(Lovelace(7_000_000), record.amount)
-            assertEquals(Lovelace(200_000), record.fee)
+            val record = listOf(transaction.copy(depth = depth)).transactionRecords(wallet, catalog).single()
+            assertEquals(listOf(ada(7_000_000)), record.amounts)
+            assertEquals(ada(200_000), record.fee)
             assertEquals(1_771_459_333_000, record.timestampEpochMillis)
             assertEquals(Realm.L1, record.realm)
             assertEquals(expectedState, record.state)
@@ -65,10 +71,52 @@ class TransactionHistoryTest {
                 ),
             )
 
-        val record = listOf(transaction).transactionRecords(wallet).single()
+        val record = listOf(transaction).transactionRecords(wallet, catalog).single()
 
-        assertEquals(Lovelace(5_000_000), record.amount)
-        assertEquals(Lovelace(0), record.fee)
+        assertEquals(listOf(ada(5_000_000)), record.amounts)
+        assertEquals(ada(0), record.fee)
+    }
+
+    @Test fun mixedAssetTransactionKeepsOneIdentityAndOneAdaFee() {
+        val unit = catalog.asset("usdm")!!.connectorUnit
+        val transaction = Json.decodeFromString<List<ConnectorTransactionDto>>(response).single().copy(
+            inputs = listOf(
+                io.riverark.ferret.core.network.ConnectorInputDto(
+                    "b".repeat(64),
+                    0,
+                    wallet,
+                    listOf(
+                        io.riverark.ferret.core.network.ConnectorAssetDto("lovelace", "10000000"),
+                        io.riverark.ferret.core.network.ConnectorAssetDto(unit, "1000001"),
+                    ),
+                ),
+            ),
+            outputs = listOf(
+                io.riverark.ferret.core.network.ConnectorOutputDto(
+                    "addr_test1recipient",
+                    listOf(
+                        io.riverark.ferret.core.network.ConnectorAssetDto("lovelace", "7000000"),
+                        io.riverark.ferret.core.network.ConnectorAssetDto(unit, "1000000"),
+                    ),
+                ),
+                io.riverark.ferret.core.network.ConnectorOutputDto(
+                    wallet,
+                    listOf(
+                        io.riverark.ferret.core.network.ConnectorAssetDto("lovelace", "2800000"),
+                        io.riverark.ferret.core.network.ConnectorAssetDto(unit, "1"),
+                    ),
+                ),
+            ),
+        )
+
+        val record = listOf(transaction).transactionRecords(wallet, catalog).single()
+
+        assertEquals(transaction.id, record.id)
+        assertEquals(
+            listOf(ada(7_000_000), AssetAmount(catalog.asset("usdm")!!, 1_000_000)),
+            record.amounts,
+        )
+        assertEquals(ada(200_000), record.fee)
     }
 
     @Test fun mergingHistoryIsDescendingAndDoesNotMutateSources() {
@@ -87,7 +135,30 @@ class TransactionHistoryTest {
             .single()
             .copy(id = "not-a-transaction-id")
 
-        assertFails { listOf(malformed).transactionRecords(wallet) }
+        assertFails { listOf(malformed).transactionRecords(wallet, catalog) }
+    }
+
+    @Test fun duplicateAndOverflowingConnectorQuantitiesFailClosed() {
+        val transaction = Json.decodeFromString<List<ConnectorTransactionDto>>(response).single()
+        val duplicate = transaction.copy(
+            inputs = transaction.inputs.map {
+                it.copy(
+                    value = listOf(
+                        io.riverark.ferret.core.network.ConnectorAssetDto("lovelace", "1"),
+                        io.riverark.ferret.core.network.ConnectorAssetDto("lovelace", "2"),
+                    ),
+                )
+            },
+        )
+        assertFails { listOf(duplicate).transactionRecords(wallet, catalog) }
+
+        val overflow = transaction.copy(
+            inputs = listOf(
+                transaction.inputs.single().copy(value = listOf(io.riverark.ferret.core.network.ConnectorAssetDto("lovelace", Long.MAX_VALUE.toString()))),
+                transaction.inputs.single().copy(outputIndex = 1, value = listOf(io.riverark.ferret.core.network.ConnectorAssetDto("lovelace", "1"))),
+            ),
+        )
+        assertFails { listOf(overflow).transactionRecords(wallet, catalog) }
     }
 
     @Test fun transactionLookupRejectsMismatchedOrMalformedResponses() {
@@ -101,9 +172,23 @@ class TransactionHistoryTest {
     private fun record(id: String, timestamp: Long) = TransactionRecord(
         id,
         timestamp,
-        Lovelace(1),
-        Lovelace(0),
+        listOf(ada(1)),
+        ada(0),
         Realm.L1,
         TransactionState.CONFIRMED,
     )
+
+    private fun testCatalog(): AssetCatalog {
+        val digest = "a".repeat(64)
+        return AssetCatalog(
+            listOf(
+                ChannelAsset("ada", null, null, 6, AssetPricing.ADA, digest),
+                ChannelAsset("usda", "1".repeat(56), "", 6, AssetPricing.USD_PEG, digest),
+                ChannelAsset("usdcx", "2".repeat(56), "", 6, AssetPricing.USD_PEG, digest),
+                ChannelAsset("usdm", "3".repeat(56), "", 6, AssetPricing.USD_PEG, digest),
+            ),
+            digest,
+            emptyMap(),
+        )
+    }
 }

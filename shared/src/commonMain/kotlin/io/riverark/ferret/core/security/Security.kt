@@ -26,12 +26,13 @@ data class WalletEncryptedStateV1(
 )
 
 @Serializable
-data class WalletOperationJournalV1(
-    val schema: Int = 1,
+data class WalletOperationJournalV2(
+    val schema: Int = 2,
     val l1: ByteArray = byteArrayOf(),
-    val channel: ByteArray = byteArrayOf(),
-    val payment: ByteArray = byteArrayOf(),
-)
+    val channels: ByteArray = byteArrayOf(),
+) {
+    init { require(schema == 2) }
+}
 
 interface SecureVault {
     val isUnlocked: Boolean

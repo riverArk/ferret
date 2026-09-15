@@ -8,6 +8,12 @@ import androidx.biometric.BiometricPrompt
 import androidx.biometric.BiometricManager
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
+import io.riverark.ferret.core.channel.ChannelCollectionV3
+import io.riverark.ferret.core.channel.VaultChannelJournal
+import io.riverark.ferret.core.model.AssetCatalog
+import io.riverark.ferret.core.model.BackupStatus
+import io.riverark.ferret.core.model.CardanoNetwork
+import io.riverark.ferret.core.model.ChannelState
 import io.riverark.ferret.core.model.WalletId
 import io.riverark.ferret.core.model.WalletProfile
 import java.security.KeyStore
@@ -18,7 +24,13 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.encodeToString
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -27,7 +39,34 @@ class AndroidSecureRandomSource : SecureRandomSource {
     override fun bytes(size: Int) = ByteArray(size).also(random::nextBytes)
 }
 
-class AndroidSecureVault(private val context: Context) : SecureVault {
+@Serializable
+private data class LegacyOperationEnvelope(
+    val schema: Int = 1,
+    val l1: ByteArray = byteArrayOf(),
+    val channel: ByteArray = byteArrayOf(),
+    val payment: ByteArray = byteArrayOf(),
+)
+
+@Serializable
+private data class LegacyWalletProfile(
+    val id: WalletId,
+    val name: String,
+    val network: CardanoNetwork,
+    val paymentAddress: String,
+    val stakeAddress: String,
+    val channelState: ChannelState = ChannelState.Absent,
+    val backupStatus: BackupStatus = BackupStatus.DISCONNECTED,
+    val recoveryPhraseConfirmed: Boolean = true,
+) {
+    fun current() = WalletProfile(
+        id, name, network, paymentAddress, stakeAddress, backupStatus, recoveryPhraseConfirmed,
+    )
+}
+
+class AndroidSecureVault(
+    private val context: Context,
+    private val catalog: AssetCatalog,
+) : SecureVault {
     private val json = Json { ignoreUnknownKeys = false }
     private var dataKey: ByteArray? = null
     override val isUnlocked get() = dataKey != null
@@ -44,7 +83,66 @@ class AndroidSecureVault(private val context: Context) : SecureVault {
         val file = indexFile()
         if (!file.baseFile.exists()) return emptyList()
         val plaintext = decrypt(key(), file.readFully())
-        return try { json.decodeFromString<List<WalletProfile>>(plaintext.decodeToString()) } finally { plaintext.fill(0) }
+        val objects = try { json.parseToJsonElement(plaintext.decodeToString()).jsonArray } finally { plaintext.fill(0) }
+        if (objects.none { "channelState" in it.jsonObject }) {
+            return objects.map { json.decodeFromJsonElement(WalletProfile.serializer(), it) }
+        }
+        val legacy = objects.map { json.decodeFromJsonElement(LegacyWalletProfile.serializer(), it) }
+        val journal = VaultChannelJournal(this, catalog)
+        legacy.forEach { profile ->
+            val state = walletState(profile.id)
+            val useProfileState = try {
+                if (state.operationJournal.isEmpty()) {
+                    true
+                } else {
+                    val root = json.parseToJsonElement(state.operationJournal.decodeToString()).jsonObject
+                    if (root["schema"]?.jsonPrimitive?.content !in setOf(null, "1") || "channels" in root) {
+                        false
+                    } else {
+                        val envelope = json.decodeFromString<LegacyOperationEnvelope>(state.operationJournal.decodeToString())
+                        try {
+                            envelope.channel.isEmpty() && (
+                                envelope.payment.isEmpty() ||
+                                    json.parseToJsonElement(envelope.payment.decodeToString()).jsonObject.let {
+                                        it["pending"] == null && it["receipts"]?.jsonArray?.isEmpty() != false &&
+                                            it["paidHashes"]?.jsonArray?.isEmpty() != false
+                                    }
+                                )
+                        } finally {
+                            envelope.l1.fill(0)
+                            envelope.channel.fill(0)
+                            envelope.payment.fill(0)
+                        }
+                    }
+                }
+            } finally {
+                state.channelRecovery.fill(0)
+                state.operationJournal.fill(0)
+            }
+            val collection = if (useProfileState) {
+                if (profile.channelState == ChannelState.Absent) {
+                    ChannelCollectionV3(walletId = profile.id, catalogDigest = catalog.digest)
+                } else {
+                    val evidence = json.encodeToString(LegacyWalletProfile.serializer(), profile).encodeToByteArray()
+                    try {
+                        ChannelCollectionV3(
+                            walletId = profile.id,
+                            catalogDigest = catalog.digest,
+                            unresolvedLegacy = evidence.copyOf(),
+                        )
+                    } finally {
+                        evidence.fill(0)
+                    }
+                }
+            } else {
+                journal.load(profile.id)
+            }.also {
+                if (useProfileState) journal.persist(profile.id, it)
+            }
+        }
+        val migrated = legacy.map(LegacyWalletProfile::current)
+        writeProfiles(migrated)
+        return migrated
     }
 
     override suspend fun createWallet(profile: WalletProfile, secret: WalletSecretV1) {

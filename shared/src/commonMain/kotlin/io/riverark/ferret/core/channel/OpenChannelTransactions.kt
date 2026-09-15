@@ -11,6 +11,8 @@ import io.riverark.ferret.core.cardano.TransactionDatum
 import io.riverark.ferret.core.cardano.UnsignedTransaction
 import io.riverark.ferret.core.cardano.requireChannelFunding
 import io.riverark.ferret.core.cardano.requireL1Witnesses
+import io.riverark.ferret.core.model.AssetAmount
+import io.riverark.ferret.core.model.AssetCatalog
 import io.riverark.ferret.core.model.CardanoNetwork
 import io.riverark.ferret.core.model.Lovelace
 import io.riverark.ferret.core.model.WalletId
@@ -22,6 +24,7 @@ import io.riverark.ferret.core.security.SecureVault
 class OpenChannelTransactions(
     private val vault: SecureVault,
     private val engine: CardanoTransactionEngine,
+    private val assets: AssetCatalog,
     private val loadLedger: suspend (WalletProfile) -> LedgerSnapshot,
     private val loadInfo: suspend (WalletProfile) -> AdaptorInfoDto,
     private val verificationKey: suspend (WalletProfile) -> String,
@@ -31,15 +34,17 @@ class OpenChannelTransactions(
 ) {
     suspend fun requireAvailable(walletId: WalletId) = availability(walletId)
 
-    suspend fun preview(walletId: WalletId, amount: Lovelace, operationId: String): ChannelPreview {
-        require(amount.value > KONDUIT_MIN_ADA_BUFFER)
+    suspend fun preview(walletId: WalletId, amount: AssetAmount, operationId: String): ChannelPreview {
+        val ada = assets.requireAsset(amount.asset)
+        require(ada == assets.ada) { "Native asset channel funding is unavailable." }
+        require(amount.baseUnits > KONDUIT_MIN_ADA_BUFFER)
         require(UUID.matches(operationId))
         val profile = profile(walletId)
         availability(walletId)
         val walletKey = verificationKey(profile)
         require(KEY.matches(walletKey))
         val context = context(profile)
-        requireNoOwnedChannel(context.ledger, walletKey)
+        assets.requireDiscoveryDigest(context.assetCatalogDigest)
         val tagBytes = newTag()
         val tag = try {
             require(tagBytes.size == TAG_BYTES)
@@ -47,6 +52,8 @@ class OpenChannelTransactions(
         } finally {
             tagBytes.fill(0)
         }
+        val keytag = ProtocolKeytag.from(walletKey, ProtocolTag(tag), TAG_BYTES)
+        requireNoDuplicateChannel(context.ledger, keytag)
         val datum = ChannelDatum(
             MAINNET.validatorHashHex,
             ChannelConstants(tag, walletKey, context.adaptorKey, context.closePeriodMillis),
@@ -59,7 +66,7 @@ class OpenChannelTransactions(
             MAINNET.validatorAddress,
             context.reference,
             datum,
-            amount,
+            Lovelace(amount.baseUnits),
             operationId,
             context.ledger.currentSlot,
             validUntil,
@@ -70,7 +77,7 @@ class OpenChannelTransactions(
         val channelIndex = channelOutputIndex(summary.outputs, intent)
         val change = summary.outputs.singleOrNull { it.address == profile.paymentAddress }?.lovelace ?: Lovelace(0)
         val reserve = Lovelace(KONDUIT_MIN_ADA_BUFFER)
-        val capacity = amount - reserve
+        val capacity = AssetAmount(ada, amount.baseUnits - reserve.value)
         val payload = ChannelPayload.Transaction(
             unsigned.cbor.copyOf(),
             engine.transactionId(unsigned.cbor),
@@ -81,18 +88,19 @@ class OpenChannelTransactions(
             PreparedChannelOperation(
                 operationId,
                 payload.expectedTransactionId,
-                ChannelAction.Open(amount.value),
+                keytag,
+                ada,
+                ChannelAction.Open(amount),
                 preparedAtEpochMillis = nowEpochMillis(),
                 payload = payload,
-                keytag = ProtocolKeytag.from(walletKey, ProtocolTag(tag), TAG_BYTES).value,
                 resultingSpendableBalance = capacity,
             ),
             amount,
-            summary.fee,
-            unsigned.feeBound,
-            change,
-            engine.minimumAdaForOutput(unsigned.cbor, context.ledger.protocolParametersJson, channelIndex),
-            reserve,
+            AssetAmount(ada, summary.fee.value),
+            AssetAmount(ada, unsigned.feeBound.value),
+            AssetAmount(ada, change.value),
+            AssetAmount(ada, engine.minimumAdaForOutput(unsigned.cbor, context.ledger.protocolParametersJson, channelIndex).value),
+            AssetAmount(ada, reserve.value),
             capacity,
             profile.network,
         ).also { validate(it, profile, context) }
@@ -141,6 +149,7 @@ class OpenChannelTransactions(
         require(info.channelParameters.adaptorKeyHex == MAINNET.adaptorIdentityHex)
         require(info.transactionHelp.hostAddress == MAINNET.scriptDeploymentAddress)
         require(info.transactionHelp.validator == MAINNET.validatorHashHex)
+        assets.requireDiscoveryDigest(info.assetCatalogDigest)
         require(info.channelParameters.tagLength == TAG_BYTES)
         require(info.channelParameters.closePeriod.nanos % 1_000_000 == 0)
         val period = ProtocolDurationWire(
@@ -152,7 +161,7 @@ class OpenChannelTransactions(
             it.address == MAINNET.scriptDeploymentAddress &&
                 it.scriptRefVersion == 3 && it.scriptRefHashHex == MAINNET.validatorHashHex
         }.sortedWith(compareBy({ it.transactionId }, { it.index }))
-        return Context(ledger, info.channelParameters.adaptorKeyHex, period, references.first())
+        return Context(ledger, info.channelParameters.adaptorKeyHex, period, references.first(), info.assetCatalogDigest)
     }
 
     private fun validate(preview: ChannelPreview, profile: WalletProfile, context: Context) {
@@ -160,22 +169,23 @@ class OpenChannelTransactions(
         val intent = requireIntent(operation)
         val payload = operation.payload as ChannelPayload.Transaction
         require(preview.network == CardanoNetwork.MAINNET && profile.network == preview.network)
-        require(operation.action == ChannelAction.Open(preview.amount.value))
+        require(operation.asset == assets.ada && preview.amount.asset == assets.ada)
+        require(operation.action == ChannelAction.Open(preview.amount))
         require(operation.state == io.riverark.ferret.core.model.OperationState.PROPOSED)
         require(operation.priorChannelIdentity == null)
         require(operation.intentHash == payload.expectedTransactionId)
         require(operation.resultingSpendableBalance == preview.resultingSpendableBalance)
-        require(preview.protocolReserve == Lovelace(KONDUIT_MIN_ADA_BUFFER))
-        require(preview.amount.value > KONDUIT_MIN_ADA_BUFFER)
+        require(preview.protocolReserve == AssetAmount(assets.ada, KONDUIT_MIN_ADA_BUFFER))
+        require(preview.amount.baseUnits > KONDUIT_MIN_ADA_BUFFER)
         require(preview.resultingSpendableBalance == preview.amount - preview.protocolReserve)
-        require(payload.feeBound == preview.feeBound)
+        require(payload.feeBound?.value == preview.feeBound.baseUnits)
         val unsigned = validateOperation(operation, profile, context)
         val summary = engine.inspect(unsigned.cbor)
-        require(summary.fee == preview.actualFee)
+        require(summary.fee.value == preview.actualFee.baseUnits)
         val channelIndex = channelOutputIndex(summary.outputs, intent)
-        require(engine.minimumAdaForOutput(unsigned.cbor, context.ledger.protocolParametersJson, channelIndex) == preview.ledgerMinAda)
-        require(intent.amount.value >= preview.ledgerMinAda.value)
-        require((summary.outputs.singleOrNull { it.address == profile.paymentAddress }?.lovelace ?: Lovelace(0)) == preview.sourceChange)
+        require(engine.minimumAdaForOutput(unsigned.cbor, context.ledger.protocolParametersJson, channelIndex).value == preview.ledgerMinAda.baseUnits)
+        require(intent.amount.value >= preview.ledgerMinAda.baseUnits)
+        require((summary.outputs.singleOrNull { it.address == profile.paymentAddress }?.lovelace ?: Lovelace(0)).value == preview.sourceChange.baseUnits)
     }
 
     private fun validateOperation(
@@ -186,7 +196,8 @@ class OpenChannelTransactions(
         val payload = operation.payload as? ChannelPayload.Transaction ?: error("channel transaction payload is required")
         val intent = requireIntent(operation)
         require(UUID.matches(operation.operationId) && intent.operationId == operation.operationId)
-        require(operation.action == ChannelAction.Open(intent.amount.value))
+        require(operation.asset == assets.ada)
+        require(operation.action == ChannelAction.Open(AssetAmount(assets.ada, intent.amount.value)))
         require(intent.amount.value > KONDUIT_MIN_ADA_BUFFER)
         require(intent.sourceAddress == profile.paymentAddress)
         require(intent.validatorAddress == MAINNET.validatorAddress)
@@ -200,8 +211,8 @@ class OpenChannelTransactions(
             intent.datum.constants.addVerificationKeyHex,
             ProtocolTag(intent.datum.constants.tagHex),
             TAG_BYTES,
-        ).value)
-        requireNoOwnedChannel(context.ledger, intent.datum.constants.addVerificationKeyHex)
+        ))
+        requireNoDuplicateChannel(context.ledger, operation.keytag)
         val feeBound = requireNotNull(payload.feeBound)
         val unsigned = UnsignedTransaction(payload.unsignedBody, operation.operationId, feeBound)
         require(payload.expectedTransactionId == engine.transactionId(payload.unsignedBody))
@@ -230,13 +241,14 @@ class OpenChannelTransactions(
         ((operation.payload as? ChannelPayload.Transaction)?.intent as? CardanoIntent.OpenChannel)
             ?: error("Open intent is required")
 
-    private fun requireNoOwnedChannel(ledger: LedgerSnapshot, addVerificationKeyHex: String) {
+    private fun requireNoDuplicateChannel(ledger: LedgerSnapshot, keytag: ProtocolKeytag) {
         require(ledger.utxos.none { utxo ->
             utxo.address == MAINNET.validatorAddress && utxo.datumHex?.let { datum ->
-                runCatching { engine.decodeChannelDatum(datum) }.getOrNull()
-                    ?.constants?.addVerificationKeyHex == addVerificationKeyHex
+                runCatching { engine.decodeChannelDatum(datum) }.getOrNull()?.constants?.let {
+                    it.addVerificationKeyHex + it.tagHex == keytag.value
+                }
             } == true
-        }) { "wallet already has a channel" }
+        }) { "channel keytag already exists" }
     }
 
     private fun channelOutputIndex(
@@ -252,6 +264,7 @@ class OpenChannelTransactions(
         val adaptorKey: String,
         val closePeriodMillis: Long,
         val reference: io.riverark.ferret.core.cardano.LedgerUtxo,
+        val assetCatalogDigest: String?,
     )
 
     private fun ByteArray.hex() = joinToString("") { it.toUByte().toString(16).padStart(2, '0') }

@@ -2,10 +2,12 @@ package io.riverark.ferret
 
 import io.riverark.ferret.core.model.DiagnosticCode
 import io.riverark.ferret.core.security.FiveMinuteAppLifecycle
+import io.riverark.ferret.core.security.WalletOperationJournalV2
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.test.assertFails
 
 class SecurityTest {
     @Test fun locksAfterFiveContinuousBackgroundMinutes() {
@@ -13,6 +15,10 @@ class SecurityTest {
         lifecycle.onBackground(1_000)
         assertFalse(lifecycle.shouldLock(300_999))
         assertTrue(lifecycle.shouldLock(301_000))
+    }
+
+    @Test fun rejectsNonCurrentOperationEnvelopeSchema() {
+        assertFails { WalletOperationJournalV2(schema = 1) }
     }
 
     @Test fun exposesStableBoundedDiagnosticCodes() {

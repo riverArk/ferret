@@ -1,4 +1,5 @@
 package io.riverark.ferret.core.model
+import io.riverark.ferret.core.channel.ChannelCollectionV3
 
 import io.riverark.ferret.core.security.SecureVault
 import io.riverark.ferret.core.cardano.SweepPreview
@@ -6,12 +7,26 @@ import io.riverark.ferret.core.security.WalletRemovalState
 
 data class RemovalReadiness(
     val profile: WalletProfile,
-    val spendable: Lovelace,
-    val pendingOperation: Boolean,
+    val spendable: AssetAmount,
+    val l1Assets: List<AssetAmount>,
+    val unsupportedAssets: Map<String, Long>,
+    val channels: ChannelCollectionV3,
+    val pendingL1Operation: Boolean,
     val driveResolved: Boolean,
-    val lastMutationDepth: Long,
-    val hasNativeAssets: Boolean = false,
-)
+    val mutationDepths: List<Long>,
+) {
+    init {
+        require(spendable.asset.alias == "ada" && spendable.asset.policyId == null)
+        require(l1Assets.map { it.asset.connectorUnit }.distinct().size == l1Assets.size)
+        require(unsupportedAssets.values.all { it >= 0 })
+        require(channels.walletId == profile.id)
+        require(mutationDepths.all { it >= 0 })
+    }
+
+    val hasNativeAssets: Boolean
+        get() = l1Assets.any { it.asset.policyId != null && it.baseUnits > 0 } ||
+            unsupportedAssets.values.any { it > 0 }
+}
 
 interface WalletRemovalRepository {
     suspend fun readiness(walletId: WalletId): RemovalReadiness
@@ -43,7 +58,7 @@ class WalletRemovalManager(
     suspend fun previewSweep(walletId: WalletId, destinationAddress: String): SweepPreview {
         val readiness = repository.readiness(walletId)
         require(canStartRemoval(readiness))
-        require(readiness.spendable.value > 0 && !readiness.hasNativeAssets)
+        require(readiness.spendable.baseUnits > 0 && !readiness.hasNativeAssets)
         val expectedPrefix = if (readiness.profile.network == CardanoNetwork.MAINNET) "addr1" else "addr_test1"
         require(destinationAddress.startsWith(expectedPrefix)) { "cross-network sweep" }
         return repository.previewSweep(walletId, destinationAddress)
@@ -61,9 +76,10 @@ class WalletRemovalManager(
             if (state.removalState == WalletRemovalState.ACTIVE) {
                 val readiness = repository.readiness(walletId)
                 require(canStartRemoval(readiness))
-                require(readiness.spendable.value == 0L) { "wallet must be swept" }
-                require(!readiness.hasNativeAssets) { "wallet contains native assets" }
-                require(readiness.lastMutationDepth >= 2160) { "wallet finality pending" }
+                require(readiness.l1Assets.all { it.baseUnits == 0L } && readiness.unsupportedAssets.values.all { it == 0L }) {
+                    "wallet must be swept"
+                }
+                require(readiness.mutationDepths.all { it >= 2_160 }) { "wallet finality pending" }
                 state = state.copy(removalState = WalletRemovalState.DELETING_BACKUP)
                 vault.updateWalletState(walletId, state)
             }
@@ -81,14 +97,27 @@ class WalletRemovalManager(
 
 
     private fun canStartRemoval(readiness: RemovalReadiness): Boolean =
-        (readiness.profile.channelState == ChannelState.Absent || readiness.profile.channelState == ChannelState.Closed) &&
-            !readiness.pendingOperation && readiness.driveResolved
+        readiness.channelBlockers().isEmpty() && !readiness.pendingL1Operation && readiness.driveResolved &&
+            !readiness.hasNativeAssets && readiness.mutationDepths.isNotEmpty() && readiness.mutationDepths.all { it >= 2_160 }
 }
 fun RemovalReadiness.blockers(): List<String> = buildList {
-    if (profile.channelState != ChannelState.Absent && profile.channelState != ChannelState.Closed) add("Close the channel first.")
-    if (pendingOperation) add("Wait for the pending operation to reconcile.")
+    addAll(channelBlockers())
+    if (pendingL1Operation) add("Wait for the pending wallet operation to reconcile.")
     if (hasNativeAssets) add("Move native assets before removing this wallet.")
     if (!driveResolved) add("Resolve or verify the encrypted Drive backup.")
-    if (spendable.value > 0) add("Sweep the remaining balance.")
-    if (spendable.value == 0L && lastMutationDepth < 2_160) add("Wait for the final transaction to settle.")
+    if (spendable.baseUnits > 0) add("Sweep the remaining ADA balance.")
+    if (l1Assets.any { it.baseUnits > 0 } && spendable.baseUnits == 0L && !hasNativeAssets) {
+        add("Resolve the remaining L1 holdings.")
+    }
+    if (mutationDepths.isEmpty()) add("Transaction finality evidence is unavailable.")
+    else if (mutationDepths.any { it < 2_160 }) add("Wait for every transaction to settle.")
+}
+
+private fun RemovalReadiness.channelBlockers(): List<String> = buildList {
+    if (channels.unresolvedLegacy.isNotEmpty()) add("Legacy channel recovery requires verified identity.")
+    if (channels.channels.values.any { it.state != ChannelState.Closed }) add("Close every channel first.")
+    if (channels.channels.values.any { it.spendableBalance.baseUnits > 0 }) add("Empty every channel balance.")
+    if (channels.channels.values.any { it.pending != null || it.payments.pending != null }) {
+        add("Wait for every pending channel operation to reconcile.")
+    }
 }

@@ -1,5 +1,6 @@
 package io.riverark.ferret.core.cardano
 
+import io.riverark.ferret.core.model.AssetAmount
 import io.riverark.ferret.core.model.CardanoNetwork
 import io.riverark.ferret.core.model.Lovelace
 import kotlinx.serialization.Serializable
@@ -41,8 +42,8 @@ data class LedgerUtxo(
 @Serializable
 data class SweepPreview(
     val destinationAddress: String,
-    val amount: Lovelace,
-    val fee: Lovelace,
+    val amount: AssetAmount,
+    val fee: AssetAmount,
     val intent: CardanoIntent.SweepWallet,
     val unsigned: UnsignedTransaction,
     val expectedTransactionId: String,

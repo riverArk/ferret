@@ -2,14 +2,14 @@ package io.riverark.ferret.feature.wallet
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import io.riverark.ferret.core.channel.ChannelSnapshot
+import io.riverark.ferret.core.channel.ChannelCollectionV3
 import io.riverark.ferret.core.channel.ChannelPreview
 import io.riverark.ferret.core.cardano.CardanoIntent
 import io.riverark.ferret.core.cardano.UnsignedTransaction
 import io.riverark.ferret.core.cardano.InsufficientFundsException
+import io.riverark.ferret.core.model.AssetAmount
 import io.riverark.ferret.core.model.CardanoNetwork
 import io.riverark.ferret.core.model.CreatedWallet
-import io.riverark.ferret.core.model.Lovelace
 import io.riverark.ferret.core.model.InvalidRecoveryPhraseException
 import io.riverark.ferret.core.model.TransactionRecord
 import io.riverark.ferret.core.model.WalletId
@@ -78,17 +78,41 @@ class WalletPickerViewModel(private val manager: WalletManager) : ViewModel() {
     }
 }
 
-data class WalletBalance(val spendable: Lovelace, val pending: Lovelace)
+data class AssetBalance(
+    val total: AssetAmount,
+    val spendable: AssetAmount,
+    val pending: AssetAmount,
+) {
+    init {
+        require(total.asset == spendable.asset && total.asset == pending.asset)
+        require(spendable.baseUnits <= total.baseUnits && pending.baseUnits <= total.baseUnits)
+    }
+}
+
+data class WalletBalance(
+    val assets: List<AssetBalance>,
+    val unsupportedAssets: Map<String, Long>,
+) {
+    init {
+        require(assets.map { it.total.asset.connectorUnit }.distinct().size == assets.size)
+        require(unsupportedAssets.all { (unit, amount) -> unit.isNotBlank() && amount >= 0 })
+    }
+}
+
 data class TransferDestination(val name: String, val address: String)
 data class TransferPreview(
     val destination: TransferDestination,
-    val amount: Lovelace,
-    val feeBound: Lovelace,
-    val change: Lovelace,
+    val amount: AssetAmount,
+    val feeBound: AssetAmount,
+    val change: AssetAmount,
     val intent: CardanoIntent.Transfer? = null,
     val unsigned: UnsignedTransaction? = null,
     val transactionId: String? = null,
-)
+) {
+    init {
+        require(amount.asset == feeBound.asset && amount.asset == change.asset)
+    }
+}
 
 data class TransferUiState(
     val preview: TransferPreview? = null,
@@ -101,7 +125,7 @@ data class TransferUiState(
 interface L1WalletRepository {
     suspend fun balance(walletId: WalletId): WalletBalance
     suspend fun history(walletId: WalletId): List<TransactionRecord>
-    suspend fun previewTransfer(walletId: WalletId, destination: TransferDestination, amount: Lovelace): TransferPreview
+    suspend fun previewTransfer(walletId: WalletId, destination: TransferDestination, amount: AssetAmount): TransferPreview
     suspend fun submitTransfer(walletId: WalletId, preview: TransferPreview): String
     suspend fun previewSweep(walletId: WalletId, destinationAddress: String): io.riverark.ferret.core.cardano.SweepPreview
     suspend fun submitSweep(walletId: WalletId, preview: io.riverark.ferret.core.cardano.SweepPreview): String
@@ -109,8 +133,8 @@ interface L1WalletRepository {
 
 data class HomeUiState(
     val profile: WalletProfile,
-    val balance: Lovelace? = null,
-    val channelBalance: Lovelace? = null,
+    val balance: WalletBalance? = null,
+    val channels: ChannelCollectionV3? = null,
     val latestActivity: TransactionRecord? = null,
     val loading: Boolean = true,
     val error: String? = null,
@@ -119,9 +143,9 @@ data class HomeUiState(
 
 class HomeViewModel(
     private val profile: WalletProfile,
-    private val loadBalance: suspend (WalletProfile) -> Lovelace,
+    private val loadBalance: suspend (WalletProfile) -> WalletBalance,
     private val loadHistory: suspend (WalletProfile) -> List<TransactionRecord>,
-    private val loadChannel: suspend (WalletId) -> ChannelSnapshot = { ChannelSnapshot(profile.channelState) },
+    private val loadChannels: suspend (WalletId) -> ChannelCollectionV3,
     private val nowEpochMillis: () -> Long = { 0 },
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(HomeUiState(profile))
@@ -155,13 +179,12 @@ class HomeViewModel(
         try {
             val balance = loadBalance(profile)
             val history = mergeTransactionRecords(loadHistory(profile), emptyList())
-            val channel = loadChannel(profile.id)
+            val channels = loadChannels(profile.id)
             hasPendingActivity = history.any { it.state == io.riverark.ferret.core.model.TransactionState.PENDING } ||
-                channel.pending != null
+                channels.channels.values.any { it.pending != null || it.payments.pending != null }
             mutableState.value = mutableState.value.copy(
-                profile = profile.copy(channelState = channel.state),
                 balance = balance,
-                channelBalance = channel.spendableBalance,
+                channels = channels,
                 latestActivity = history.firstOrNull(),
                 loading = false,
                 lastRefreshEpochMillis = nowEpochMillis().takeIf { it > 0 },
@@ -223,14 +246,17 @@ class HistoryViewModel(
 internal fun mergeTransactionRecords(
     l1: List<TransactionRecord>,
     l2: List<TransactionRecord>,
-): List<TransactionRecord> =
-    (l1 + l2).sortedWith(compareByDescending<TransactionRecord> { it.timestampEpochMillis }.thenByDescending { it.id })
+): List<TransactionRecord> = (l1 + l2)
+    .groupBy { Triple(it.realm, it.id, it.channelKeytag) }
+    .values
+    .map { records -> records.first().also { first -> require(records.all { it == first }) { "conflicting transaction history" } } }
+    .sortedWith(compareByDescending<TransactionRecord> { it.timestampEpochMillis }.thenByDescending { it.id })
 
 class TransferViewModel(private val walletId: WalletId, private val network: CardanoNetwork, private val l1: L1WalletRepository) : ViewModel() {
     private val mutableState = MutableStateFlow(TransferUiState())
     val state = mutableState.asStateFlow()
 
-    fun previewAsync(destination: TransferDestination, amount: Lovelace) {
+    fun previewAsync(destination: TransferDestination, amount: AssetAmount) {
         viewModelScope.launch {
             mutableState.value = TransferUiState(busy = true)
             try {
@@ -276,9 +302,8 @@ class TransferViewModel(private val walletId: WalletId, private val network: Car
         profiles.filter { it.id != walletId && it.network == network }
             .map { TransferDestination(it.name, it.paymentAddress) }
 
-    suspend fun preview(destination: TransferDestination, amount: Lovelace): TransferPreview {
-        return l1.previewTransfer(walletId, destination, amount)
-    }
+    suspend fun preview(destination: TransferDestination, amount: AssetAmount): TransferPreview =
+        l1.previewTransfer(walletId, destination, amount)
 
     suspend fun submit(preview: TransferPreview) = l1.submitTransfer(walletId, preview)
 }
@@ -292,13 +317,13 @@ data class OpenChannelUiState(
 
 class OpenChannelViewModel(
     private val walletId: WalletId,
-    private val previewer: suspend (WalletId, Lovelace) -> ChannelPreview,
+    private val previewer: suspend (WalletId, AssetAmount) -> ChannelPreview,
     private val submitter: suspend (WalletId, ChannelPreview) -> String,
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(OpenChannelUiState())
     val state = mutableState.asStateFlow()
 
-    fun previewAsync(amount: Lovelace) {
+    fun previewAsync(amount: AssetAmount) {
         if (mutableState.value.busy) return
         mutableState.value = OpenChannelUiState(busy = true)
         viewModelScope.launch {

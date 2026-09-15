@@ -34,6 +34,8 @@ import io.riverark.ferret.core.model.AppState
 import io.riverark.ferret.core.model.DiagnosticCode
 import io.riverark.ferret.core.model.RuntimeDiagnostics
 import io.riverark.ferret.core.model.WalletRepository
+import io.riverark.ferret.core.model.AssetCatalog
+import io.riverark.ferret.core.model.loadEmbeddedAssetCatalog
 import io.riverark.ferret.core.model.DefaultWalletRemovalRepository
 import io.riverark.ferret.core.model.Lovelace
 import io.riverark.ferret.core.model.RemovalReadiness
@@ -74,6 +76,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
 import java.util.UUID
 import java.security.GeneralSecurityException
 
@@ -81,9 +84,8 @@ class MainActivity : FragmentActivity() {
     private val http: HttpClient = ferretHttpClient(Android.create())
     private val connectors = CardanoNetwork.entries.associateWith { ConnectorClient(http, deployment(it)) }
     private val adaptors = CardanoNetwork.entries.associateWith { AdaptorClient(http, deployment(it), AndroidProtocolCrypto) }
-    private val coordinators = CardanoNetwork.entries.associateWith {
-        RefreshCoordinator(deployment(it), connectors.getValue(it), adaptors.getValue(it))
-    }
+    private lateinit var assetCatalog: AssetCatalog
+    private lateinit var coordinators: Map<CardanoNetwork, RefreshCoordinator>
     private val wallets = WalletRepository()
     private val lockPolicy = ForegroundLockPolicy(SystemClock::elapsedRealtime)
     private val diagnostics = RuntimeDiagnostics()
@@ -125,7 +127,18 @@ class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        vault = AndroidSecureVault(this)
+        assetCatalog = try {
+            runBlocking { loadEmbeddedAssetCatalog(AndroidProtocolCrypto) }
+        } catch (_: Exception) {
+            setContentView(android.widget.TextView(this).apply {
+                text = "Bundled asset catalog is invalid."
+            })
+            return
+        }
+        coordinators = CardanoNetwork.entries.associateWith {
+            RefreshCoordinator(deployment(it), assetCatalog, connectors.getValue(it), adaptors.getValue(it))
+        }
+        vault = AndroidSecureVault(this, assetCatalog)
         authenticator = AndroidUserAuthenticator(this)
         val walletSelection = getSharedPreferences("wallet-selection", Context.MODE_PRIVATE)
         walletManager = WalletManager(
@@ -142,14 +155,16 @@ class MainActivity : FragmentActivity() {
         driveTokens = AndroidGoogleOAuthTokenProvider(this)
         deviceIdentity = AndroidDeviceIdentity(this)
         val backupCrypto = AndroidBackupCrypto()
+        val channelJournal = VaultChannelJournal(vault, assetCatalog)
         backupCoordinator = WalletBackupCoordinator(
             vault,
             DriveBackupRepository(GoogleDriveAppDataClient(http, driveTokens), backupCrypto),
             backupCrypto,
             System::currentTimeMillis,
+            channelJournal::normalizeBackup,
+            { id, bytes, checkpoint -> channelJournal.installBackup(id, bytes, checkpoint) },
         )
-        paymentStore = VaultPaymentStore(vault)
-        val channelJournal = VaultChannelJournal(vault, paymentStore)
+        paymentStore = VaultPaymentStore(channelJournal)
         val cardanoEngine = androidCardanoTransactionEngine { network, cbor ->
             connectors.getValue(network).evaluate(cbor.joinToString("") { byte ->
                 byte.toUByte().toString(16).padStart(2, '0')
@@ -158,16 +173,18 @@ class MainActivity : FragmentActivity() {
         l1WalletRepository = DefaultL1WalletRepository(
             wallets,
             vault,
+            assetCatalog,
             { profile -> connectors.getValue(profile.network) },
             cardanoEngine,
             { UUID.randomUUID().toString() },
             System::currentTimeMillis,
-            { walletId -> channelJournal.load(walletId).pending != null },
+            { walletId -> channelJournal.load(walletId).channels.values.any { it.pending != null } },
         )
         val random = AndroidSecureRandomSource()
         val openTransactions = OpenChannelTransactions(
             vault,
             cardanoEngine,
+            assetCatalog,
             loadLedger = { profile ->
                 val connector = connectors.getValue(profile.network)
                 val walletLedger = connector.ledger(profile.paymentAddress, profile.network)
@@ -188,7 +205,7 @@ class MainActivity : FragmentActivity() {
         channelRepository = ChannelRepository(
             wallets,
             channelJournal,
-            DriveChannelBackupProtocol(backupCoordinator, ::claimWriter, paymentStore),
+            DriveChannelBackupProtocol(backupCoordinator, ::claimWriter, channelJournal),
             AdaptorChannelRemote(
                 { walletId ->
                     val profile = vault.profiles().single { it.id == walletId }
@@ -196,7 +213,6 @@ class MainActivity : FragmentActivity() {
                 },
                 AndroidProtocolCrypto,
             ),
-            paymentStore,
             { UUID.randomUUID().toString() },
             openTransactions,
         )
@@ -221,17 +237,27 @@ class MainActivity : FragmentActivity() {
                                     false
                                 }
                             }
-                            val l1Operation = l1WalletRepository.operation(walletId)
-                            val channel = channelJournal.load(walletId)
-                            val transactions = connectors.getValue(profile.network).transactions(profile.paymentAddress)
+                            val l1Operations = l1WalletRepository.operations(walletId)
+                            val channels = channelJournal.load(walletId)
+                            val balance = l1WalletRepository.balance(walletId)
+                            val adaBalance = balance.assets.single { it.total.asset == assetCatalog.ada }
+                            val connector = connectors.getValue(profile.network)
+                            val transactionIds = (
+                                connector.transactions(profile.paymentAddress, assetCatalog).map { it.id } +
+                                    l1Operations.mapNotNull { it.expectedTransactionId } +
+                                    channels.channels.values.flatMap { entry -> entry.history.mapNotNull { it.transactionId } }
+                                ).distinct()
                             RemovalReadiness(
-                                profile.copy(channelState = channel.state),
-                                l1WalletRepository.balance(walletId).spendable,
-                                l1Operation?.state in setOf(L1OperationState.PREPARED, L1OperationState.SUBMITTING, L1OperationState.PENDING) ||
-                                    channel.pending != null || paymentStore.pending(walletId) != null,
-                                driveResolved,
-                                if (transactions.none { it.state != TransactionState.SETTLED }) 2_160 else 0,
-                                l1WalletRepository.hasNativeAssets(walletId),
+                                profile = profile,
+                                spendable = adaBalance.spendable,
+                                l1Assets = balance.assets.map { it.total },
+                                unsupportedAssets = balance.unsupportedAssets,
+                                channels = channels,
+                                pendingL1Operation = l1Operations.any {
+                                    it.state in setOf(L1OperationState.PREPARED, L1OperationState.SUBMITTING, L1OperationState.PENDING)
+                                },
+                                driveResolved = driveResolved,
+                                mutationDepths = transactionIds.map { connector.transaction(it)?.depth ?: 0 },
                             )
                         } finally {
                             encrypted.channelRecovery.fill(0)
@@ -253,13 +279,14 @@ class MainActivity : FragmentActivity() {
                 FerretDependencies(
                     wallets,
                     walletManager,
+                    assetCatalog,
                     loadBalance = { profile ->
                         try {
                             coordinators.getValue(profile.network).refresh {
                                 l1WalletRepository.reconcilePending(profile.id)
-                                channelRepository.reconcile(profile.id)
+                                channelRepository.reconcileAll(profile.id)
                                 channelRepository.load(profile.id)
-                                l1WalletRepository.balance(profile.id).spendable
+                                l1WalletRepository.balance(profile.id)
                             }
                         } catch (error: CancellationException) {
                             throw error
@@ -285,11 +312,12 @@ class MainActivity : FragmentActivity() {
                     encodeQr = ::addressQrCode,
                     copyAddress = ::copyAddress,
                     l1WalletRepository = l1WalletRepository,
-                    loadChannel = { walletId ->
-                        channelRepository.reconcile(walletId)
+                    loadChannels = { walletId ->
+                        channelRepository.reconcileAll(walletId)
                         channelRepository.load(walletId)
                         channelRepository.snapshots.value.getValue(walletId)
                     },
+                    cleanupInactiveChannels = channelRepository::cleanupInactive,
                     paymentViewModelFactory = { walletId ->
                         val profile = currentProfile(walletId)
                         PaymentViewModel(
@@ -297,14 +325,17 @@ class MainActivity : FragmentActivity() {
                             channelRepository,
                             DefaultPaymentGateway(
                                 adaptor = { adaptors.getValue(profile.network) },
-                                keytag = { protocolKeytag(it) },
+                                selected = { id, keytag ->
+                                    channelRepository.load(id)
+                                    channelRepository.snapshots.value.getValue(id).channels.getValue(keytag.value)
+                                },
                                 writer = { verifiedWriter(it) },
                                 signer = { AndroidProtocolSigner(vault, it, profile.network) },
                                 network = { profile.network },
                                 chain = if (profile.network == CardanoNetwork.MAINNET) "mainnet" else "testnet",
                                 crypto = AndroidProtocolCrypto,
+                                assets = assetCatalog,
                             ),
-                            paymentStore,
                             System::currentTimeMillis,
                         )
                     },
@@ -332,7 +363,8 @@ class MainActivity : FragmentActivity() {
                                     profile = profile,
                                     paymentCredential = profile.id.value.substringAfter('-'),
                                     stakingCredential = profile.stakeAddress,
-                                    channel = channelJournal.load(profile.id),
+                                    balance = l1WalletRepository.balance(profile.id),
+                                    channels = channelJournal.load(profile.id),
                                     adaptorStatus = "validated",
                                     driveAccount = driveTokens.accountName,
                                     driveGeneration = checkpoint?.generation,
@@ -394,9 +426,6 @@ class MainActivity : FragmentActivity() {
                         val checkpoint = backupCoordinator.takeover(walletId)
                         try {
                             claimWriter(walletId, checkpoint)
-                            val snapshot = channelJournal.restoreFromBackup(walletId, checkpoint.channelSnapshot)
-                            val profile = vault.profiles().single { it.id == walletId }
-                            vault.updateProfile(profile.copy(channelState = snapshot.state))
                             walletManager.load(walletId)
                             checkpoint.generation
                         } catch (error: CancellationException) {
@@ -412,9 +441,6 @@ class MainActivity : FragmentActivity() {
                     restoreBackup = { walletId ->
                         val checkpoint = backupCoordinator.restore(walletId)
                         try {
-                            val snapshot = channelJournal.restoreFromBackup(walletId, checkpoint.channelSnapshot)
-                            val profile = vault.profiles().single { it.id == walletId }
-                            vault.updateProfile(profile.copy(channelState = snapshot.state))
                             walletManager.load(walletId)
                             checkpoint.sequence
                         } catch (error: CancellationException) {
@@ -520,7 +546,9 @@ class MainActivity : FragmentActivity() {
                 }
                 val selected = requireNotNull(walletManager.selectedProfile(profiles))
                 coordinators.getValue(selected.network).validate(selected)
+                channelRepository.load(selected.id)
                 l1WalletRepository.reconcilePending(selected.id)
+                channelRepository.reconcileAll(selected.id)
                 walletManager.load(selected.id)
                 diagnostics.clear()
             } catch (error: CancellationException) {
@@ -558,7 +586,7 @@ class MainActivity : FragmentActivity() {
     private fun cancelActiveWork() {
         activeWork?.cancel()
         activeWork = null
-        coordinators.values.forEach(RefreshCoordinator::cancelActiveWork)
+        if (::coordinators.isInitialized) coordinators.values.forEach(RefreshCoordinator::cancelActiveWork)
         sessionLeases.values.forEach(SessionLeaseRepository::clear)
     }
 
@@ -590,15 +618,6 @@ class MainActivity : FragmentActivity() {
         ((wallets.state.value as? AppState.Ready)?.wallets?.singleOrNull { it.id == walletId })
             ?: error("wallet profile unavailable")
 
-    private suspend fun protocolKeytag(walletId: WalletId): ProtocolKeytag {
-        val snapshot = channelRepository.snapshots.value[walletId]
-        val keytag = snapshot?.verifiedChannelData?.takeIf { it.length >= 66 }
-            ?: snapshot?.history?.asReversed()?.firstNotNullOfOrNull {
-                it.verifiedChannelData.takeIf { value -> value.length >= 66 }
-            }
-            ?: error("verified channel keytag unavailable")
-        return ProtocolKeytag(keytag)
-    }
 
     private suspend fun verifiedWriter(walletId: WalletId): WriterLease {
         val checkpoint = backupCoordinator.verify(walletId)

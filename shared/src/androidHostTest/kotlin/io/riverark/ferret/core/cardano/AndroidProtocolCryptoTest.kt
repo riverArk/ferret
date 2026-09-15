@@ -11,10 +11,39 @@ import io.riverark.ferret.core.channel.ProtocolTag
 import io.riverark.ferret.core.channel.SignedChequeWire
 import io.riverark.ferret.core.channel.SignedSquashWire
 import io.riverark.ferret.core.channel.SquashBodyWire
+import java.io.File
+import io.riverark.ferret.core.model.loadEmbeddedAssetCatalog
+import kotlinx.coroutines.runBlocking
+import kotlin.test.assertEquals
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
 
 class AndroidProtocolCryptoTest {
+    @Test fun loadsVerifiedEmbeddedAssetCatalog() = runBlocking {
+        val catalog = loadEmbeddedAssetCatalog(AndroidProtocolCrypto) { path ->
+            File("src/commonMain/composeResources", path).readBytes()
+        }
+
+        assertEquals("09ce40fc9bfd7b600506400417b4c09ba0ca2bd5b58703aeb00699c084d298ae", catalog.digest)
+        assertEquals(listOf("ada", "usda", "usdcx", "usdm"), catalog.assets.map { it.alias })
+        assertEquals(setOf("usda", "usdcx", "usdm"), catalog.presentations.keys)
+    }
+    @Test fun embeddedCatalogRejectsChangedPackageBytes() = runBlocking {
+        val root = File("src/commonMain/composeResources")
+        assertFailsWith<IllegalArgumentException> {
+            loadEmbeddedAssetCatalog(AndroidProtocolCrypto) { path ->
+                root.resolve(path).readBytes().let { if (path.endsWith("catalog.json")) it + byteArrayOf(0x20) else it }
+            }
+        }
+        assertFailsWith<IllegalArgumentException> {
+            loadEmbeddedAssetCatalog(AndroidProtocolCrypto) { path ->
+                root.resolve(path).readBytes().let { if (path.contains("asset_")) it + byteArrayOf(0) else it }
+            }
+        }
+        Unit
+    }
+
+
     @Test fun verifiesPinnedKonduitReceiptSignaturesAndRejectsMutation() {
         val privateKey = ByteArray(32) { it.toByte() }
         val publicKey = KeyGenUtil.getPublicKeyFromPrivateKey(privateKey).toHex()

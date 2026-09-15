@@ -2,6 +2,9 @@ package io.riverark.ferret.feature.wallet
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -14,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import io.riverark.ferret.core.cardano.SweepPreview
+import io.riverark.ferret.core.model.AssetCatalog
 import io.riverark.ferret.core.model.RemovalReadiness
 import io.riverark.ferret.core.model.WalletId
 import io.riverark.ferret.core.model.WalletRemovalManager
@@ -98,6 +102,7 @@ class WalletRemovalViewModel(
 @Composable
 fun WalletRemovalScreen(
     state: WalletRemovalUiState,
+    catalog: AssetCatalog,
     onBack: () -> Unit,
     onSweep: (String) -> Unit,
     onConfirmSweep: () -> Unit,
@@ -108,18 +113,19 @@ fun WalletRemovalScreen(
     var confirmation by rememberSaveable { mutableStateOf("") }
     FerretScreen {
         FerretTopBar("Remove wallet", navigation = { FerretTextButton("Back", onBack) })
+        Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())) {
         Text("Removal cannot erase copies of the recovery phrase or records retained by external providers.", color = MaterialTheme.colorScheme.onSurfaceVariant)
         readiness?.let { current ->
             FerretCard(Modifier.fillMaxWidth()) {
                 FerretDataBlock("Wallet", current.profile.name)
-                FerretDataBlock("Remaining L1 balance", formatAda(current.spendable))
+                FerretDataBlock("Transfer-available ADA", formatAsset(current.spendable, catalog))
                 current.blockers().forEach { Text(it, color = MaterialTheme.colorScheme.error) }
             }
-            if (current.spendable.value > 0) {
+            if (current.spendable.baseUnits > 0) {
                 state.sweepPreview?.let { preview ->
                     FerretCard(Modifier.fillMaxWidth()) {
-                        FerretDataBlock("Sweep amount", formatAda(preview.amount))
-                        FerretDataBlock("Network fee", formatAda(preview.fee))
+                        FerretDataBlock("Sweep amount", formatAsset(preview.amount, catalog))
+                        FerretDataBlock("Network fee", formatAsset(preview.fee, catalog))
                     }
                     FerretDangerButton("Confirm sweep", onConfirmSweep, enabled = !state.busy)
                 } ?: run {
@@ -142,6 +148,7 @@ fun WalletRemovalScreen(
                 )
                 FerretDangerButton("Delete wallet and backup", onRemove, enabled = confirmation == current.profile.name && !state.busy)
             }
+        }
         }
         state.error?.let { FerretErrorState(it) }
         if (readiness == null && state.error == null) Box(Modifier.weight(1f)) { Text("Checking removal safety") }

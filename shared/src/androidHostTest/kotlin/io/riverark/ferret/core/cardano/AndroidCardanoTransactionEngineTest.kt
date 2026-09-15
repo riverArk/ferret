@@ -38,6 +38,10 @@ import java.io.ByteArrayOutputStream
 import java.math.BigInteger
 import com.fasterxml.jackson.databind.ObjectMapper
 import java.util.Optional
+import io.riverark.ferret.core.model.AssetAmount
+import io.riverark.ferret.core.model.AssetCatalog
+import io.riverark.ferret.core.model.AssetPricing
+import io.riverark.ferret.core.model.ChannelAsset
 import io.riverark.ferret.core.model.TransactionRecord
 import io.riverark.ferret.core.model.WalletId
 import io.riverark.ferret.core.model.WalletProfile
@@ -71,6 +75,17 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 class AndroidCardanoTransactionEngineTest {
+    private val assetCatalog = AssetCatalog(
+        listOf(
+            ChannelAsset("ada", null, null, 6, AssetPricing.ADA, "a".repeat(64)),
+            ChannelAsset("usda", "1".repeat(56), "", 6, AssetPricing.USD_PEG, "a".repeat(64)),
+            ChannelAsset("usdcx", "2".repeat(56), "", 6, AssetPricing.USD_PEG, "a".repeat(64)),
+            ChannelAsset("usdm", "3".repeat(56), "", 6, AssetPricing.USD_PEG, "a".repeat(64)),
+        ),
+        "a".repeat(64),
+        emptyMap(),
+    )
+
     private val processor = object : TransactionProcessor {
         override fun submitTransaction(cborData: ByteArray): Result<String> = error("submission not used")
         @Suppress("UNCHECKED_CAST")
@@ -1262,6 +1277,7 @@ class AndroidCardanoTransactionEngineTest {
             val repository = DefaultL1WalletRepository(
                 WalletRepository().apply { publish(source.id, listOf(source)) },
                 vault,
+                assetCatalog,
                 { ledger },
                 { emptyList() },
                 { _, _ -> error("submission must not run") },
@@ -1274,12 +1290,12 @@ class AndroidCardanoTransactionEngineTest {
             val preview = repository.previewSweep(source.id, destinationWallet.paymentAddress)
             val summary = engine.inspect(preview.unsigned.cbor)
 
-            assertEquals(Lovelace(1_500_000), preview.amount + preview.fee)
+            assertEquals(AssetAmount(assetCatalog.ada, 1_500_000), preview.amount + preview.fee)
             assertEquals(1, summary.outputs.size)
             assertEquals(destinationWallet.paymentAddress, summary.outputs.single().address)
             val signed = engine.sign(preview.unsigned, sourceEntropy, preview.intent, ledger)
             try {
-                engine.inspect(signed.cbor).requireMatches(preview.intent, CardanoNetwork.MAINNET, preview.fee)
+                engine.inspect(signed.cbor).requireMatches(preview.intent, CardanoNetwork.MAINNET, Lovelace(preview.fee.baseUnits))
             } finally {
                 signed.cbor.fill(0)
             }
@@ -1330,6 +1346,7 @@ class AndroidCardanoTransactionEngineTest {
                 val repository = DefaultL1WalletRepository(
                     wallets,
                     vault,
+                    assetCatalog,
                     { ledger },
                     { emptyList<TransactionRecord>() },
                     { _, _ -> remoteCalls++; error("submission must not run") },
@@ -1346,7 +1363,11 @@ class AndroidCardanoTransactionEngineTest {
             }
 
             rejectDrift { repository, ledger, updateLedger ->
-                val preview = repository.previewTransfer(source.id, TransferDestination(destination.name, destination.paymentAddress), Lovelace(1_000_000))
+                val preview = repository.previewTransfer(
+                    source.id,
+                    TransferDestination(destination.name, destination.paymentAddress),
+                    AssetAmount(assetCatalog.ada, 1_000_000),
+                )
                 engine.requireMinimumAda(preview.unsigned!!.cbor, ledger.protocolParametersJson)
                 updateLedger(ledger.copy(protocolParametersJson = protocolParameters("8620")))
                 assertFailsWith<IllegalArgumentException> {
@@ -1386,8 +1407,8 @@ class AndroidCardanoTransactionEngineTest {
                 val unsigned = UnsignedTransaction(cbor, intent.operationId, summary.fee)
                 val preview = SweepPreview(
                     destination.paymentAddress,
-                    intent.amount,
-                    summary.fee,
+                    AssetAmount(assetCatalog.ada, intent.amount.value),
+                    AssetAmount(assetCatalog.ada, summary.fee.value),
                     intent,
                     unsigned,
                     engine.transactionId(cbor),

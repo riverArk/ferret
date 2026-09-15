@@ -44,14 +44,14 @@ Seed entropy is cleared after derivation and vault callbacks. Mnemonic restore/d
 
 The Refined Ferret theme is light-only: cream canvas, near-white surfaces, charcoal ink, yellow primary, accessible coral secondary, blue tertiary, and dark red errors. Exo 2 headings, Ubuntu Mono body text, rounded outlined surfaces, 48 dp touch targets, edge-to-edge safe drawing insets, bundled ferret art, and bundled Material Symbols are shared across implemented screens.
 
-Home currently shows the wallet name, network, ADA L1 available balance, the single ADA channel's L2 spendable balance, latest merged activity, refresh timestamp, payment address, and wallet/settings navigation. Pull-to-refresh reconciles L1, channel, and payment state before updating the dashboard; Home repeats that refresh every 20 seconds while a durable record remains pending and the lifecycle is started. The open ADA channel exposes a QR payment action that resets stale scanner state before entering the camera.
+Home shows wallet/network, reviewed ADA/USDA/USDCx/USDM holding rows, distinct ADA transfer availability, per-asset capacity held in L2 channels, every keyed channel's asset/capacity/state/short ID, latest asset-tagged activity, refresh timestamp, payment address, and wallet/settings navigation. Open channels sort first; failed zero-balance attempts appear separately and can be removed only through guarded encrypted cleanup that preserves the open channel and refuses uncertain records. Pull-to-refresh reconciles L1 and every pending channel before publishing the dashboard; Home repeats that refresh every 20 seconds while a durable record remains pending and the lifecycle is started. QR payment selects an eligible open ADA channel explicitly when more than one exists and resets stale scanner state before camera entry.
 
-Top-up renders a local address QR with owned sensitive-clipboard expiry. Transfer accepts validated same-network Cardano addresses, including saved Ferret wallets, and supports exact send-all previews. Settings connects a selected Google account, initializes or verifies the encrypted Drive appData backup, detects stale writers, and performs explicit takeover. Settings and Channel read lifecycle and pending-operation status from the encrypted runtime journal.
+Top-up renders a local address QR with owned sensitive-clipboard expiry. Transfer accepts validated same-network Cardano addresses, including saved Ferret wallets, and supports exact send-all previews. Settings connects a selected Google account, initializes or verifies the encrypted Drive appData backup, detects stale writers, and performs explicit takeover. Settings and Channel read lifecycle and pending-operation status from the encrypted runtime journal. Guarded legacy cleanup writes the cleaned encrypted collection to the verified Drive writer before replacing local state.
 
 
 ## Known platform gaps
 
-- Stablecoin payments are not implemented in Ferret. Reviewed Konduit catalog definitions and Koios presentation metadata/logos are now bundled in shared resources, refreshed only by an explicit maintainer task, and verified offline by Android checks. The app still does not expose native-asset balances, fund USDM/USDCx channel outputs, persist multiple channels per wallet, select a source channel for payment, or enforce the catalog at runtime; `NATIVE_MIGRATION_PLAN.md` owns the remaining P0–P2 work.
+- Stablecoin payments are not implemented in Ferret. Runtime now hash-verifies the reviewed catalog and packaged metadata/logos, models exact asset-tagged amounts, exposes read-only native holdings, persists an encrypted keyed channel collection, and binds operations/backups/quotes/receipts/history to an exact asset and keytag. Native transfer/channel funding and USDM/USDCx payment remain P1/P2 work. Connected single-channel migration and cleanup passed on the Pixel; the new multiple-ADA payer path still requires controlled funded Android acceptance before P0 is claimed complete.
 - iOS wallet setup and runtime integrations are unavailable; see `IOS_FOLLOW_UP.md`.
 - Add, close, elapse, end, and squash channel controls are not connected to UI or controlled lifecycle acceptance yet.
 - Funded Mainnet ADA transfer/process-kill/finality acceptance, the two-device Drive takeover matrix, and the close/sweep/removal scenario remain.
@@ -84,6 +84,13 @@ Android installation and manual verification require an API 36 device or emulato
 ## Session log
 
 Entries below are chronological evidence. Older “remaining” or “gated” statements describe their date and are superseded by the Snapshot, Known platform gaps, and newest entry above.
+
+### 2026-09-15 — Verified asset and keyed-channel foundation
+
+- Added strict runtime catalog/hash/logo verification and exact integer `AssetAmount` parsing/formatting; discovery mismatch now fails closed before financial actions.
+- Replaced singular channel/payment persistence with one encrypted deterministic keyed collection, strict ADA legacy migration, atomic complete-collection Drive restore/takeover, exact operation/quote/receipt bindings, and wallet-wide paid-hash deduplication.
+- Home, Channel, History, Settings, payment confirmation/receipt, and removal readiness now consume catalog assets and every channel. Home shows L1 holdings separately from L2 channel capacity; open channels sort before a separate not-opened section. Native holdings are read-only; native transfers, channel funding, and stablecoin payment remain unreachable.
+- `:shared:allTests`, `androidCheck`, and a rerun `strace` proof of no external build/test connections passed. API 36 install, unlock/onboarding, secure capture behavior, 200% font layout, hot resume, and empty-wallet packet capture passed. A Pixel 8a then verified the packaged asset rows and logos, migrated the existing open ADA channel with its 463,953-lovelace capacity, preserved terminal history, and completed guarded cleanup of failed zero-balance channel attempts without removing the open channel. The controlled funded multiple-ADA payer/interruption scenario remains outstanding.
 
 ### 2026-09-15 — Embedded asset presentation metadata
 

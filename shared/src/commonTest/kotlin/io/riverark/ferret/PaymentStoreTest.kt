@@ -1,88 +1,87 @@
 package io.riverark.ferret
 
+import io.riverark.ferret.core.channel.ChannelCollectionV3
+import io.riverark.ferret.core.channel.ChannelJournal
+import io.riverark.ferret.core.channel.ChannelSnapshot
+import io.riverark.ferret.core.channel.PaymentJournalV2
 import io.riverark.ferret.core.channel.PaymentQuote
-import io.riverark.ferret.core.channel.PendingPaymentV1
+import io.riverark.ferret.core.channel.PendingPayment
+import io.riverark.ferret.core.channel.ProtocolKeytag
+import io.riverark.ferret.core.channel.StoredReceipt
 import io.riverark.ferret.core.channel.VaultPaymentStore
-import io.riverark.ferret.core.model.CardanoNetwork
-import io.riverark.ferret.core.model.Lovelace
+import io.riverark.ferret.core.model.AssetAmount
+import io.riverark.ferret.core.model.AssetPricing
+import io.riverark.ferret.core.model.ChannelAsset
+import io.riverark.ferret.core.model.ChannelState
 import io.riverark.ferret.core.model.Receipt
-import io.riverark.ferret.core.model.Realm
 import io.riverark.ferret.core.model.TransactionState
 import io.riverark.ferret.core.model.WalletId
-import io.riverark.ferret.core.model.WalletProfile
-import io.riverark.ferret.core.security.SecureVault
-import io.riverark.ferret.core.security.WalletEncryptedStateV1
-import io.riverark.ferret.core.security.WalletOperationJournalV1
-import io.riverark.ferret.core.security.WalletSecretV1
 import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.decodeFromString
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
 import kotlin.test.Test
-import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class PaymentStoreTest {
-    @Test fun pendingAndPaidHashesSurviveStoreRecreationWithoutOverwritingOtherJournals() = runBlocking {
-        val walletId = WalletId("preprod-" + "00".repeat(28))
-        val json = Json
-        val vault = FakeVault(walletId, json.encodeToString(WalletOperationJournalV1(l1 = byteArrayOf(1), channel = byteArrayOf(2))).encodeToByteArray())
-        val quote = PaymentQuote("quote", Lovelace(10), 20_000, Lovelace(2), Lovelace(3), 1_000, HASH)
-        VaultPaymentStore(vault).recordPending(walletId, PendingPaymentV1("operation", HASH, quote, 10))
-        assertEquals(Realm.L2, VaultPaymentStore(vault).history(walletId).single().realm)
-        assertEquals(TransactionState.PENDING, VaultPaymentStore(vault).history(walletId).single().state)
-        assertEquals("operation", VaultPaymentStore(vault).pending(walletId)?.operationId)
-
-        val receipt = Receipt("operation", HASH, Lovelace(10), Lovelace(5), true)
-        VaultPaymentStore(vault).complete(walletId, receipt, 20)
-        val restarted = VaultPaymentStore(vault)
-        assertTrue(restarted.isPaid(walletId, HASH))
-        assertEquals(TransactionState.SETTLED, restarted.history(walletId).single().state)
-        assertEquals(receipt, restarted.receipt(walletId, "operation"))
-        val envelope = json.decodeFromString<WalletOperationJournalV1>(vault.walletState(walletId).operationJournal.decodeToString())
-        assertContentEquals(byteArrayOf(1), envelope.l1)
-        assertContentEquals(byteArrayOf(2), envelope.channel)
-    }
-
-    @Test fun terminalFailureClearsPendingAndRemainsVisible() = runBlocking {
-        val walletId = WalletId("preprod-" + "00".repeat(28))
-        val vault = FakeVault(walletId, byteArrayOf())
-        val quote = PaymentQuote("quote", Lovelace(10), 20_000, Lovelace(2), Lovelace(3), 1_000, HASH)
-        val store = VaultPaymentStore(vault)
-        store.recordPending(walletId, PendingPaymentV1("operation", HASH, quote, 10))
-
-        store.fail(walletId, Receipt("operation", HASH, Lovelace(10), Lovelace(5), false), 20)
-
-        assertEquals(null, VaultPaymentStore(vault).pending(walletId))
-        assertEquals(TransactionState.FAILED, VaultPaymentStore(vault).history(walletId).single().state)
-    }
-
-    private class FakeVault(walletId: WalletId, journal: ByteArray) : SecureVault {
-        private val profile = WalletProfile(walletId, "Wallet", CardanoNetwork.PREPROD, "addr_test1", "stake_test1")
-        private var state = WalletEncryptedStateV1(operationJournal = journal)
-        override val isUnlocked = true
-        override suspend fun unlock(wrappedDataKey: ByteArray) = Unit
-        override fun lock() = Unit
-        override suspend fun profiles() = listOf(profile)
-        override suspend fun createWallet(profile: WalletProfile, secret: WalletSecretV1) = error("not used")
-        override suspend fun updateProfile(profile: WalletProfile) = error("not used")
-        override suspend fun renameWallet(walletId: WalletId, name: String) = error("not used")
-        override suspend fun deleteWallet(walletId: WalletId) = error("not used")
-        override suspend fun <T> withWalletSeed(walletId: WalletId, action: suspend (ByteArray) -> T): T = error("not used")
-        override suspend fun walletState(walletId: WalletId) = state.copy(
-            channelRecovery = state.channelRecovery.copyOf(),
-            operationJournal = state.operationJournal.copyOf(),
+    @Test fun projectsPendingPaidAndHistoryAcrossExplicitChannelsWithoutWriting() = runBlocking {
+        val first = ProtocolKeytag("01".repeat(33))
+        val second = ProtocolKeytag("02".repeat(33))
+        val quote = PaymentQuote(
+            id = "quote",
+            keytag = second,
+            amount = AssetAmount(ADA, 10),
+            invoiceAmountMsat = 20_000,
+            routingFee = AssetAmount(ADA, 2),
+            adaptorFee = AssetAmount(ADA, 3),
+            expiresAtEpochMillis = 1_000,
+            invoiceHash = HASH,
+            bindingVersion = 2,
         )
-        override suspend fun updateWalletState(walletId: WalletId, state: WalletEncryptedStateV1) {
-            this.state = state.copy(
-                channelRecovery = state.channelRecovery.copyOf(),
-                operationJournal = state.operationJournal.copyOf(),
-            )
+        val receipt = Receipt("settled", PAID_HASH, first, AssetAmount(ADA, 20), AssetAmount(ADA, 1), true)
+        val collection = ChannelCollectionV3(
+            walletId = WALLET,
+            catalogDigest = DIGEST,
+            channels = mapOf(
+                first.value to ChannelSnapshot(
+                    first, ADA, ChannelState.Open("first"), payments = PaymentJournalV2(
+                        receipts = listOf(StoredReceipt(receipt, 20)),
+                    ),
+                ),
+                second.value to ChannelSnapshot(
+                    second, ADA, ChannelState.Open("second"), payments = PaymentJournalV2(
+                        pending = PendingPayment("pending", HASH, quote, 10),
+                    ),
+                ),
+            ),
+            paidHashes = setOf(PAID_HASH),
+        )
+        val journal = FakeJournal(collection)
+        val store = VaultPaymentStore(journal)
+
+        assertTrue(store.isPaid(WALLET, PAID_HASH))
+        assertFalse(store.isPaid(WALLET, HASH))
+        assertTrue(store.isPending(WALLET, HASH))
+        assertEquals("pending", store.pending(WALLET, second)?.operationId)
+        assertEquals(null, store.pending(WALLET, first))
+        assertEquals(receipt, store.receipt(WALLET, first, "settled"))
+        assertEquals(listOf(TransactionState.SETTLED, TransactionState.PENDING), store.history(WALLET).map { it.state })
+        assertEquals(0, journal.writes)
+    }
+
+    private class FakeJournal(private var collection: ChannelCollectionV3) : ChannelJournal {
+        var writes = 0
+        override suspend fun load(walletId: WalletId) = collection
+        override suspend fun persist(walletId: WalletId, collection: ChannelCollectionV3) {
+            writes++
+            this.collection = collection
         }
     }
 
     private companion object {
+        val DIGEST = "00" + "11".repeat(31)
+        val WALLET = WalletId("preprod-" + "00".repeat(28))
+        val ADA = ChannelAsset("ada", null, null, 6, AssetPricing.ADA, DIGEST)
         val HASH = "11".repeat(32)
+        val PAID_HASH = "22".repeat(32)
     }
 }

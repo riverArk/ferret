@@ -14,7 +14,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import io.riverark.ferret.core.channel.ChannelSnapshot
+import io.riverark.ferret.core.channel.ChannelCollectionV3
 import io.riverark.ferret.core.model.WalletProfile
 import io.riverark.ferret.ui.FerretDangerButton
 import io.riverark.ferret.ui.FerretListRow
@@ -28,7 +28,8 @@ data class WalletSettings(
     val profile: WalletProfile,
     val paymentCredential: String,
     val stakingCredential: String,
-    val channel: ChannelSnapshot,
+    val balance: WalletBalance,
+    val channels: ChannelCollectionV3,
     val adaptorStatus: String,
     val driveAccount: String?,
     val driveGeneration: Long?,
@@ -70,9 +71,16 @@ fun SettingsScreen(
 
             section("Network and channel")
             item { FerretListRow("Network", settings.profile.network.name) }
-            item { FerretListRow("Channel", channelStateLabel(settings.channel.state)) }
-            settings.channel.pending?.let { pending ->
-                item { FerretListRow("Channel operation", pending.state.label()) }
+            item { FerretListRow("Channels", settings.channels.channels.size.toString()) }
+            item {
+                FerretListRow(
+                    "Pending channel work",
+                    settings.channels.channels.values.count { it.pending != null || it.payments.pending != null }.toString(),
+                )
+            }
+            item { FerretListRow("Tracked assets", settings.balance.assets.size.toString()) }
+            if (settings.balance.unsupportedAssets.isNotEmpty()) {
+                item { FerretListRow("Unsupported native assets", settings.balance.unsupportedAssets.size.toString()) }
             }
             item { FerretListRow("Adaptor", settings.adaptorStatus) }
 

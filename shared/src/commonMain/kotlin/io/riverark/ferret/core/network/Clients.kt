@@ -1,5 +1,7 @@
 package io.riverark.ferret.core.network
 
+import io.riverark.ferret.core.model.AssetAmount
+import io.riverark.ferret.core.model.AssetCatalog
 import io.riverark.ferret.core.model.Lovelace
 import io.riverark.ferret.core.cardano.LedgerSnapshot
 import io.riverark.ferret.core.cardano.LedgerUtxo
@@ -267,17 +269,23 @@ class ConnectorClient(private val http: HttpClient, private val deployment: Netw
     suspend fun health(): HealthDto = getOnce("/health")
     suspend fun network(): NetworkDto = getOnce("/network")
     suspend fun protocolParameters(): ProtocolParametersDto = getOnce("/protocol-parameters")
-    suspend fun balance(address: String): Lovelace = utxos(address).fold(Lovelace(0)) { total, output -> total + output.ledger().lovelace }
+    suspend fun balance(address: String): Lovelace = utxos(address).filter { it.consumedBy == null }
+        .fold(Lovelace(0)) { total, output -> total + output.ledger().lovelace }
     suspend fun utxos(address: String): List<ConnectorUtxoDto> = getOnce("/utxos_at/${path(address)}")
-    suspend fun transactions(address: String): List<TransactionRecord> =
-        getOnce<List<ConnectorTransactionDto>>("/transactions/${path(address)}").transactionRecords(address)
+    suspend fun transactions(address: String, catalog: AssetCatalog): List<TransactionRecord> =
+        getOnce<List<ConnectorTransactionDto>>("/transactions/${path(address)}").transactionRecords(address, catalog)
     suspend fun transaction(transactionId: String): ConnectorTransactionDto? {
         require(HEX_64.matches(transactionId))
         return getOnce<ConnectorTransactionDto?>("/transaction/$transactionId").validatedFor(transactionId)
     }
     suspend fun ledger(address: String, network: CardanoNetwork): LedgerSnapshot {
         val parameters = protocolParameters()
-        return LedgerSnapshot(network, utxos(address).map(ConnectorUtxoDto::ledger), parameters.payload.toString(), parameters.slot)
+        return LedgerSnapshot(
+            network,
+            utxos(address).filter { it.consumedBy == null }.map(ConnectorUtxoDto::ledger),
+            parameters.payload.toString(),
+            parameters.slot,
+        )
     }
     suspend fun evaluate(unsignedCborHex: String): EvaluationResponse =
         postOnce("/evaluate", SubmitRequest(unsignedCborHex))
@@ -311,29 +319,39 @@ internal fun JsonArray.lovelaceBalance(): Lovelace =
             }
     }
 
-internal fun List<ConnectorTransactionDto>.transactionRecords(address: String): List<TransactionRecord> =
+internal fun List<ConnectorTransactionDto>.transactionRecords(
+    address: String,
+    catalog: AssetCatalog,
+): List<TransactionRecord> =
     also { require(size <= 1_000) { "too many transactions" } }.
     map { transaction ->
         transaction.requireValid()
-        val inputs = transaction.inputs.map { it.address to it.value.lovelace() }
-        val outputs = transaction.outputs.map { it.address to it.value.lovelace() }
-        val totalInput = inputs.fold(Lovelace(0)) { total, (_, amount) -> total + amount }
-        val totalOutput = outputs.fold(Lovelace(0)) { total, (_, amount) -> total + amount }
-        val walletInput = inputs.filter { it.first == address }.fold(Lovelace(0)) { total, (_, amount) -> total + amount }
-        val walletOutput = outputs.filter { it.first == address }.fold(Lovelace(0)) { total, (_, amount) -> total + amount }
-        require(walletInput.value > 0 || walletOutput.value > 0) { "transaction does not contain wallet address" }
-        val incoming = walletOutput.value >= walletInput.value
-        val fee = if (incoming) Lovelace(0) else totalInput - totalOutput
-        val amount = if (incoming) {
-            walletOutput - walletInput
-        } else {
-            (walletInput - walletOutput) - fee
+        val inputs = transaction.inputs.map { it.address to it.value.quantities() }
+        val outputs = transaction.outputs.map { it.address to it.value.quantities() }
+        val totalInput = inputs.map { it.second }.sumUnits()
+        val totalOutput = outputs.map { it.second }.sumUnits()
+        val walletInput = inputs.filter { it.first == address }.map { it.second }.sumUnits()
+        val walletOutput = outputs.filter { it.first == address }.map { it.second }.sumUnits()
+        require((walletInput.keys + walletOutput.keys).isNotEmpty()) { "transaction does not contain wallet address" }
+
+        val ada = catalog.ada
+        val incomingAda = walletOutput.units("lovelace") >= walletInput.units("lovelace")
+        val feeUnits = if (incomingAda) 0 else {
+            subtractUnits(totalInput.units("lovelace"), totalOutput.units("lovelace"))
         }
+        val units = (walletInput.keys + walletOutput.keys + "lovelace").distinct().mapNotNull { unit ->
+            val asset = catalog.assetForConnectorUnit(unit) ?: return@mapNotNull null
+            val input = walletInput.units(unit)
+            val output = walletOutput.units(unit)
+            val delta = if (output >= input) output - input else subtractUnits(input, output)
+            val amount = if (unit == "lovelace" && !incomingAda) subtractUnits(delta, feeUnits) else delta
+            AssetAmount(asset, amount).takeIf { unit == "lovelace" || amount != 0L }
+        }.sortedWith(compareBy<AssetAmount> { it.asset.policyId ?: "" }.thenBy { it.asset.assetName ?: "" })
         TransactionRecord(
             id = transaction.id,
             timestampEpochMillis = transaction.timestamp * 1_000,
-            amount = amount,
-            fee = fee,
+            amounts = units,
+            fee = AssetAmount(ada, feeUnits),
             realm = Realm.L1,
             state = when {
                 transaction.depth < 5 -> TransactionState.PENDING
@@ -370,6 +388,34 @@ private fun List<ConnectorAssetDto>.lovelace(): Lovelace {
         ?: throw IllegalArgumentException("output must contain one lovelace value")
     require(Regex("(0|[1-9][0-9]*)").matches(quantity)) { "invalid lovelace quantity" }
     return Lovelace(quantity.toLong())
+}
+
+private fun List<ConnectorAssetDto>.quantities(): Map<String, Long> {
+    require(map(ConnectorAssetDto::unit).distinct().size == size) { "duplicate asset unit" }
+    require(any { it.unit == "lovelace" }) { "output must contain one lovelace value" }
+    return associate { it.unit to it.quantity.toLong() }
+}
+
+private fun List<Map<String, Long>>.sumUnits(): Map<String, Long> {
+    val result = mutableMapOf<String, Long>()
+    forEach { values ->
+        values.forEach { (unit, quantity) ->
+            result[unit] = addUnits(result[unit] ?: 0L, quantity)
+        }
+    }
+    return result
+}
+
+private fun Map<String, Long>.units(unit: String) = this[unit] ?: 0L
+
+private fun addUnits(left: Long, right: Long): Long {
+    require(left <= Long.MAX_VALUE - right) { "asset quantity overflow" }
+    return left + right
+}
+
+private fun subtractUnits(left: Long, right: Long): Long {
+    require(left >= right) { "negative asset quantity" }
+    return left - right
 }
 
 class AdaptorClient(

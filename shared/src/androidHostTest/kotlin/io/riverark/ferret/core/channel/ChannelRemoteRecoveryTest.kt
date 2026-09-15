@@ -12,8 +12,10 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.OutgoingContent
 import io.ktor.util.date.GMTDate
 import io.ktor.utils.io.ByteReadChannel
+import io.riverark.ferret.core.model.AssetAmount
+import io.riverark.ferret.core.model.AssetPricing
+import io.riverark.ferret.core.model.ChannelAsset
 import io.riverark.ferret.core.model.ChannelState
-import io.riverark.ferret.core.model.Lovelace
 import io.riverark.ferret.core.model.OperationState
 import io.riverark.ferret.core.model.WalletId
 import io.riverark.ferret.core.model.WalletRepository
@@ -30,12 +32,16 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFails
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
+import kotlin.test.assertNotNull
 
 class ChannelRemoteRecoveryTest {
     private val walletId = WalletId("preprod-${"0".repeat(56)}")
     private val operationId = "00000000-0000-4000-8000-000000000000"
     private val transactionId = "1".repeat(64)
-    private val keytag = "2".repeat(64) + "00"
+    private val keytag = ProtocolKeytag("2".repeat(64) + "00")
+    private val otherKeytag = ProtocolKeytag("2".repeat(64) + "01")
+    private val digest = "a".repeat(64)
+    private val ada = ChannelAsset("ada", null, null, 6, AssetPricing.ADA, digest)
     private val writer = WriterLease("3".repeat(64), 1, "4".repeat(64), "5".repeat(64), 1_000)
     private val crypto = object : ProtocolCrypto {
         override fun verify(verificationKey: ByteArray, message: ByteArray, signature: ByteArray) = false
@@ -76,7 +82,10 @@ class ChannelRemoteRecoveryTest {
         val presentEngine = ScriptedEngine(ArrayDeque(listOf(Reply(HttpStatusCode.OK, accepted))))
         val presentClient = ferretHttpClient(presentEngine)
         try {
-            assertEquals(OperationState.SUBMITTED, remote(presentClient).reconcile(walletId, operation(), writer)?.status)
+            val result = remote(presentClient).reconcile(walletId, operation(), writer)
+            assertEquals(OperationState.SUBMITTED, result?.status)
+            assertEquals(keytag, result?.keytag)
+            assertEquals(ada, result?.asset)
         } finally {
             presentClient.close()
         }
@@ -98,10 +107,12 @@ class ChannelRemoteRecoveryTest {
                 acceptingCrypto,
             ).reconcile(walletId, operation, writer)
             assertEquals(OperationState.FAILED, result?.status)
-            assertEquals(keytag, result?.verifiedChannelData)
+            assertEquals(keytag, result?.keytag)
+            assertNotNull(result?.protocolReceipt)
         } finally {
             client.close()
         }
+        Unit
     }
 
     @Test fun terminalPaymentFailurePreservesSafeReason() = runBlocking {
@@ -117,6 +128,8 @@ class ChannelRemoteRecoveryTest {
             )
             assertEquals(OperationState.FAILED, result.status)
             assertEquals("No Lightning route was available.", result.failureMessage)
+            assertEquals(keytag, result.keytag)
+            assertEquals(ada, result.asset)
         } finally {
             client.close()
         }
@@ -147,25 +160,32 @@ class ChannelRemoteRecoveryTest {
         val engine = ScriptedEngine(responses)
         val client = ferretHttpClient(engine)
         try {
-            var stored = ChannelSnapshot(
-                ChannelState.Opening(operationId),
-                operation().copy(state = OperationState.WRITE_AHEAD_VERIFIED),
+            var stored = collection(
+                ChannelSnapshot(
+                    keytag,
+                    ada,
+                    ChannelState.Opening(operationId),
+                    operation().copy(state = OperationState.WRITE_AHEAD_VERIFIED),
+                ),
             )
             val repository = repository({ stored }, { stored = it }, remote(client))
             repository.load(walletId)
 
-            assertFailsWith<IllegalArgumentException> { repository.reconcile(walletId) }
+            assertFailsWith<IllegalArgumentException> { repository.reconcile(walletId, keytag) }
             assertEquals(listOf(HttpMethod.Get), engine.requests.map { it.method })
-            assertEquals(operationId, stored.pending?.operationId)
+            val entry = stored.channels.getValue(keytag.value)
+            assertEquals(operationId, entry.pending?.operationId)
             assertContentEquals(
                 byteArrayOf(1, 2, 3),
-                (stored.pending?.payload as ChannelPayload.Transaction).signedTransaction,
+                (entry.pending?.payload as ChannelPayload.Transaction).signedTransaction,
             )
 
-            stored = stored.copy(pending = stored.pending?.copy(state = OperationState.SUBMITTED))
+            stored = stored.copy(channels = stored.channels + (
+                keytag.value to entry.copy(pending = entry.pending.copy(state = OperationState.SUBMITTED))
+            ))
             val submitted = repository({ stored }, { stored = it }, remote(client))
             submitted.load(walletId)
-            submitted.reconcile(walletId)
+            submitted.reconcile(walletId, keytag)
             assertEquals(listOf(HttpMethod.Get, HttpMethod.Get), engine.requests.map { it.method })
         } finally {
             client.close()
@@ -174,8 +194,13 @@ class ChannelRemoteRecoveryTest {
 
     @Test fun submittedPaymentReplaysStableAuthorizationToResolveItsSecret() = runBlocking {
         val operation = paymentOperation(OperationState.SUBMITTED)
-        var stored = ChannelSnapshot(ChannelState.Open("channel"), operation)
+        var stored = collection(
+            paymentSnapshot(operation),
+            ChannelSnapshot(otherKeytag, ada, ChannelState.Open("other"), spendableBalance = AssetAmount(ada, 9_000)),
+        )
+        val untouched = stored.channels.getValue(otherKeytag.value)
         var mutations = 0
+        var replayed: PreparedChannelOperation? = null
         val repository = repository(
             { stored },
             { stored = it },
@@ -187,6 +212,8 @@ class ChannelRemoteRecoveryTest {
                 ) = ChannelRemoteResult(
                     operation.operationId,
                     operation.intentHash,
+                    operation.keytag,
+                    operation.asset,
                     state = ChannelState.Open("channel"),
                     status = OperationState.SUBMITTED,
                 )
@@ -197,9 +224,12 @@ class ChannelRemoteRecoveryTest {
                     writer: WriterLease,
                 ): ChannelRemoteResult {
                     mutations++
+                    replayed = operation
                     return ChannelRemoteResult(
                         operation.operationId,
                         operation.intentHash,
+                        operation.keytag,
+                        operation.asset,
                         state = ChannelState.Open("channel"),
                         status = OperationState.COMPLETED,
                     )
@@ -208,38 +238,52 @@ class ChannelRemoteRecoveryTest {
         )
         repository.load(walletId)
 
-        repository.reconcile(walletId)
+        repository.reconcile(walletId, keytag)
+        assertNull(repository.reconcile(walletId, keytag))
 
         assertEquals(1, mutations)
-        assertNull(stored.pending)
+        assertEquals(keytag, replayed?.keytag)
+        assertEquals(ada, replayed?.asset)
+        assertContentEquals(
+            (operation.payload as ChannelPayload.Payment).authorizationCbor,
+            (replayed?.payload as ChannelPayload.Payment).authorizationCbor,
+        )
+        val entry = stored.channels.getValue(keytag.value)
+        assertNull(entry.pending)
+        assertEquals(setOf(operation.payload.invoiceHash), stored.paidHashes)
+        assertEquals(1, entry.payments.receipts.size)
+        assertEquals(untouched, stored.channels.getValue(otherKeytag.value))
     }
 
     private fun operation() = PreparedChannelOperation(
-        operationId,
-        "6".repeat(64),
-        ChannelAction.Open(3_000_000),
+        operationId = operationId,
+        intentHash = "6".repeat(64),
+        keytag = keytag,
+        asset = ada,
+        action = ChannelAction.Open(AssetAmount(ada, 3_000_000)),
         preparedAtEpochMillis = 123,
         payload = ChannelPayload.Transaction(byteArrayOf(9), transactionId, byteArrayOf(1, 2, 3)),
-        keytag = keytag,
     )
 
     private fun paymentOperation(state: OperationState): PreparedChannelOperation {
         val hash = "7".repeat(64)
         val quote = PaymentQuote(
             "quote",
-            Lovelace(100),
+            keytag,
+            AssetAmount(ada, 100),
             1_000,
-            Lovelace(1),
-            Lovelace(2),
+            AssetAmount(ada, 1),
+            AssetAmount(ada, 2),
             1_000,
             hash,
-            1,
-            1_000,
+            bindingVersion = 2,
         )
         return PreparedChannelOperation(
-            operationId,
-            "6".repeat(64),
-            ChannelAction.Pay(quote.id, hash),
+            operationId = operationId,
+            intentHash = "6".repeat(64),
+            keytag = keytag,
+            asset = ada,
+            action = ChannelAction.Pay(quote.id, hash),
             priorChannelIdentity = "channel",
             preparedAtEpochMillis = 1,
             payload = ChannelPayload.Payment(
@@ -254,28 +298,51 @@ class ChannelRemoteRecoveryTest {
                 ),
                 quote,
             ),
-            keytag = keytag,
             state = state,
+        )
+    }
+
+    private fun paymentSnapshot(operation: PreparedChannelOperation): ChannelSnapshot {
+        val payment = operation.payload as ChannelPayload.Payment
+        return ChannelSnapshot(
+            keytag,
+            ada,
+            ChannelState.Open("channel"),
+            operation,
+            payments = PaymentJournalV2(
+                pending = PendingPayment(
+                    operation.operationId,
+                    payment.invoiceHash,
+                    payment.quote,
+                    operation.preparedAtEpochMillis,
+                ),
+            ),
         )
     }
 
     private fun remote(client: io.ktor.client.HttpClient) =
         AdaptorChannelRemote({ AdaptorClient(client, PREPROD, crypto) }, crypto)
 
+    private fun collection(vararg entries: ChannelSnapshot) = ChannelCollectionV3(
+        walletId = walletId,
+        catalogDigest = digest,
+        channels = entries.associateBy { it.keytag.value },
+    )
+
     private fun repository(
-        load: () -> ChannelSnapshot,
-        save: (ChannelSnapshot) -> Unit,
+        load: () -> ChannelCollectionV3,
+        save: (ChannelCollectionV3) -> Unit,
         remote: ChannelRemote,
     ) = ChannelRepository(
         WalletRepository(),
         object : ChannelJournal {
             override suspend fun load(walletId: WalletId) = load()
-            override suspend fun persist(walletId: WalletId, snapshot: ChannelSnapshot) = save(snapshot)
+            override suspend fun persist(walletId: WalletId, collection: ChannelCollectionV3) = save(collection)
         },
         object : ChannelBackupProtocol {
             override suspend fun requireVerifiedWriter(walletId: WalletId) = writer
-            override suspend fun writeAhead(walletId: WalletId, snapshot: ChannelSnapshot) = Unit
-            override suspend fun commit(walletId: WalletId, snapshot: ChannelSnapshot) = Unit
+            override suspend fun writeAhead(walletId: WalletId, collection: ChannelCollectionV3) = Unit
+            override suspend fun commit(walletId: WalletId, collection: ChannelCollectionV3) = Unit
         },
         remote,
     )

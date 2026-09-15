@@ -1,248 +1,204 @@
 package io.riverark.ferret
 
-import io.riverark.ferret.core.channel.ChannelAction
-import io.riverark.ferret.core.channel.ChannelBackupProtocol
-import io.riverark.ferret.core.channel.ChannelJournal
-import io.riverark.ferret.core.channel.ChannelPayload
-import io.riverark.ferret.core.channel.ChannelPreview
-import io.riverark.ferret.core.channel.ChannelRemote
-import io.riverark.ferret.core.channel.ChannelRemoteResult
-import io.riverark.ferret.core.channel.ChannelRepository
-import io.riverark.ferret.core.channel.ChannelSnapshot
-import io.riverark.ferret.core.channel.PreparedChannelOperation
-import io.riverark.ferret.core.channel.WriterLease
-import io.riverark.ferret.core.model.CardanoNetwork
-import io.riverark.ferret.core.model.ChannelState
-import io.riverark.ferret.core.model.Lovelace
-import io.riverark.ferret.core.model.OperationState
-import io.riverark.ferret.core.model.WalletId
-import io.riverark.ferret.core.model.WalletRepository
+import io.riverark.ferret.core.channel.*
+import io.riverark.ferret.core.model.*
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
-import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
-import kotlin.test.assertFails
 import kotlin.test.assertFailsWith
-import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 
 class ChannelRepositoryTest {
-    private val walletId = WalletId("preprod-${"0".repeat(56)}")
-    private val writer = WriterLease("a".repeat(64), 1, "b".repeat(64), "c".repeat(64), 1_000)
+    private val walletId = WalletId("mainnet-${"0".repeat(56)}")
+    private val digest = "a".repeat(64)
+    private val ada = ChannelAsset("ada", null, null, 6, AssetPricing.ADA, digest)
+    private val usdm = ChannelAsset("usdm", "1".repeat(56), "", 6, AssetPricing.USD_PEG, digest)
+    private val usdcx = ChannelAsset("usdcx", "2".repeat(56), "", 6, AssetPricing.USD_PEG, digest)
+    private val first = ProtocolKeytag("1".repeat(64) + "a".repeat(64))
+    private val second = ProtocolKeytag("1".repeat(64) + "b".repeat(64))
+    private val nativeOne = ProtocolKeytag("1".repeat(64) + "c".repeat(64))
+    private val nativeTwo = ProtocolKeytag("1".repeat(64) + "d".repeat(64))
+    private val writer = WriterLease("e".repeat(64), 1, "f".repeat(64), "0".repeat(64), Long.MAX_VALUE)
 
-    @Test fun repositoryRejectsIllegalPaymentWithoutUi() = runBlocking {
-        var stored = ChannelSnapshot(ChannelState.Absent)
-        val repository = repository(stored = { stored }, save = { stored = it })
+    @Test fun paymentCompletionChangesOnlySelectedChannelAndWalletPaidSet() = runBlocking {
+        var stored = collection()
+        val repository = repository({ stored }, { stored = it }) { operation ->
+            ChannelRemoteResult(
+                operation.operationId, operation.intentHash, operation.keytag, operation.asset,
+                state = ChannelState.Open(requireNotNull(operation.priorChannelIdentity)),
+                status = OperationState.COMPLETED,
+            )
+        }
+        repository.load(walletId)
+        val before = stored
+        val quote = quote(second)
+
+        repository.submitPayment(walletId, second, "ln-invoice", quote, gateway(second), 1)
+
+        assertEquals(before.channels.getValue(first.value), stored.channels.getValue(first.value))
+        assertEquals(before.channels.getValue(nativeOne.value), stored.channels.getValue(nativeOne.value))
+        assertEquals(before.channels.getValue(nativeTwo.value), stored.channels.getValue(nativeTwo.value))
+        assertEquals(8_750L, stored.channels.getValue(second.value).spendableBalance.baseUnits)
+        assertEquals(setOf(quote.invoiceHash), stored.paidHashes)
+        assertEquals(second, stored.channels.getValue(second.value).payments.receipts.single().receipt.keytag)
+        assertNull(stored.channels.getValue(second.value).pending)
+    }
+
+    @Test fun duplicateInvoiceAcrossChannelsRejectsBeforePreparationOrRemoteCall() = runBlocking {
+        val hash = "9".repeat(64)
+        val pendingQuote = quote(first, hash)
+        val pending = PendingPayment("old", hash, pendingQuote, 0)
+        var stored = collection().let { value ->
+            value.copy(channels = value.channels + (first.value to value.channels.getValue(first.value).copy(
+                payments = PaymentJournalV2(pending = pending),
+            )))
+        }
+        var prepared = 0
+        var remoteCalls = 0
+        val repository = repository({ stored }, { stored = it }) { operation ->
+            remoteCalls++
+            ChannelRemoteResult(operation.operationId, operation.intentHash, operation.keytag, operation.asset,
+                state = ChannelState.Open("second"), status = OperationState.COMPLETED)
+        }
         repository.load(walletId)
 
         assertFailsWith<IllegalArgumentException> {
-            repository.submit(walletId, preview(ChannelAction.Pay("quote", "invoice")))
+            repository.submitPayment(walletId, second, "ln-invoice", quote(second, hash), gateway(second) { prepared++ }, 1)
         }
-        assertEquals(ChannelState.Absent, stored.state)
+        assertEquals(0, prepared)
+        assertEquals(0, remoteCalls)
     }
 
-    @Test fun missingWriterLeasePreventsJournalAndRemoteMutation() = runBlocking {
-        val initial = ChannelSnapshot(ChannelState.Open("channel"))
-        var stored = initial
-        var remoteCalled = false
-        val repository = repository(
-            stored = { stored },
-            save = { stored = it },
-            backup = object : ChannelBackupProtocol {
-                override suspend fun requireVerifiedWriter(walletId: WalletId): WriterLease = error("writer lease unavailable")
-                override suspend fun writeAhead(walletId: WalletId, snapshot: ChannelSnapshot) = Unit
-                override suspend fun commit(walletId: WalletId, snapshot: ChannelSnapshot) = Unit
-            },
-            remote = object : ChannelRemote {
-                override suspend fun mutate(walletId: WalletId, operation: PreparedChannelOperation, writer: WriterLease): ChannelRemoteResult {
-                    remoteCalled = true
-                    error("remote mutation must not run")
-                }
-                override suspend fun reconcile(walletId: WalletId, operation: PreparedChannelOperation, writer: WriterLease) = null
-            },
-        )
+    @Test fun mismatchedRemoteIdentityCannotSettleOrDebit() = runBlocking {
+        var stored = collection()
+        val repository = repository({ stored }, { stored = it }) { operation ->
+            ChannelRemoteResult(operation.operationId, operation.intentHash, first, operation.asset,
+                state = ChannelState.Open("wrong"), status = OperationState.COMPLETED)
+        }
         repository.load(walletId)
 
-        assertFailsWith<IllegalStateException> { repository.submit(walletId, preview(ChannelAction.Close)) }
-        assertEquals(initial, stored)
-        assertEquals(false, remoteCalled)
-    }
-
-    @Test fun terminalBackupFailureRecoversFromSavedResultWithoutRemoteLookup() = runBlocking {
-        var stored = ChannelSnapshot(ChannelState.Open("channel"))
-        var failCommit = true
-        val backup = object : ChannelBackupProtocol {
-            override suspend fun requireVerifiedWriter(walletId: WalletId) = writer
-            override suspend fun writeAhead(walletId: WalletId, snapshot: ChannelSnapshot) = Unit
-            override suspend fun commit(walletId: WalletId, snapshot: ChannelSnapshot) {
-                if (failCommit) error("Drive unavailable")
-            }
+        assertFailsWith<IllegalArgumentException> {
+            repository.submitPayment(walletId, second, "ln-invoice", quote(second), gateway(second), 1)
         }
-        val repository = repository(
-            stored = { stored },
-            save = { stored = it },
-            backup = backup,
-            remote = object : ChannelRemote {
-                override suspend fun mutate(walletId: WalletId, operation: PreparedChannelOperation, writer: WriterLease) =
-                    result(operation, ChannelState.Closed)
-                override suspend fun reconcile(walletId: WalletId, operation: PreparedChannelOperation, writer: WriterLease) =
-                    error("saved terminal result must avoid remote lookup")
-            },
-        )
-        repository.load(walletId)
-        val preview = preview(ChannelAction.Close)
-
-        assertFailsWith<IllegalStateException> { repository.submit(walletId, preview) }
-        assertEquals(ChannelState.Closing("operation"), stored.state)
-        assertEquals(OperationState.PENDING_RECONCILIATION, assertNotNull(stored.pending).state)
-        assertContentEquals(byteArrayOf(1, 2, 3), (stored.pending!!.payload as ChannelPayload.Protocol).cbor)
-        assertEquals(result(preview.operation, ChannelState.Closed), stored.history.single())
-
-        failCommit = false
-        val restarted = repository(
-            stored = { stored },
-            save = { stored = it },
-            backup = backup,
-            remote = object : ChannelRemote {
-                override suspend fun mutate(walletId: WalletId, operation: PreparedChannelOperation, writer: WriterLease) =
-                    error("saved terminal result must not mutate")
-                override suspend fun reconcile(walletId: WalletId, operation: PreparedChannelOperation, writer: WriterLease): ChannelRemoteResult? =
-                    error("saved terminal result must not query")
-            },
-        )
-        restarted.load(walletId)
-        restarted.reconcile(walletId)
-        assertEquals(ChannelState.Closed, stored.state)
-        assertEquals(null, stored.pending)
-        assertEquals(1, stored.history.size)
+        assertEquals(10_000L, stored.channels.getValue(second.value).spendableBalance.baseUnits)
+        assertEquals(emptySet(), stored.paidHashes)
     }
 
-    @Test fun savedTerminalResultStillRequiresMatchingIntentAndWriter() = runBlocking {
-        val pending = preview(ChannelAction.Close).operation.copy(
-            priorChannelIdentity = "channel",
-            state = OperationState.PENDING_RECONCILIATION,
+    @Test fun guardedCleanupBacksUpBeforeReplacingLocalCollection() = runBlocking {
+        val inactive = ChannelSnapshot(nativeOne, ada, ChannelState.Absent)
+        var stored = collection().copy(
+            channels = collection().channels + (inactive.keytag.value to inactive),
+            unresolvedLegacy = byteArrayOf(1),
         )
-        val terminal = result(pending, ChannelState.Closed)
-        val cases = listOf(
-            ChannelSnapshot(ChannelState.Closing(pending.operationId), pending, history = listOf(terminal.copy(intentHash = "wrong"))) to
-                suspend { _: WalletId -> writer },
-            ChannelSnapshot(ChannelState.Closing(pending.operationId), pending, history = listOf(terminal)) to
-                suspend { _: WalletId -> error("writer unavailable") },
+        val cleaned = stored.copy(
+            channels = stored.channels - inactive.keytag.value,
+            unresolvedLegacy = byteArrayOf(),
         )
-        for ((snapshot, requireWriter) in cases) {
-            var stored = snapshot
-            val repository = repository(
-                stored = { stored },
-                save = { stored = it },
-                backup = object : ChannelBackupProtocol {
-                    override suspend fun requireVerifiedWriter(walletId: WalletId) = requireWriter(walletId)
-                    override suspend fun writeAhead(walletId: WalletId, snapshot: ChannelSnapshot) = Unit
-                    override suspend fun commit(walletId: WalletId, snapshot: ChannelSnapshot) = Unit
-                },
-                remote = object : ChannelRemote {
-                    override suspend fun mutate(walletId: WalletId, operation: PreparedChannelOperation, writer: WriterLease) =
-                        error("saved terminal result must not mutate")
-                    override suspend fun reconcile(walletId: WalletId, operation: PreparedChannelOperation, writer: WriterLease): ChannelRemoteResult? =
-                        error("saved terminal result must not query")
-                },
-            )
-            repository.load(walletId)
-            assertFails { repository.reconcile(walletId) }
-            assertEquals(snapshot, stored)
+        val events = mutableListOf<String>()
+        val repository = repository(
+            { stored },
+            { events += "persist"; stored = it },
+            cleanup = { cleaned },
+            writeAhead = { events += "backup" },
+        ) { error("remote mutation not expected") }
+        repository.load(walletId)
+
+        assertEquals(cleaned, repository.cleanupInactive(walletId))
+        assertEquals(listOf("backup", "persist"), events)
+        assertEquals(cleaned, stored)
+    }
+
+    @Test fun cleanupBackupFailureLeavesLocalRecordsUntouched() = runBlocking {
+        val original = collection().copy(unresolvedLegacy = byteArrayOf(1))
+        var stored = original
+        val cleaned = original.copy(unresolvedLegacy = byteArrayOf())
+        val repository = repository(
+            { stored },
+            { stored = it },
+            cleanup = { cleaned },
+            writeAhead = { error("Drive unavailable") },
+        ) { error("remote mutation not expected") }
+        repository.load(walletId)
+
+        val failure = assertFailsWith<InactiveChannelCleanupRejected> {
+            repository.cleanupInactive(walletId)
         }
+
+        assertEquals("The encrypted Drive backup could not be updated. Local records were not changed.", failure.message)
+        assertEquals(original, stored)
     }
 
-    @Test fun reclaimsWriteAheadLeaseAndReplaysOneStablePayload() = runBlocking {
-        val action = ChannelAction.Close
-        val updatedWriter = writer.copy(token = "d".repeat(64), backupHashHex = "e".repeat(64))
-        var stored = ChannelSnapshot(ChannelState.Open("channel"))
-        var writeAhead: ChannelSnapshot? = null
-        var claims = 0
-        val operations = mutableListOf<PreparedChannelOperation>()
-        val mutationWriters = mutableListOf<WriterLease>()
-        val repository = repository(
-            stored = { stored },
-            save = { stored = it },
-            backup = object : ChannelBackupProtocol {
-                override suspend fun requireVerifiedWriter(walletId: WalletId) = if (++claims == 1) writer else updatedWriter
-                override suspend fun writeAhead(walletId: WalletId, snapshot: ChannelSnapshot) { writeAhead = snapshot }
-                override suspend fun commit(walletId: WalletId, snapshot: ChannelSnapshot) = Unit
-            },
-            remote = object : ChannelRemote {
-                override suspend fun mutate(walletId: WalletId, operation: PreparedChannelOperation, writer: WriterLease): ChannelRemoteResult {
-                    operations += operation
-                    mutationWriters += writer
-                    if (operations.size == 1) error("response lost")
-                    return result(operation, ChannelState.Open("channel"))
-                }
-                override suspend fun reconcile(walletId: WalletId, operation: PreparedChannelOperation, writer: WriterLease) = null
-            },
+    private fun collection(): ChannelCollectionV3 {
+        val entries = listOf(
+            ChannelSnapshot(first, ada, ChannelState.Open("first"), spendableBalance = AssetAmount(ada, 20_000)),
+            ChannelSnapshot(second, ada, ChannelState.Open("second"), spendableBalance = AssetAmount(ada, 10_000)),
+            ChannelSnapshot(nativeOne, usdm, ChannelState.Open("usdm"), spendableBalance = AssetAmount(usdm, 30_000)),
+            ChannelSnapshot(nativeTwo, usdcx, ChannelState.Open("usdcx"), spendableBalance = AssetAmount(usdcx, 40_000)),
         )
-        repository.load(walletId)
-        val preview = preview(action)
-
-        assertFailsWith<IllegalStateException> { repository.submit(walletId, preview) }
-        assertEquals(action, assertNotNull(writeAhead).pending!!.action)
-        assertEquals(ChannelState.Closing("operation"), assertNotNull(writeAhead).state)
-        assertEquals(OperationState.PENDING_RECONCILIATION, assertNotNull(stored.pending).state)
-
-        repository.reconcile(walletId)
-
-        assertEquals(listOf("operation", "operation"), operations.map { it.operationId })
-        operations.forEach { assertContentEquals(byteArrayOf(1, 2, 3), (it.payload as ChannelPayload.Protocol).cbor) }
-        assertEquals(listOf(updatedWriter, updatedWriter), mutationWriters)
-        assertEquals(ChannelState.Open("channel"), stored.state)
-        assertEquals(null, stored.pending)
+        return ChannelCollectionV3(walletId = walletId, catalogDigest = digest, channels = entries.associateBy { it.keytag.value })
     }
 
-    private fun preview(action: ChannelAction): ChannelPreview {
-        val operation = PreparedChannelOperation(
-            operationId = "operation",
-            intentHash = "intent",
-            action = action,
-            preparedAtEpochMillis = 123,
-            payload = ChannelPayload.Protocol(byteArrayOf(1, 2, 3)),
-        )
-        return ChannelPreview(
-            operation,
-            Lovelace(3_000_000),
-            Lovelace(100_000),
-            Lovelace(200_000),
-            Lovelace(1_000_000),
-            Lovelace(2_000_000),
-            Lovelace(500_000),
-            Lovelace(2_500_000),
-            CardanoNetwork.PREPROD,
-        )
-    }
-
-    private fun result(operation: PreparedChannelOperation, state: ChannelState) = ChannelRemoteResult(
-        operation.operationId,
-        operation.intentHash,
-        state = state,
-        status = OperationState.COMPLETED,
-        verifiedChannelData = "09",
+    private fun quote(keytag: ProtocolKeytag, hash: String = "8".repeat(64)) = PaymentQuote(
+        "quote", keytag, AssetAmount(ada, 1_000), 1_000, AssetAmount(ada, 200), AssetAmount(ada, 50),
+        10_000, hash, bindingVersion = 2,
     )
 
+    private fun gateway(keytag: ProtocolKeytag, prepared: () -> Unit = {}) = object : PaymentGateway {
+        override suspend fun lightningChain() = "mainnet"
+        override suspend fun quote(walletId: WalletId, keytag: ProtocolKeytag, invoice: String, invoiceHash: String, amountMsat: Long) =
+            error("quote not expected")
+        override suspend fun prepareInitialization(walletId: WalletId, keytag: ProtocolKeytag, operationId: String, preparedAtEpochMillis: Long) = null
+        override suspend fun prepare(
+            walletId: WalletId,
+            keytag: ProtocolKeytag,
+            operationId: String,
+            intentHash: String,
+            invoice: String,
+            quote: PaymentQuote,
+            preparedAtEpochMillis: Long,
+        ): ChannelPreview {
+            prepared()
+            require(keytag == this@ChannelRepositoryTest.second || keytag == this@ChannelRepositoryTest.first)
+            val entry = collection().channels.getValue(keytag.value)
+            val request = AdaptorPayRequest(
+                ChequeBodyWire(0, 1_250, ProtocolDurationWire.fromMillis(1), Hex32(quote.invoiceHash)),
+                "0".repeat(128),
+                invoice,
+            )
+            val operation = PreparedChannelOperation(
+                operationId, intentHash, keytag, entry.asset, ChannelAction.Pay(quote.id, quote.invoiceHash),
+                (entry.state as ChannelState.Open).channelId, preparedAtEpochMillis,
+                ChannelPayload.Payment(byteArrayOf(1), invoice, quote.invoiceHash, quote.id, request, quote),
+                AssetAmount(entry.asset, entry.spendableBalance.baseUnits - 1_250),
+            )
+            val fee = quote.routingFee + quote.adaptorFee
+            val zero = AssetAmount(entry.asset, 0)
+            return ChannelPreview(operation, quote.amount, fee, fee, zero, zero, zero, operation.resultingSpendableBalance!!, CardanoNetwork.MAINNET)
+        }
+    }
+
     private fun repository(
-        stored: () -> ChannelSnapshot,
-        save: (ChannelSnapshot) -> Unit,
-        backup: ChannelBackupProtocol = object : ChannelBackupProtocol {
-            override suspend fun requireVerifiedWriter(walletId: WalletId) = writer
-            override suspend fun writeAhead(walletId: WalletId, snapshot: ChannelSnapshot) = Unit
-            override suspend fun commit(walletId: WalletId, snapshot: ChannelSnapshot) = Unit
-        },
-        remote: ChannelRemote = object : ChannelRemote {
-            override suspend fun mutate(walletId: WalletId, operation: PreparedChannelOperation, writer: WriterLease) =
-                result(operation, ChannelState.Absent)
-            override suspend fun reconcile(walletId: WalletId, operation: PreparedChannelOperation, writer: WriterLease) = null
-        },
+        load: () -> ChannelCollectionV3,
+        save: (ChannelCollectionV3) -> Unit,
+        cleanup: (ChannelCollectionV3) -> ChannelCollectionV3 = { error("cleanup not expected") },
+        writeAhead: (ChannelCollectionV3) -> Unit = {},
+        mutate: (PreparedChannelOperation) -> ChannelRemoteResult,
     ) = ChannelRepository(
         WalletRepository(),
         object : ChannelJournal {
-            override suspend fun load(walletId: WalletId) = stored()
-            override suspend fun persist(walletId: WalletId, snapshot: ChannelSnapshot) = save(snapshot)
+            override suspend fun load(walletId: WalletId) = load()
+            override suspend fun persist(walletId: WalletId, collection: ChannelCollectionV3) = save(collection)
+            override fun cleanupInactive(collection: ChannelCollectionV3) = cleanup(collection)
         },
-        backup,
-        remote,
+        object : ChannelBackupProtocol {
+            override suspend fun requireVerifiedWriter(walletId: WalletId) = writer
+            override suspend fun writeAhead(walletId: WalletId, collection: ChannelCollectionV3) = writeAhead(collection)
+            override suspend fun commit(walletId: WalletId, collection: ChannelCollectionV3) = Unit
+        },
+        object : ChannelRemote {
+            override suspend fun mutate(walletId: WalletId, operation: PreparedChannelOperation, writer: WriterLease) = mutate(operation)
+            override suspend fun reconcile(walletId: WalletId, operation: PreparedChannelOperation, writer: WriterLease) = null
+        },
+        newOperationId = { "00000000-0000-4000-8000-000000000001" },
     )
 }

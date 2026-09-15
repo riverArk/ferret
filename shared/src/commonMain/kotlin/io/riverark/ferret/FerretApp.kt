@@ -34,21 +34,24 @@ import ferret.shared.generated.resources.Res
 import ferret.shared.generated.resources.splash_ferret
 import io.riverark.ferret.core.backup.StaleBackupWriterException
 import io.riverark.ferret.core.backup.MissingBackupException
-import io.riverark.ferret.core.channel.ChannelSnapshot
+import io.riverark.ferret.core.channel.ChannelCollectionV3
 import io.riverark.ferret.core.channel.ChannelPreview
-import io.riverark.ferret.core.channel.PaymentQuote
+import io.riverark.ferret.core.channel.InactiveChannelCleanupRejected
 import io.riverark.ferret.core.channel.PaymentUiState
 import io.riverark.ferret.core.channel.PaymentViewModel
+import io.riverark.ferret.core.channel.ProtocolKeytag
 import io.riverark.ferret.core.model.AppState
+import io.riverark.ferret.core.model.AssetAmount
+import io.riverark.ferret.core.model.AssetCatalog
 import io.riverark.ferret.core.model.CardanoNetwork
 import io.riverark.ferret.core.model.WalletId
 import io.riverark.ferret.core.model.WalletManager
-import io.riverark.ferret.core.model.Lovelace
 import io.riverark.ferret.core.model.WalletRemovalManager
 import io.riverark.ferret.core.model.WalletRepository
 import io.riverark.ferret.core.model.TransactionRecord
 import io.riverark.ferret.core.model.WalletProfile
 import io.riverark.ferret.feature.payment.ConfirmPaymentScreen
+import io.riverark.ferret.feature.payment.SelectPaymentChannelScreen
 import io.riverark.ferret.feature.payment.PaymentReceiptScreen
 import io.riverark.ferret.feature.wallet.CreateWalletScreen
 import io.riverark.ferret.feature.wallet.ChannelScreen
@@ -58,6 +61,7 @@ import io.riverark.ferret.feature.wallet.OpenChannelViewModel
 import io.riverark.ferret.feature.wallet.QrCode
 import io.riverark.ferret.feature.wallet.HomeViewModel
 import io.riverark.ferret.feature.wallet.HistoryScreen
+import io.riverark.ferret.feature.wallet.WalletBalance
 import io.riverark.ferret.feature.wallet.L1WalletRepository
 import io.riverark.ferret.feature.wallet.HistoryViewModel
 import io.riverark.ferret.feature.wallet.RecoveryPhraseScreen
@@ -90,16 +94,18 @@ import kotlinx.coroutines.launch
 data class FerretDependencies(
     val wallets: WalletRepository,
     val walletManager: WalletManager?,
-    val loadBalance: (suspend (WalletProfile) -> Lovelace)? = null,
+    val assetCatalog: AssetCatalog? = null,
+    val loadBalance: (suspend (WalletProfile) -> WalletBalance)? = null,
     val loadHistory: (suspend (WalletProfile) -> List<TransactionRecord>)? = null,
     val encodeQr: ((String) -> QrCode)? = null,
     val copyAddress: ((String) -> Unit)? = null,
     val l1WalletRepository: L1WalletRepository? = null,
-    val loadChannel: (suspend (WalletId) -> ChannelSnapshot)? = null,
+    val loadChannels: (suspend (WalletId) -> ChannelCollectionV3)? = null,
+    val cleanupInactiveChannels: (suspend (WalletId) -> ChannelCollectionV3)? = null,
     val paymentViewModelFactory: ((WalletId) -> PaymentViewModel)? = null,
-    val loadPaymentReceipt: (suspend (WalletId, String) -> io.riverark.ferret.core.model.Receipt?)? = null,
+    val loadPaymentReceipt: (suspend (WalletId, ProtocolKeytag, String) -> io.riverark.ferret.core.model.Receipt?)? = null,
     val invoiceScanner: (@Composable ((String) -> Unit, () -> Unit) -> Unit)? = null,
-    val previewOpenChannel: (suspend (WalletId, Lovelace) -> ChannelPreview)? = null,
+    val previewOpenChannel: (suspend (WalletId, AssetAmount) -> ChannelPreview)? = null,
     val submitOpenChannel: (suspend (WalletId, ChannelPreview) -> String)? = null,
     val nowEpochMillis: (() -> Long)? = null,
     val loadSettings: (suspend (WalletProfile) -> WalletSettings)? = null,
@@ -132,6 +138,7 @@ fun FerretApp(
             }
             return@FerretTheme
         }
+        val assetCatalog = checkNotNull(dependencies.assetCatalog) { "Asset catalog is unavailable." }
         val loadBalance = checkNotNull(dependencies.loadBalance) { "Wallet balance loader is unavailable." }
         val loadHistory = checkNotNull(dependencies.loadHistory) { "Wallet history loader is unavailable." }
         val encodeQr = checkNotNull(dependencies.encodeQr) { "QR encoder is unavailable." }
@@ -139,12 +146,14 @@ fun FerretApp(
         WalletNavigation(
             dependencies.wallets,
             manager,
+            assetCatalog,
             loadBalance,
             loadHistory,
             encodeQr,
             copyAddress,
             dependencies.l1WalletRepository,
-            dependencies.loadChannel,
+            dependencies.loadChannels,
+            dependencies.cleanupInactiveChannels,
             dependencies.paymentViewModelFactory,
             dependencies.loadPaymentReceipt,
             dependencies.invoiceScanner,
@@ -168,18 +177,20 @@ fun FerretApp(
 private fun WalletNavigation(
     repository: WalletRepository,
     manager: WalletManager,
-    loadBalance: suspend (WalletProfile) -> Lovelace,
+    assetCatalog: AssetCatalog,
+    loadBalance: suspend (WalletProfile) -> WalletBalance,
     loadHistory: suspend (WalletProfile) -> List<TransactionRecord>,
     encodeQr: (String) -> QrCode,
     copyAddress: (String) -> Unit,
     l1WalletRepository: L1WalletRepository?,
-    loadChannel: (suspend (WalletId) -> ChannelSnapshot)?,
+    loadChannels: (suspend (WalletId) -> ChannelCollectionV3)?,
+    cleanupInactiveChannels: (suspend (WalletId) -> ChannelCollectionV3)?,
     paymentViewModelFactory: ((WalletId) -> PaymentViewModel)?,
-    loadPaymentReceipt: (suspend (WalletId, String) -> io.riverark.ferret.core.model.Receipt?)?,
+    loadPaymentReceipt: (suspend (WalletId, ProtocolKeytag, String) -> io.riverark.ferret.core.model.Receipt?)?,
     invoiceScanner: (@Composable ((String) -> Unit, () -> Unit) -> Unit)?,
     nowEpochMillis: (() -> Long)?,
     loadSettings: (suspend (WalletProfile) -> WalletSettings)?,
-    previewOpenChannel: (suspend (WalletId, Lovelace) -> ChannelPreview)?,
+    previewOpenChannel: (suspend (WalletId, AssetAmount) -> ChannelPreview)?,
     submitOpenChannel: (suspend (WalletId, ChannelPreview) -> String)?,
     connectDrive: (suspend () -> String)?,
     verifyBackup: (suspend (WalletId) -> Long)?,
@@ -379,7 +390,7 @@ private fun WalletNavigation(
                         profile,
                         loadBalance,
                         loadHistory,
-                        loadChannel ?: { ChannelSnapshot(profile.channelState) },
+                        checkNotNull(loadChannels) { "Channel collection loader is unavailable." },
                         nowEpochMillis ?: { 0L },
                     )
                 }
@@ -390,6 +401,7 @@ private fun WalletNavigation(
                 }
                 HomeScreen(
                     homeState,
+                    assetCatalog,
                     homeViewModel::refresh,
                     { navController.navigate(Route.TopUp(profile.id.value)) },
                     if (
@@ -416,7 +428,7 @@ private fun WalletNavigation(
                     } else {
                         null
                     },
-                    if (loadChannel != null && io.riverark.ferret.feature.wallet.channelRouteAvailable(homeState.profile.channelState)) {
+                    if (loadChannels != null && homeState.channels?.let { io.riverark.ferret.feature.wallet.channelRouteAvailable(it) } == true) {
                         { navController.navigate(Route.Channel(profile.id.value)) }
                     } else {
                         null
@@ -445,6 +457,7 @@ private fun WalletNavigation(
                 SensitiveContent(onSensitiveContentChanged) {
                     TransferScreen(
                         profile,
+                        assetCatalog,
                         transferViewModel.destinations(ready.wallets),
                         transferState,
                         transferViewModel::previewAsync,
@@ -476,6 +489,7 @@ private fun WalletNavigation(
                 SensitiveContent(onSensitiveContentChanged) {
                     OpenChannelScreen(
                         profile,
+                        assetCatalog,
                         openState,
                         openViewModel::clearPreview,
                         openViewModel::previewAsync,
@@ -490,14 +504,16 @@ private fun WalletNavigation(
         composable<Route.Channel> { backStackEntry ->
             val route = backStackEntry.toRoute<Route.Channel>()
             val profile = (state as? AppState.Ready)?.wallets?.firstOrNull { it.id.value == route.walletId }
-            if (profile != null && loadChannel != null) {
-                var snapshot by remember(profile.id) { mutableStateOf<ChannelSnapshot?>(null) }
+            if (profile != null && loadChannels != null) {
+                val scope = rememberCoroutineScope()
+                var collection by remember(profile.id) { mutableStateOf<ChannelCollectionV3?>(null) }
                 var error by remember(profile.id) { mutableStateOf<String?>(null) }
+                var cleaning by remember(profile.id) { mutableStateOf(false) }
                 var reload by remember(profile.id) { mutableStateOf(0) }
                 LaunchedEffect(profile.id, reload) {
                     try {
                         error = null
-                        snapshot = loadChannel(profile.id)
+                        collection = loadChannels(profile.id)
                     } catch (failure: CancellationException) {
                         throw failure
                     } catch (_: Exception) {
@@ -505,7 +521,34 @@ private fun WalletNavigation(
                     }
                 }
                 SensitiveContent(onSensitiveContentChanged) {
-                    ChannelScreen(profile, snapshot, error, { reload++ }, navController::popBackStack)
+                    ChannelScreen(
+                        profile,
+                        collection,
+                        assetCatalog,
+                        error,
+                        cleaning,
+                        cleanupInactiveChannels?.let { cleanup ->
+                            {
+                                scope.launch {
+                                    cleaning = true
+                                    error = null
+                                    try {
+                                        collection = cleanup(profile.id)
+                                    } catch (failure: CancellationException) {
+                                        throw failure
+                                    } catch (rejected: InactiveChannelCleanupRejected) {
+                                        error = rejected.message
+                                    } catch (_: Exception) {
+                                        error = "Inactive channel records could not be safely cleaned up."
+                                    } finally {
+                                        cleaning = false
+                                    }
+                                }
+                            }
+                        },
+                        { reload++ },
+                        navController::popBackStack,
+                    )
                 }
             }
         }
@@ -520,28 +563,38 @@ private fun WalletNavigation(
                 when (val current = paymentState) {
                     PaymentUiState.Scanning -> invoiceScanner(
                         { paymentViewModel.scanned(it, nowEpochMillis()) },
-                        { paymentViewModel.scanAgain() },
+                        paymentViewModel::scanAgain,
                     )
                     PaymentUiState.Quoting -> FerretScreen {
                         Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                            FerretLoadingState("Obtaining payment quote")
+                            FerretLoadingState("Preparing payment")
                         }
                     }
+                    is PaymentUiState.SelectingChannel -> SelectPaymentChannelScreen(
+                        current,
+                        assetCatalog,
+                        { paymentViewModel.selectChannel(it, nowEpochMillis()) },
+                        paymentViewModel::scanAgain,
+                    )
                     is PaymentUiState.Confirming -> {
                         LaunchedEffect(current.quote.id) { navController.navigate(Route.ConfirmPayment(route.walletId)) }
-                        FerretScreen { Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { FerretLoadingState("Preparing payment") } }
+                        FerretScreen {
+                            Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                                FerretLoadingState("Preparing payment")
+                            }
+                        }
                     }
                     is PaymentUiState.Processing -> FerretScreen {
                         Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                            FerretLoadingState(
-                                if (current.operationId == null) "Backing up payment" else "Confirming payment",
-                            )
+                            FerretLoadingState(if (current.operationId == null) "Backing up payment" else "Confirming payment")
                         }
                     }
-                    is PaymentUiState.Complete -> {
-                        LaunchedEffect(current.receipt.operationId) {
-                            navController.navigate(Route.PaymentReceipt(route.walletId, current.receipt.operationId))
-                        }
+                    is PaymentUiState.Complete -> LaunchedEffect(current.receipt.operationId) {
+                        navController.navigate(Route.PaymentReceipt(
+                            route.walletId,
+                            current.receipt.keytag.value,
+                            current.receipt.operationId,
+                        ))
                     }
                     is PaymentUiState.Error -> FerretScreen {
                         Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { FerretErrorState(current.message) }
@@ -564,23 +617,23 @@ private fun WalletNavigation(
                     guardComplete = true
                 }
                 SensitiveContent(onSensitiveContentChanged) {
-                    ConfirmPaymentScreen(current.description, current.quote, guardComplete) {
-                        paymentViewModel.confirm(nowEpochMillis())
-                    }
+                    ConfirmPaymentScreen(
+                        current.description,
+                        current.quote,
+                        current.selectedCapacity,
+                        assetCatalog,
+                        guardComplete,
+                    ) { paymentViewModel.confirm(nowEpochMillis()) }
                 }
             } else if (current is PaymentUiState.Processing) {
                 FerretScreen {
                     Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                        FerretLoadingState(
-                            if (current.operationId == null) "Backing up payment" else "Confirming payment",
-                        )
+                        FerretLoadingState(if (current.operationId == null) "Backing up payment" else "Confirming payment")
                     }
                 }
             } else if (current is PaymentUiState.Error) {
                 FerretScreen {
-                    Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                        FerretErrorState(current.message)
-                    }
+                    Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { FerretErrorState(current.message) }
                     FerretPrimaryButton("Back to wallet", onClick = {
                         navController.navigate(Route.Home(route.walletId)) {
                             launchSingleTop = true
@@ -590,24 +643,31 @@ private fun WalletNavigation(
                 }
             } else if (current is PaymentUiState.Complete) {
                 LaunchedEffect(current.receipt.operationId) {
-                    navController.navigate(Route.PaymentReceipt(route.walletId, current.receipt.operationId))
+                    navController.navigate(Route.PaymentReceipt(
+                        route.walletId,
+                        current.receipt.keytag.value,
+                        current.receipt.operationId,
+                    ))
                 }
             }
         }
         composable<Route.PaymentReceipt> { backStackEntry ->
             val route = backStackEntry.toRoute<Route.PaymentReceipt>()
             val walletId = activeWalletId?.takeIf { it.value == route.walletId }
-            var receipt by remember(route.walletId, route.operationId) {
-                mutableStateOf((paymentState as? PaymentUiState.Complete)?.receipt?.takeIf { it.operationId == route.operationId })
+            val keytag = remember(route.channelKeytag) { ProtocolKeytag(route.channelKeytag) }
+            var receipt by remember(route.walletId, route.channelKeytag, route.operationId) {
+                mutableStateOf((paymentState as? PaymentUiState.Complete)?.receipt?.takeIf {
+                    it.keytag == keytag && it.operationId == route.operationId
+                })
             }
-            LaunchedEffect(walletId, route.operationId) {
+            LaunchedEffect(walletId, keytag, route.operationId) {
                 if (receipt == null && walletId != null) {
-                    receipt = loadPaymentReceipt?.invoke(walletId, route.operationId)
+                    receipt = loadPaymentReceipt?.invoke(walletId, keytag, route.operationId)
                 }
             }
             SensitiveContent(onSensitiveContentChanged) {
                 receipt?.let { durable ->
-                    PaymentReceiptScreen(durable) {
+                    PaymentReceiptScreen(durable, assetCatalog) {
                         navController.navigate(Route.Home(route.walletId)) {
                             launchSingleTop = true
                             popUpTo(navController.graph.startDestinationId) { inclusive = true }
@@ -756,6 +816,7 @@ private fun WalletNavigation(
                 SensitiveContent(onSensitiveContentChanged) {
                     WalletRemovalScreen(
                         removalState,
+                        assetCatalog,
                         navController::popBackStack,
                         removalViewModel::sweep,
                         removalViewModel::confirmSweep,
@@ -778,7 +839,7 @@ private fun WalletNavigation(
                 val historyViewModel = viewModel { HistoryViewModel(profile, loadHistory, nowEpochMillis ?: { 0L }) }
                 val historyState by historyViewModel.state.collectAsState()
                 LaunchedEffect(historyViewModel) { historyViewModel.refresh() }
-                HistoryScreen(historyState, historyViewModel::refresh, navController::popBackStack)
+                HistoryScreen(historyState, assetCatalog, historyViewModel::refresh, navController::popBackStack)
             }
         }
     }
