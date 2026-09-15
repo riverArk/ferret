@@ -51,6 +51,13 @@ class DriveBackupRepositoryTest {
         val second = repository.write(walletId, seed, 1, 2, crypto.sha256(first.ciphertext), 2, "terminal".encodeToByteArray())
         val takeover = repository.write(walletId, seed, 2, 1, ByteArray(32), 3, "takeover".encodeToByteArray())
 
+        val readsBeforeLatest = drive.gets
+        assertContentEquals(
+            "takeover".encodeToByteArray(),
+            repository.decrypt(seed, requireNotNull(repository.latest(walletId, seed))),
+        )
+        assertEquals(readsBeforeLatest + 1, drive.gets)
+
         assertContentEquals("takeover".encodeToByteArray(), repository.decrypt(seed, repository.verifyChain(repository.discover(walletId, seed))))
         assertTrue(repository.verifyChain(listOf(first, second, takeover)).ciphertext.contentEquals(takeover.ciphertext))
         assertFails { repository.verifyChain(listOf(first, second, second.copy(ciphertext = second.ciphertext + 1))) }
@@ -375,10 +382,12 @@ class DriveBackupRepositoryTest {
 
 
     private class FakeDrive : DriveAppDataClient {
+        var gets = 0
+            private set
         private val files = mutableMapOf<String, ByteArray>()
         override suspend fun list(prefix: String) = files.keys.filter { it.startsWith(prefix) }.map { DriveObject(it, 0) }
         override suspend fun put(name: String, bytes: ByteArray) { files[name] = bytes.copyOf() }
-        override suspend fun get(name: String) = files.getValue(name).copyOf()
+        override suspend fun get(name: String) = files.getValue(name).copyOf().also { gets++ }
         override suspend fun delete(name: String) { files.remove(name)?.fill(0) }
     }
     private class FakeVault(

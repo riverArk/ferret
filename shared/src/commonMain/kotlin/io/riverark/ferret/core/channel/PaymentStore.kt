@@ -37,6 +37,7 @@ interface PaymentStore {
     suspend fun pending(walletId: WalletId): PendingPaymentV1?
     suspend fun recordPending(walletId: WalletId, payment: PendingPaymentV1)
     suspend fun complete(walletId: WalletId, receipt: Receipt, completedAtEpochMillis: Long)
+    suspend fun fail(walletId: WalletId, receipt: Receipt, failedAtEpochMillis: Long)
     suspend fun receipt(walletId: WalletId, operationId: String): Receipt?
     suspend fun history(walletId: WalletId): List<TransactionRecord>
     suspend fun recovery(walletId: WalletId): PaymentJournalV1
@@ -82,6 +83,21 @@ class VaultPaymentStore(
         ))
     }
 
+    override suspend fun fail(walletId: WalletId, receipt: Receipt, failedAtEpochMillis: Long) {
+        require(!receipt.verified && failedAtEpochMillis >= 0)
+        val journal = load(walletId)
+        journal.receipts.singleOrNull { it.receipt.operationId == receipt.operationId }?.let {
+            require(it.receipt == receipt)
+            return
+        }
+        val pending = requireNotNull(journal.pending)
+        require(receipt.operationId == pending.operationId && receipt.paymentHash == pending.paymentHash)
+        save(walletId, journal.copy(
+            pending = null,
+            receipts = (journal.receipts + StoredReceiptV1(receipt, failedAtEpochMillis)).takeLast(MAX_RECEIPTS),
+        ))
+    }
+
     override suspend fun receipt(walletId: WalletId, operationId: String) =
         load(walletId).receipts.singleOrNull { it.receipt.operationId == operationId }?.receipt
 
@@ -94,7 +110,7 @@ class VaultPaymentStore(
                 stored.receipt.amount,
                 stored.receipt.fee,
                 Realm.L2,
-                if (stored.receipt.verified) TransactionState.SETTLED else TransactionState.PENDING,
+                if (stored.receipt.verified) TransactionState.SETTLED else TransactionState.FAILED,
             )
         }
         val pending = journal.pending?.let {

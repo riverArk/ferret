@@ -1,18 +1,18 @@
 # Ferret
 
-Ferret is an Android-first Kotlin Multiplatform wallet for Cardano and Lightning payments. Shared domain, state, navigation, and Compose UI live in `shared`; Android supplies biometric authentication, encrypted persistence, Cardano derivation, and QR scanning.
+Ferret is an Android-first Kotlin Multiplatform wallet for Cardano and Lightning payments. Shared domain, repositories, state, typed navigation, and Compose UI live in `shared`; Android supplies biometric authentication, encrypted persistence, Cardano transaction execution, Google Drive recovery, and QR scanning.
 
 Android repository-contained wallet flows include:
 
 - biometric or device-credential unlock and an exact five-minute background lock;
 - encrypted local wallet profiles, seed entropy, operation journals, and channel recovery state;
 - wallet creation or 24-word recovery-phrase restore with random three-word confirmation;
-- immutable Preprod and Mainnet wallet profiles, with deployment and device acceptance testing restricted to Mainnet;
-- validated online-session gating, L1 balance/history, local top-up QR, and durable L1 transfer orchestration;
-- native Google account selection with encrypted Drive appData backup verification, stale-writer detection and confirmed takeover, single-writer channel journaling, QR-only BOLT11 reconciliation, settings, diagnostics, and verified Drive-first deletion for empty settled wallets;
+- immutable Preprod and Mainnet wallet profiles, with supported deployment and device acceptance restricted to Mainnet;
+- validated foreground sessions, ADA L1/L2 balances, merged activity, local top-up QR, production-enabled ADA transfer/send-all, and safe wallet-removal orchestration;
+- encrypted Drive appData backup verification, missing-backup replacement, restore, stale-writer detection and confirmed takeover, checkpoint-bound single-writer channel journaling, controlled Mainnet ADA channel opening, and QR-only BOLT11 payment with durable reconciliation;
 - a shared cream, charcoal, yellow, and coral Compose interface.
 
-Financial mutations remain unreachable until the controlled Mainnet connector/adaptor deployment under `crustypants.com` exposes and passes the required operation lookup, protocol-parameter, writer-lease, and reconciliation contracts. Preprod and `ferret.channel` are unsupported and are not test or release targets. The iOS shared target compiles and renders an explicit platform-availability gate; iOS wallet support remains disabled until the adapters and Xcode host in [`IOS_FOLLOW_UP.md`](IOS_FOLLOW_UP.md) are complete.
+Controlled Mainnet ADA channel opening and Lightning payment have passed on an Android device against the owned `crustypants.com` services. The current app supports one ADA channel per wallet; native-asset channel funding, USDM/USDCx payments, multiple channels, and explicit payment-channel selection are required next steps in [`NATIVE_MIGRATION_PLAN.md`](NATIVE_MIGRATION_PLAN.md), not current capabilities. ADA transfer, ADA channel opening, payment, and removal are enabled in debug and release builds; their foreground-session, deployment-validation, encrypted-backup, balance, and reconciliation checks remain mandatory. Add/close/squash channel controls, funded L1 transfer/finality acceptance, the two-device Drive matrix, the complete removal scenario, and production release credential/device review remain. Preprod and `ferret.channel` are unsupported test or release targets. The iOS shared target compiles and renders an explicit platform-availability gate; iOS wallet support remains disabled until [`IOS_FOLLOW_UP.md`](IOS_FOLLOW_UP.md) is complete.
 
 ## Prerequisites
 
@@ -36,6 +36,8 @@ Build and install a debug application:
 ./gradlew :androidApp:assembleDebug
 ./gradlew :androidApp:installDebug
 ```
+
+No feature property is required to expose the Android financial routes.
 
 Release verification requires the Google OAuth server client ID:
 

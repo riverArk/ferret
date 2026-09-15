@@ -22,6 +22,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.plugins.HttpRequestTimeoutException
+import io.ktor.client.plugins.ResponseException
 import io.ktor.client.plugins.expectSuccess
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -466,10 +467,52 @@ internal inline fun <reified T> decodeBoundedJson(bytes: ByteArray): T {
 private suspend fun HttpResponse.boundedBody(): ByteArray =
     bodyAsChannel().readRemaining(MAX_RESPONSE_BYTES + 1).readByteArray().also(::requireBoundedResponse)
 
+internal fun quoteRejectionMessage(status: Int, detail: String): String = when {
+    "Bln:" in detail -> "The Lightning node could not find a payment route."
+    "insufficient funds" in detail -> "The channel cannot cover this payment."
+    "no receipt" in detail -> "The channel payment state is not initialized."
+    "no retainer" in detail -> "The adaptor has not recognized the channel funding."
+    "insufficient capacity" in detail -> "The channel has too many unresolved payments."
+    "channel not active" in detail -> "The channel is not active."
+    "verify failed" in detail -> "The adaptor rejected the channel authorization."
+    "bad input" in detail -> "The adaptor rejected the channel payment state."
+    "commitment:" in detail -> "The channel cannot cover this payment."
+    "FX:" in detail -> "The adaptor could not price this payment."
+    "unmediate:" in detail -> "The adaptor rejected the invoice format."
+    else -> "Payment quote rejected by the adaptor (HTTP $status)."
+}
+
+internal suspend fun ResponseException.quoteRejectionMessage(): String {
+    val bytes = response.boundedBody()
+    return try {
+        quoteRejectionMessage(response.status.value, bytes.decodeToString())
+    } finally {
+        bytes.fill(0)
+    }
+}
+
 private suspend inline fun <reified T> HttpResponse.boundedJsonBody(): T {
     val bytes = boundedBody()
     return try {
         decodeBoundedJson(bytes)
+    } finally {
+        bytes.fill(0)
+    }
+}
+
+internal suspend fun ResponseException.terminalPaymentFailureMessage(): String? {
+    if (response.status.value != 400) return null
+    val bytes = response.boundedBody()
+    return try {
+        val detail = bytes.decodeToString()
+        when {
+            "FAILURE_REASON_NO_ROUTE" in detail -> "No Lightning route was available."
+            "FAILURE_REASON_TIMEOUT" in detail -> "The Lightning payment timed out."
+            "FAILURE_REASON_INCORRECT_PAYMENT_DETAILS" in detail -> "The recipient rejected the payment details."
+            "FAILURE_REASON_INSUFFICIENT_BALANCE" in detail -> "The Lightning node has insufficient outbound balance."
+            "Payment failed:" in detail -> "The Lightning payment failed."
+            else -> null
+        }
     } finally {
         bytes.fill(0)
     }

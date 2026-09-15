@@ -37,7 +37,8 @@ Read `CONTEXT.md` first, then verify statements against the live repository.
 - Keep changes mobile-first and shared where behavior is platform-independent.
 - Use platform source sets only for platform APIs.
 - Preserve the light cream/charcoal/yellow/coral Ferret visual system unless a task explicitly changes it.
-- Keep transaction, channel, and payment actions disabled or unreachable until real repositories are wired.
+- Expose only actions backed by real repositories. ADA transfer, one ADA channel, and BOLT11 payment from that channel are wired; keep stablecoin/multi-channel payment and add/close/squash controls unreachable until their complete asset-bound flows are connected.
+- Token metadata is a reviewed build-time input. Refresh it explicitly from Koios into checked-in shared resources; never add a runtime Koios or remote-logo request.
 - The worktree may contain user changes. Inspect before editing and never revert unrelated work.
 
 ## Verification

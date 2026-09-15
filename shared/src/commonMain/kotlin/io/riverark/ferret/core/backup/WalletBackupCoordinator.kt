@@ -105,11 +105,8 @@ class WalletBackupCoordinator(
         var verified = false
         try {
             remote = vault.withWalletSeed(walletId) { seed ->
-                val discovered = backups.discover(walletId, seed)
-                if (discovered.isEmpty()) {
-                    throw MissingBackupException(local.generation == 1L && local.sequence == 1L)
-                }
-                val latest = backups.verifyChain(discovered)
+                val latest = backups.latest(walletId, seed)
+                    ?: throw MissingBackupException(local.generation == 1L && local.sequence == 1L)
                 val plaintext = backups.decrypt(seed, latest)
                 try {
                     BackupCheckpointV1(

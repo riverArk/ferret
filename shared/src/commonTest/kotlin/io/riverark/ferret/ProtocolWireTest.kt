@@ -14,6 +14,7 @@ import io.riverark.ferret.core.channel.SignedChequeWire
 import io.riverark.ferret.core.channel.SignedSquashWire
 import io.riverark.ferret.core.channel.SquashBodyWire
 import io.riverark.ferret.core.network.decodeBoundedJson
+import io.riverark.ferret.core.network.quoteRejectionMessage
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -37,6 +38,10 @@ class ProtocolWireTest {
         val actual = SquashBodyWire(5, 2, listOf(1))
             .taggedCbor(ProtocolTag("aa"))
         assertEquals("9f41aa9f05029f01ffffff", actual.toHex())
+        assertEquals(
+            "9f41aa9f000080ffff",
+            SquashBodyWire(0, 0, emptyList()).taggedCbor(ProtocolTag("aa")).toHex(),
+        )
     }
 
     @Test fun adaptorRequestsMatchPinnedKonduitJson() {
@@ -63,6 +68,21 @@ class ProtocolWireTest {
                 """{"index":7,"amount":8,"relative_timeout":9,"routing_fee":3,"invoice_hash":"${"ab".repeat(32)}","invoice_amount_msat":2000,"payment_amount":2,"routing_fee_amount":3,"adaptor_fee":3,"expires_at_epoch_millis":1000,"extra":true}""".encodeToByteArray(),
             )
         }
+    }
+
+    @Test fun adaptorQuoteFailuresExposeOnlySafeCategories() {
+        assertEquals(
+            "The Lightning node could not find a payment route.",
+            quoteRejectionMessage(400, "data: Bln: private backend detail"),
+        )
+        assertEquals(
+            "The channel payment state is not initialized.",
+            quoteRejectionMessage(400, "data: channel : no receipt: submit a null squash first"),
+        )
+        assertEquals(
+            "Payment quote rejected by the adaptor (HTTP 400).",
+            quoteRejectionMessage(400, "unrecognized sensitive detail"),
+        )
     }
 
     @Test fun adaptorReceiptAndSquashResponsesMatchPinnedKonduitJson() {

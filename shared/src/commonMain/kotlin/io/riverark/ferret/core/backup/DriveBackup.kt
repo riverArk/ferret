@@ -57,21 +57,35 @@ class DriveBackupRepository(
         val prefix = "ferret-$id-"
         val objects = drive.list(prefix)
         require(objects.size <= 10_000) { "too many backup objects" }
-        val backups = objects.map { objectInfo ->
-            require(objectInfo.name.startsWith(prefix))
-            val bytes = drive.get(objectInfo.name)
-            require(bytes.size in 1..MAX_BACKUP_BYTES)
-            try {
-                json.decodeFromString<FerretChannelBackupV1>(bytes.decodeToString()).also {
-                    require(it.backupId == id)
-                    validate(it)
-                }
-            } finally {
-                bytes.fill(0)
-            }
-        }
+        val backups = objects.map { read(it.name, id) }
         if (backups.isNotEmpty()) verifyChain(backups)
         return backups
+    }
+
+    suspend fun latest(walletId: WalletId, seed: ByteArray): FerretChannelBackupV1? {
+        val id = backupId(seed, walletId.value.substringBefore('-'))
+        val prefix = "ferret-$id-"
+        val objects = drive.list(prefix)
+        if (objects.isEmpty()) return null
+        require(objects.size <= 10_000) { "too many backup objects" }
+        val coordinates = objects.map { objectInfo ->
+            require(objectInfo.name.startsWith(prefix))
+            val match = BACKUP_NAME.matchEntire(objectInfo.name.removePrefix(prefix))
+                ?: error("invalid backup object name")
+            Triple(match.groupValues[1].toLong(), match.groupValues[2].toLong(), objectInfo.name)
+        }
+        require(coordinates.distinctBy { it.first to it.second }.size == coordinates.size) {
+            "divergent backup sequence"
+        }
+        val generations = coordinates.groupBy { it.first }.toList().sortedBy { it.first }
+        require(generations.map { it.first } == (1L..generations.last().first).toList()) {
+            "missing backup generation"
+        }
+        generations.forEach { (_, generation) ->
+            val sequences = generation.map { it.second }.sorted()
+            require(sequences == (1L..sequences.last()).toList()) { "missing backup sequence" }
+        }
+        return read(coordinates.maxWith(compareBy<Triple<Long, Long, String>> { it.first }.thenBy { it.second }).third, id)
     }
 
     suspend fun deleteAll(walletId: WalletId, seed: ByteArray) {
@@ -131,6 +145,19 @@ class DriveBackupRepository(
         }
     }
 
+    private suspend fun read(name: String, id: String): FerretChannelBackupV1 {
+        val bytes = drive.get(name)
+        require(bytes.size in 1..MAX_BACKUP_BYTES)
+        return try {
+            json.decodeFromString<FerretChannelBackupV1>(bytes.decodeToString()).also {
+                require(it.backupId == id)
+                validate(it)
+            }
+        } finally {
+            bytes.fill(0)
+        }
+    }
+
     fun decrypt(seed: ByteArray, backup: FerretChannelBackupV1): ByteArray {
         validate(backup)
         val key = crypto.hkdfSha256(seed, backup.salt, CHANNEL_INFO, 32)
@@ -180,6 +207,7 @@ class DriveBackupRepository(
         private val ZERO_HASH = ByteArray(32)
         private const val MAX_BACKUP_BYTES = 1_048_576
         private val DISCOVERY_INFO = "io.riverark.ferret/backup-discovery/v1".encodeToByteArray()
+        private val BACKUP_NAME = Regex("""g([1-9]\d*)-s([1-9]\d*)\.bin""")
         private val CHANNEL_INFO = "io.riverark.ferret/channel-backup/v1".encodeToByteArray()
     }
 }

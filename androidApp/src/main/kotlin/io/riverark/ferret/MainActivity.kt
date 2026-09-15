@@ -285,7 +285,6 @@ class MainActivity : FragmentActivity() {
                     encodeQr = ::addressQrCode,
                     copyAddress = ::copyAddress,
                     l1WalletRepository = l1WalletRepository,
-                    l1MutationsAvailable = BuildConfig.MAINNET_ACCEPTANCE,
                     loadChannel = { walletId ->
                         channelRepository.reconcile(walletId)
                         channelRepository.load(walletId)
@@ -306,11 +305,10 @@ class MainActivity : FragmentActivity() {
                                 crypto = AndroidProtocolCrypto,
                             ),
                             paymentStore,
+                            System::currentTimeMillis,
                         )
                     },
                     loadPaymentReceipt = paymentStore::receipt,
-                    paymentActionsAvailable = BuildConfig.MAINNET_ACCEPTANCE,
-                    channelActionsAvailable = BuildConfig.MAINNET_ACCEPTANCE,
                     previewOpenChannel = { walletId, amount ->
                         val profile = currentProfile(walletId)
                         coordinators.getValue(profile.network).refresh {
@@ -429,7 +427,7 @@ class MainActivity : FragmentActivity() {
                             checkpoint.channelSnapshot.fill(0)
                         }
                     },
-                    walletRemovalManager = walletRemovalManager.takeIf { BuildConfig.MAINNET_ACCEPTANCE },
+                    walletRemovalManager = walletRemovalManager,
                 ),
                 ::unlock,
                 ::setSensitiveContent,
@@ -578,7 +576,6 @@ class MainActivity : FragmentActivity() {
     }
 
     private suspend fun requireOpenAvailable(walletId: WalletId) {
-        require(BuildConfig.MAINNET_ACCEPTANCE) { "channel opening is deployment-gated" }
         require(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) { "host is backgrounded" }
         require(hasValidatedNetwork()) { "validated network unavailable" }
         val ready = wallets.state.value as? AppState.Ready ?: error("wallet session unavailable")
@@ -594,11 +591,13 @@ class MainActivity : FragmentActivity() {
             ?: error("wallet profile unavailable")
 
     private suspend fun protocolKeytag(walletId: WalletId): ProtocolKeytag {
-        return ProtocolKeytag(
-            channelRepository.snapshots.value[walletId]?.verifiedChannelData
-                ?.takeIf { it.length >= 66 }
-                ?: error("verified channel keytag unavailable"),
-        )
+        val snapshot = channelRepository.snapshots.value[walletId]
+        val keytag = snapshot?.verifiedChannelData?.takeIf { it.length >= 66 }
+            ?: snapshot?.history?.asReversed()?.firstNotNullOfOrNull {
+                it.verifiedChannelData.takeIf { value -> value.length >= 66 }
+            }
+            ?: error("verified channel keytag unavailable")
+        return ProtocolKeytag(keytag)
     }
 
     private suspend fun verifiedWriter(walletId: WalletId): WriterLease {

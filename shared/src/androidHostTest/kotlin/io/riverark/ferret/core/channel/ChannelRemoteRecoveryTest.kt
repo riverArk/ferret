@@ -13,6 +13,7 @@ import io.ktor.http.content.OutgoingContent
 import io.ktor.util.date.GMTDate
 import io.ktor.utils.io.ByteReadChannel
 import io.riverark.ferret.core.model.ChannelState
+import io.riverark.ferret.core.model.Lovelace
 import io.riverark.ferret.core.model.OperationState
 import io.riverark.ferret.core.model.WalletId
 import io.riverark.ferret.core.model.WalletRepository
@@ -81,6 +82,46 @@ class ChannelRemoteRecoveryTest {
         }
     }
 
+    @Test fun missingSubmittedPaymentIsFailedAfterServerCleanup() = runBlocking {
+        val receipt = """{"squash":{"body":{"amount":0,"index":0,"exclude":[]},"signature":"${"a".repeat(128)}"},"cheques":[]}"""
+        val engine = ScriptedEngine(ArrayDeque(listOf(Reply(HttpStatusCode.OK, receipt))))
+        val client = ferretHttpClient(engine)
+        val acceptingCrypto = object : ProtocolCrypto {
+            override fun verify(verificationKey: ByteArray, message: ByteArray, signature: ByteArray) = true
+            override fun sha256(input: ByteArray) = ByteArray(32)
+        }
+        try {
+            val operation = paymentOperation(OperationState.SUBMITTED)
+
+            val result = AdaptorChannelRemote(
+                { AdaptorClient(client, PREPROD, acceptingCrypto) },
+                acceptingCrypto,
+            ).reconcile(walletId, operation, writer)
+            assertEquals(OperationState.FAILED, result?.status)
+            assertEquals(keytag, result?.verifiedChannelData)
+        } finally {
+            client.close()
+        }
+    }
+
+    @Test fun terminalPaymentFailurePreservesSafeReason() = runBlocking {
+        val engine = ScriptedEngine(ArrayDeque(listOf(
+            Reply(HttpStatusCode.BadRequest, "data: Bln: Payment failed: FAILURE_REASON_NO_ROUTE"),
+        )))
+        val client = ferretHttpClient(engine)
+        try {
+            val result = remote(client).mutate(
+                walletId,
+                paymentOperation(OperationState.WRITE_AHEAD_VERIFIED),
+                writer,
+            )
+            assertEquals(OperationState.FAILED, result.status)
+            assertEquals("No Lightning route was available.", result.failureMessage)
+        } finally {
+            client.close()
+        }
+    }
+
     @Test fun transportFailureAndCancellationNeverAuthorizeReplay() = runBlocking {
         for (failure in listOf(IllegalStateException("timeout"), CancellationException("cancelled"))) {
             val engine = ScriptedEngine(ArrayDeque(listOf(failure)))
@@ -131,6 +172,48 @@ class ChannelRemoteRecoveryTest {
         }
     }
 
+    @Test fun submittedPaymentReplaysStableAuthorizationToResolveItsSecret() = runBlocking {
+        val operation = paymentOperation(OperationState.SUBMITTED)
+        var stored = ChannelSnapshot(ChannelState.Open("channel"), operation)
+        var mutations = 0
+        val repository = repository(
+            { stored },
+            { stored = it },
+            object : ChannelRemote {
+                override suspend fun reconcile(
+                    walletId: WalletId,
+                    operation: PreparedChannelOperation,
+                    writer: WriterLease,
+                ) = ChannelRemoteResult(
+                    operation.operationId,
+                    operation.intentHash,
+                    state = ChannelState.Open("channel"),
+                    status = OperationState.SUBMITTED,
+                )
+
+                override suspend fun mutate(
+                    walletId: WalletId,
+                    operation: PreparedChannelOperation,
+                    writer: WriterLease,
+                ): ChannelRemoteResult {
+                    mutations++
+                    return ChannelRemoteResult(
+                        operation.operationId,
+                        operation.intentHash,
+                        state = ChannelState.Open("channel"),
+                        status = OperationState.COMPLETED,
+                    )
+                }
+            },
+        )
+        repository.load(walletId)
+
+        repository.reconcile(walletId)
+
+        assertEquals(1, mutations)
+        assertNull(stored.pending)
+    }
+
     private fun operation() = PreparedChannelOperation(
         operationId,
         "6".repeat(64),
@@ -139,6 +222,42 @@ class ChannelRemoteRecoveryTest {
         payload = ChannelPayload.Transaction(byteArrayOf(9), transactionId, byteArrayOf(1, 2, 3)),
         keytag = keytag,
     )
+
+    private fun paymentOperation(state: OperationState): PreparedChannelOperation {
+        val hash = "7".repeat(64)
+        val quote = PaymentQuote(
+            "quote",
+            Lovelace(100),
+            1_000,
+            Lovelace(1),
+            Lovelace(2),
+            1_000,
+            hash,
+            1,
+            1_000,
+        )
+        return PreparedChannelOperation(
+            operationId,
+            "6".repeat(64),
+            ChannelAction.Pay(quote.id, hash),
+            priorChannelIdentity = "channel",
+            preparedAtEpochMillis = 1,
+            payload = ChannelPayload.Payment(
+                byteArrayOf(1),
+                "lnbc1fixture",
+                hash,
+                quote.id,
+                AdaptorPayRequest(
+                    ChequeBodyWire(1, 103, ProtocolDurationWire(1, 0), Hex32(hash)),
+                    "b".repeat(128),
+                    "lnbc1fixture",
+                ),
+                quote,
+            ),
+            keytag = keytag,
+            state = state,
+        )
+    }
 
     private fun remote(client: io.ktor.client.HttpClient) =
         AdaptorChannelRemote({ AdaptorClient(client, PREPROD, crypto) }, crypto)

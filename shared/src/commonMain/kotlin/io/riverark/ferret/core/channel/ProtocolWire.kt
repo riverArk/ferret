@@ -149,9 +149,13 @@ data class SquashBodyWire(
         indefiniteArray()
         unsigned(amount)
         unsigned(index)
-        indefiniteArray()
-        exclude.forEach(::unsigned)
-        end()
+        if (exclude.isEmpty()) {
+            emptyArray()
+        } else {
+            indefiniteArray()
+            exclude.forEach(::unsigned)
+            end()
+        }
         end()
     }.toByteArray()
 
@@ -367,6 +371,7 @@ interface ProtocolSigner {
 private class CborWriter {
     private val bytes = mutableListOf<Byte>()
     fun indefiniteArray() { bytes += 0x9f.toByte() }
+    fun emptyArray() { bytes += 0x80.toByte() }
     fun end() { bytes += 0xff.toByte() }
     fun raw(value: ByteArray) { value.forEach(bytes::add) }
     fun unsigned(value: Long) {

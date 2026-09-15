@@ -3,6 +3,8 @@ package io.riverark.ferret.core.channel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import fr.acinq.lightning.payment.Bolt11Invoice
+import io.ktor.client.plugins.ResponseException
+import io.riverark.ferret.core.network.quoteRejectionMessage
 import io.riverark.ferret.core.model.Lovelace
 import io.riverark.ferret.core.model.Receipt
 import io.riverark.ferret.core.model.WalletId
@@ -32,6 +34,7 @@ data class PaymentQuote(
 
 sealed interface PaymentUiState {
     data object Scanning : PaymentUiState
+    data object Quoting : PaymentUiState
     data class Confirming(val description: String?, val quote: PaymentQuote, val confirmAfterEpochMillis: Long) : PaymentUiState
     data class Processing(val operationId: String? = null) : PaymentUiState
     data class Complete(val receipt: Receipt) : PaymentUiState
@@ -49,8 +52,12 @@ interface PaymentGateway {
         quote: PaymentQuote,
         preparedAtEpochMillis: Long,
     ): ChannelPreview
-    suspend fun receipt(walletId: WalletId, operationId: String, quote: PaymentQuote): Receipt
 }
+
+private class PaymentQuoteRejected(
+    val displayMessage: String,
+    cause: Throwable,
+) : Exception(cause)
 
 class DefaultPaymentGateway(
     private val adaptor: suspend (WalletId) -> io.riverark.ferret.core.network.AdaptorClient,
@@ -69,8 +76,61 @@ class DefaultPaymentGateway(
         invoiceHash: String,
         amountMsat: Long,
     ): PaymentQuote {
-        val quote = adaptor(walletId).quote(keytag(walletId), writer(walletId).token, invoice)
-        require(quote.invoice_hash == invoiceHash && quote.invoice_amount_msat == amountMsat)
+        val adaptor = try {
+            adaptor(walletId)
+        } catch (error: Exception) {
+            throw PaymentQuoteRejected("The payment service is unavailable.", error)
+        }
+        val keytag = try {
+            keytag(walletId)
+        } catch (error: Exception) {
+            throw PaymentQuoteRejected("The verified channel identity is unavailable.", error)
+        }
+        val writer = try {
+            writer(walletId)
+        } catch (error: Exception) {
+            throw PaymentQuoteRejected("Unable to verify the payment backup writer.", error)
+        }
+        val receipt = try {
+            adaptor.receipt(keytag)
+        } catch (error: ResponseException) {
+            throw PaymentQuoteRejected(error.quoteRejectionMessage(), error)
+        } catch (error: Exception) {
+            throw PaymentQuoteRejected("Unable to verify the channel payment state.", error)
+        }
+        if (receipt == null) {
+            val signer = signer(walletId)
+            require(signer.verificationKeyHex() == keytag.value.take(64))
+            val body = SquashBodyWire(0, 0, emptyList())
+            try {
+                adaptor.squash(
+                    keytag,
+                    writer.token,
+                    SignedSquashWire(
+                        body,
+                        signer.sign(body.taggedCbor(ProtocolTag(keytag.value.drop(64)))).toHex(),
+                    ),
+                )
+            } catch (error: ResponseException) {
+                throw PaymentQuoteRejected(
+                    "Channel payment initialization failed: ${error.quoteRejectionMessage()}",
+                    error,
+                )
+            }
+        }
+        val quote = try {
+            adaptor.quote(keytag, writer.token, invoice)
+        } catch (error: ResponseException) {
+            throw PaymentQuoteRejected(error.quoteRejectionMessage(), error)
+        } catch (error: Exception) {
+            throw PaymentQuoteRejected("The adaptor returned an invalid payment quote.", error)
+        }
+        if (quote.invoice_hash != invoiceHash || quote.invoice_amount_msat != amountMsat) {
+            throw PaymentQuoteRejected(
+                "The adaptor returned a quote for a different invoice.",
+                IllegalArgumentException("payment quote identity mismatch"),
+            )
+        }
         val digest = crypto.sha256(
             "${quote.index}:${quote.amount}:${quote.relative_timeout}:${quote.routing_fee}:$invoiceHash:${quote.expires_at_epoch_millis}"
                 .encodeToByteArray(),
@@ -129,17 +189,6 @@ class DefaultPaymentGateway(
         )
     }
 
-    override suspend fun receipt(walletId: WalletId, operationId: String, quote: PaymentQuote): Receipt {
-        val receipt = requireNotNull(adaptor(walletId).receipt(keytag(walletId))) { "payment receipt unavailable" }
-        val unlocked = receipt.cheques.asSequence()
-            .mapNotNull { (it as? ProtocolCheque.Unlocked)?.value }
-            .firstOrNull {
-                it.body.index == quote.protocolIndex &&
-                    crypto.sha256(it.body.latch.value.hexBytes()).toHex() == quote.invoiceHash
-            } ?: error("verified payment receipt unavailable")
-        require(unlocked.body.amount == quote.amount.value + quote.routingFee.value + quote.adaptorFee.value)
-        return Receipt(operationId, quote.invoiceHash, quote.amount, quote.routingFee + quote.adaptorFee, true)
-    }
 }
 
 class PaymentViewModel(
@@ -147,6 +196,7 @@ class PaymentViewModel(
     private val channels: ChannelRepository,
     private val gateway: PaymentGateway,
     private val payments: PaymentStore,
+    private val clock: () -> Long,
 ) : ViewModel() {
     private val mutableState = MutableStateFlow<PaymentUiState>(PaymentUiState.Scanning)
     private var acceptingScan = false
@@ -155,6 +205,7 @@ class PaymentViewModel(
 
     fun scanned(raw: String, nowEpochMillis: Long) {
         if (mutableState.value != PaymentUiState.Scanning || acceptingScan) return
+        mutableState.value = PaymentUiState.Quoting
         acceptingScan = true
         viewModelScope.launch {
             try {
@@ -179,13 +230,24 @@ class PaymentViewModel(
                     gateway.quote(walletId, normalized, paymentHash, amountMsat)
                 } catch (cancelled: CancellationException) {
                     throw cancelled
-                } catch (_: Exception) {
-                    mutableState.value = PaymentUiState.Error("Unable to obtain a payment quote.")
+                } catch (error: PaymentQuoteRejected) {
+                    mutableState.value = PaymentUiState.Error(error.displayMessage)
+                    return@launch
+                } catch (error: Exception) {
+                    mutableState.value = PaymentUiState.Error(
+                        (error as? ResponseException)?.quoteRejectionMessage()
+                            ?: "Unable to obtain a payment quote.",
+                    )
                     return@launch
                 }
-                require(quote.invoiceHash == paymentHash && quote.invoiceAmountMsat == amountMsat && quote.expiresAtEpochMillis > nowEpochMillis)
+                val quotedAt = clock()
+                if (parsed.isExpired(quotedAt / 1_000)) {
+                    mutableState.value = PaymentUiState.Error("This BOLT11 invoice expired while obtaining the quote.")
+                    return@launch
+                }
+                require(quote.invoiceHash == paymentHash && quote.invoiceAmountMsat == amountMsat && quote.expiresAtEpochMillis > quotedAt)
                 invoice = normalized
-                mutableState.value = PaymentUiState.Confirming(parsed.description, quote, nowEpochMillis + 3_000)
+                mutableState.value = PaymentUiState.Confirming(parsed.description, quote, quotedAt + 3_000)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
@@ -201,27 +263,54 @@ class PaymentViewModel(
         require(nowEpochMillis >= confirming.confirmAfterEpochMillis)
         require(nowEpochMillis < confirming.quote.expiresAtEpochMillis)
         val pendingInvoice = checkNotNull(invoice) { "invoice unavailable" }
+        if (Bolt11Invoice.read(pendingInvoice).get().isExpired(nowEpochMillis / 1_000)) {
+            mutableState.value = PaymentUiState.Error("This BOLT11 invoice has expired. Scan a fresh invoice.")
+            invoice = null
+            return
+        }
         mutableState.value = PaymentUiState.Processing()
         viewModelScope.launch {
             try {
-                val operationId = channels.submitPayment(
+                val result = channels.submitPayment(
                     walletId,
                     pendingInvoice,
                     confirming.quote,
                     gateway,
                     nowEpochMillis,
                 )
-                mutableState.value = PaymentUiState.Processing(operationId)
-                val receipt = gateway.receipt(walletId, operationId, confirming.quote)
-                requireReceipt(receipt, operationId, confirming.quote)
+                if (result.status == io.riverark.ferret.core.model.OperationState.FAILED) {
+                    mutableState.value = PaymentUiState.Error(
+                        result.failureMessage ?: "The Lightning payment failed.",
+                    )
+                    invoice = null
+                    return@launch
+                }
+                mutableState.value = PaymentUiState.Processing(result.operationId)
+                if (result.status != io.riverark.ferret.core.model.OperationState.COMPLETED) {
+                    channels.reconcile(walletId)
+                }
+                val receipt = requireNotNull(payments.receipt(walletId, result.operationId))
+                requireReceipt(receipt, result.operationId, confirming.quote)
                 mutableState.value = PaymentUiState.Complete(receipt)
                 invoice = null
             } catch (cancelled: CancellationException) {
                 throw cancelled
-            } catch (_: Exception) {
-                mutableState.value = PaymentUiState.Error("Payment requires reconciliation.")
-            }
+            } catch (error: Exception) {
+                val pending = payments.pending(walletId)
+                try {
+                    requireNotNull(pending)
+                    channels.reconcile(walletId)
+                    val receipt = requireNotNull(payments.receipt(walletId, pending.operationId))
+                    requireReceipt(receipt, pending.operationId, pending.quote)
+                    mutableState.value = PaymentUiState.Complete(receipt)
+                    invoice = null
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    mutableState.value = PaymentUiState.Error("Payment was not confirmed. Channel reconciliation is required.")
+                }
         }
+    }
     }
 
     fun reconcile(nowEpochMillis: Long) {
@@ -230,13 +319,13 @@ class PaymentViewModel(
             mutableState.value = PaymentUiState.Processing(pending.operationId)
             try {
                 channels.reconcile(walletId)
-                val receipt = gateway.receipt(walletId, pending.operationId, pending.quote)
+                val receipt = requireNotNull(payments.receipt(walletId, pending.operationId))
                 requireReceipt(receipt, pending.operationId, pending.quote)
                 mutableState.value = PaymentUiState.Complete(receipt)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
-                mutableState.value = PaymentUiState.Error("Payment requires reconciliation.")
+                mutableState.value = PaymentUiState.Error("Payment was not confirmed. Channel reconciliation is required.")
             }
         }
     }
@@ -251,7 +340,6 @@ class PaymentViewModel(
 }
 
 private fun ByteArray.toHex() = joinToString("") { it.toUByte().toString(16).padStart(2, '0') }
-
 private fun String.hexBytes(): ByteArray {
     require(length % 2 == 0 && all { it in "0123456789abcdef" })
     return ByteArray(length / 2) { index ->

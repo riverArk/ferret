@@ -45,6 +45,19 @@ class PaymentStoreTest {
         assertContentEquals(byteArrayOf(2), envelope.channel)
     }
 
+    @Test fun terminalFailureClearsPendingAndRemainsVisible() = runBlocking {
+        val walletId = WalletId("preprod-" + "00".repeat(28))
+        val vault = FakeVault(walletId, byteArrayOf())
+        val quote = PaymentQuote("quote", Lovelace(10), 20_000, Lovelace(2), Lovelace(3), 1_000, HASH)
+        val store = VaultPaymentStore(vault)
+        store.recordPending(walletId, PendingPaymentV1("operation", HASH, quote, 10))
+
+        store.fail(walletId, Receipt("operation", HASH, Lovelace(10), Lovelace(5), false), 20)
+
+        assertEquals(null, VaultPaymentStore(vault).pending(walletId))
+        assertEquals(TransactionState.FAILED, VaultPaymentStore(vault).history(walletId).single().state)
+    }
+
     private class FakeVault(walletId: WalletId, journal: ByteArray) : SecureVault {
         private val profile = WalletProfile(walletId, "Wallet", CardanoNetwork.PREPROD, "addr_test1", "stake_test1")
         private var state = WalletEncryptedStateV1(operationJournal = journal)

@@ -641,12 +641,6 @@ fun OpenChannelScreen(
                         FerretDataBlock("Channel capacity", formatAda(preview.resultingSpendableBalance))
                     }
                 }
-                item {
-                    Text(
-                        "Channel payments remain deployment-gated.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
             }
             if (state.busy) item { FerretLoadingState("Processing channel authorization") }
             state.error?.let { error -> item { FerretErrorState(error) } }

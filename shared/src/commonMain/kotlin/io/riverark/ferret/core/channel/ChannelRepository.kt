@@ -1,5 +1,7 @@
 package io.riverark.ferret.core.channel
 
+import io.ktor.client.plugins.ResponseException
+import io.riverark.ferret.core.network.terminalPaymentFailureMessage
 import io.riverark.ferret.core.model.ChannelState
 import io.riverark.ferret.core.model.Lovelace
 import io.riverark.ferret.core.model.OperationState
@@ -69,6 +71,7 @@ data class ChannelRemoteResult(
     val state: ChannelState,
     val status: OperationState,
     val verifiedChannelData: String = "",
+    val failureMessage: String? = null,
 )
 
 @kotlinx.serialization.Serializable
@@ -144,7 +147,7 @@ class ChannelRepository(
         quote: PaymentQuote,
         gateway: PaymentGateway,
         preparedAtEpochMillis: Long,
-    ): String = wallets.withWalletLock(walletId) {
+    ): ChannelRemoteResult = wallets.withWalletLock(walletId) {
         if (walletId !in mutableSnapshots.value) publish(walletId, journal.load(walletId))
         payments?.requireCapacity(walletId)
         val operationId = newOperationId()
@@ -162,9 +165,9 @@ class ChannelRepository(
     }
 
     suspend fun submit(walletId: WalletId, preview: ChannelPreview): String =
-        wallets.withWalletLock(walletId) { submitLocked(walletId, preview) }
+        wallets.withWalletLock(walletId) { submitLocked(walletId, preview).operationId }
 
-    private suspend fun submitLocked(walletId: WalletId, preview: ChannelPreview): String {
+    private suspend fun submitLocked(walletId: WalletId, preview: ChannelPreview): ChannelRemoteResult {
         val current = mutableSnapshots.value[walletId] ?: journal.load(walletId)
         require(current.pending == null) { "unresolved operation" }
         requireAllowed(current.state, preview.operation.action)
@@ -225,8 +228,7 @@ class ChannelRepository(
             }
             throw error
         }
-        complete(walletId, armed, result)
-        return preview.operation.operationId
+        return complete(walletId, armed, result)
     }
 
     suspend fun reconcile(walletId: WalletId): ChannelRemoteResult? = wallets.withWalletLock(walletId) {
@@ -263,31 +265,39 @@ class ChannelRepository(
             )
         }
         val reconciled = remote.reconcile(walletId, pending, writer)
-        val result = reconciled ?: run {
-            if (pending.state in setOf(OperationState.SUBMITTED, OperationState.COMPLETED, OperationState.FAILED)) {
-                return@withWalletLock null
-            }
-            val authorizer = transaction?.let {
-                require(pending.action is ChannelAction.Open && it.intent is CardanoIntent.OpenChannel)
-                requireNotNull(transactions).also { configured -> configured.validateReplay(walletId, pending) }
-            }
-            if (pending.state == OperationState.PROPOSED) {
-                backup.writeAhead(walletId, current)
-                replayBase = current.copy(pending = pending.copy(state = OperationState.WRITE_AHEAD_VERIFIED))
-                persist(walletId, replayBase)
-                writer = backup.requireVerifiedWriter(walletId)
-            }
+        val result = if (
+            reconciled?.status == OperationState.SUBMITTED &&
+            pending.payload is ChannelPayload.Payment
+        ) {
             currentCoroutineContext().ensureActive()
-            authorizer?.requireAvailable(walletId)
-            try {
-                remote.mutate(walletId, replayBase.pending!!, writer)
-            } catch (error: Exception) {
-                withContext(NonCancellable) {
-                    persist(walletId, replayBase.copy(
-                        pending = replayBase.pending!!.copy(state = OperationState.PENDING_RECONCILIATION),
-                    ))
+            remote.mutate(walletId, replayBase.pending, writer)
+        } else {
+            reconciled ?: run {
+                if (pending.state in setOf(OperationState.SUBMITTED, OperationState.COMPLETED, OperationState.FAILED)) {
+                    return@withWalletLock null
                 }
-                throw error
+                val authorizer = transaction?.let {
+                    require(pending.action is ChannelAction.Open && it.intent is CardanoIntent.OpenChannel)
+                    requireNotNull(transactions).also { configured -> configured.validateReplay(walletId, pending) }
+                }
+                if (pending.state == OperationState.PROPOSED) {
+                    backup.writeAhead(walletId, current)
+                    replayBase = current.copy(pending = pending.copy(state = OperationState.WRITE_AHEAD_VERIFIED))
+                    persist(walletId, replayBase)
+                    writer = backup.requireVerifiedWriter(walletId)
+                }
+                currentCoroutineContext().ensureActive()
+                authorizer?.requireAvailable(walletId)
+                try {
+                    remote.mutate(walletId, replayBase.pending!!, writer)
+                } catch (error: Exception) {
+                    withContext(NonCancellable) {
+                        persist(walletId, replayBase.copy(
+                            pending = replayBase.pending!!.copy(state = OperationState.PENDING_RECONCILIATION),
+                        ))
+                    }
+                    throw error
+                }
             }
         }
         complete(walletId, replayBase, result)
@@ -320,19 +330,22 @@ class ChannelRepository(
             persisted
         }
         try {
-            if (result.status == OperationState.COMPLETED && pending.payload is ChannelPayload.Payment) {
+            if (result.status in setOf(OperationState.COMPLETED, OperationState.FAILED) &&
+                pending.payload is ChannelPayload.Payment
+            ) {
                 val payment = pending.payload
-                payments?.complete(
-                    walletId,
-                    io.riverark.ferret.core.model.Receipt(
-                        pending.operationId,
-                        payment.invoiceHash,
-                        payment.quote.amount,
-                        payment.quote.routingFee + payment.quote.adaptorFee,
-                        true,
-                    ),
-                    pending.preparedAtEpochMillis,
+                val receipt = io.riverark.ferret.core.model.Receipt(
+                    pending.operationId,
+                    payment.invoiceHash,
+                    payment.quote.amount,
+                    payment.quote.routingFee + payment.quote.adaptorFee,
+                    result.status == OperationState.COMPLETED,
                 )
+                if (receipt.verified) {
+                    payments?.complete(walletId, receipt, pending.preparedAtEpochMillis)
+                } else {
+                    payments?.fail(walletId, receipt, pending.preparedAtEpochMillis)
+                }
             }
             backup.commit(walletId, terminal)
             persist(walletId, terminal)
@@ -408,7 +421,15 @@ class AdaptorChannelRemote(
                 )
             }
             is ChannelPayload.Payment -> {
-                adaptor(walletId).pay(ProtocolKeytag(operation.keytag), writer.token, payload.request)
+                try {
+                    adaptor(walletId).pay(ProtocolKeytag(operation.keytag), writer.token, payload.request)
+                } catch (error: ResponseException) {
+                    val failure = error.terminalPaymentFailureMessage()
+                    if (failure != null) {
+                        return paymentResult(operation, OperationState.FAILED, failure)
+                    }
+                    throw error
+                }
                 reconcile(walletId, operation, writer) ?: paymentResult(operation, OperationState.SUBMITTED)
             }
             is ChannelPayload.Protocol -> error("unsupported channel protocol payload")
@@ -440,7 +461,15 @@ class AdaptorChannelRemote(
                         is ProtocolCheque.Unlocked ->
                             crypto.sha256(signed.body.latch.value.hexBytes()).hex() == payload.invoiceHash
                     }
-            } ?: return null
+            } ?: return if (operation.state in setOf(
+                    OperationState.SUBMITTED,
+                    OperationState.PENDING_RECONCILIATION,
+                )
+            ) {
+                paymentResult(operation, OperationState.FAILED)
+            } else {
+                null
+            }
             paymentResult(
                 operation,
                 if (matching is ProtocolCheque.Unlocked) OperationState.COMPLETED else OperationState.SUBMITTED,
@@ -493,12 +522,14 @@ class AdaptorChannelRemote(
     private fun paymentResult(
         operation: PreparedChannelOperation,
         status: OperationState,
+        failureMessage: String? = null,
     ) = ChannelRemoteResult(
         operation.operationId,
         operation.intentHash,
         state = ChannelState.Open(requireNotNull(operation.priorChannelIdentity)),
         status = status,
-        verifiedChannelData = operation.priorChannelIdentity,
+        verifiedChannelData = operation.keytag,
+        failureMessage = failureMessage,
     )
 
     private fun ByteArray.hex() = joinToString("") { it.toUByte().toString(16).padStart(2, '0') }

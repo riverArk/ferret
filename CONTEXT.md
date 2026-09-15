@@ -2,13 +2,13 @@
 
 ## Snapshot
 
-- Date: 2026-09-09
-- Current focus: re-establishing the encrypted Drive writer on a real Pixel before funded Mainnet Open-channel acceptance.
+- Date: 2026-09-15
+- Current focus: extend the production-enabled single ADA channel path to verified stablecoin assets and explicit multi-channel payment selection.
 - The live repository is a Kotlin Multiplatform project. This file describes current code only.
 
 ## Product and platforms
 
-Ferret is an Android-first Cardano and Lightning wallet. Android has real biometric/device-credential authentication, encrypted wallet persistence, Cardano wallet derivation, recovery-phrase create/restore flows, and QR scanning. Shared Kotlin code supplies domain state, typed navigation, ViewModels, and Compose screens.
+Ferret is an Android-first Cardano and Lightning wallet. Android has real biometric/device-credential authentication, encrypted persistence, Cardano wallet derivation and transaction authorization, Google Drive channel recovery, one Mainnet ADA channel, QR-only BOLT11 payment from that channel, ADA transfer/sweep, and safe wallet-removal orchestration. Shared Kotlin code supplies domain state, typed navigation, repositories, ViewModels, and Compose UI.
 
 iOS compiles the shared Compose root and displays `Wallet setup is not available in this iOS build.` It does not provide wallet operations. `IOS_FOLLOW_UP.md` owns the missing Xcode project, secure vault, authentication, mnemonic, Cardano, Drive, TLS, QR, signing, and physical-device work.
 
@@ -40,19 +40,23 @@ Seed entropy is cleared after derivation and vault callbacks. Mnemonic restore/d
 
 ## Navigation and UI
 
-`Route` is the single typed navigation model. Repository states map to Unlock, connectivity progress, Offline, WalletPicker, RecoveryPhrase, RestoreBackup, or Home. Root navigation uses single-top replacement so repository emissions do not stack destinations. Unconfirmed wallets cannot navigate around recovery confirmation. A mnemonic-restored wallet offers Google Drive channel recovery before Home; skipping remains explicit. Wallets with an active or transitional channel can open the typed Channel route to inspect the encrypted local lifecycle and pending reconciliation state.
+`Route` is the single typed navigation model. Repository states map to Unlock, connectivity progress, Offline, WalletPicker, RecoveryPhrase, RestoreBackup, or Home. Root navigation uses single-top replacement so repository emissions do not stack destinations. Unconfirmed wallets cannot navigate around recovery confirmation. A mnemonic-restored wallet offers Google Drive channel recovery before Home; skipping remains explicit. Mainnet Home exposes top-up, transfer, channel opening/status, QR payment, history, settings, and removal when their existing runtime invariants permit them. Add/close/squash channel controls remain unavailable.
 
 The Refined Ferret theme is light-only: cream canvas, near-white surfaces, charcoal ink, yellow primary, accessible coral secondary, blue tertiary, and dark red errors. Exo 2 headings, Ubuntu Mono body text, rounded outlined surfaces, 48 dp touch targets, edge-to-edge safe drawing insets, bundled ferret art, and bundled Material Symbols are shared across implemented screens.
 
-Home shows the wallet name, network, confirmed on-chain ADA balance, latest immutable activity, refresh timestamp, payment address, and wallet/settings navigation. Pull-to-refresh updates the balance, activity, and encrypted-journal channel lifecycle projection together. Home repeats that coordinated refresh every 20 seconds while an L1, journal-backed payment, or channel record is pending and the Home lifecycle is started. Validated foreground sessions cancel work on background or connectivity loss. Top-up renders a local address QR with owned sensitive-clipboard expiry. Settings connects a selected Google account, initializes or verifies the wallet's encrypted Drive appData backup, identifies a newer remote generation as a stale local writer, and offers an explicit confirmed takeover that installs …
-Settings reads channel lifecycle and pending-operation status from the encrypted runtime journal rather than the profile's coarse cached channel field.
+Home currently shows the wallet name, network, ADA L1 available balance, the single ADA channel's L2 spendable balance, latest merged activity, refresh timestamp, payment address, and wallet/settings navigation. Pull-to-refresh reconciles L1, channel, and payment state before updating the dashboard; Home repeats that refresh every 20 seconds while a durable record remains pending and the lifecycle is started. The open ADA channel exposes a QR payment action that resets stale scanner state before entering the camera.
+
+Top-up renders a local address QR with owned sensitive-clipboard expiry. Transfer accepts validated same-network Cardano addresses, including saved Ferret wallets, and supports exact send-all previews. Settings connects a selected Google account, initializes or verifies the encrypted Drive appData backup, detects stale writers, and performs explicit takeover. Settings and Channel read lifecycle and pending-operation status from the encrypted runtime journal.
 
 
 ## Known platform gaps
 
+- Stablecoin payments are not implemented in Ferret. The app does not expose native-asset balances, fund USDM/USDCx channel outputs, persist multiple channels per wallet, or select a source channel for payment. `NATIVE_MIGRATION_PLAN.md` defines this as required P0–P2 work, including an explicit maintainer-only Koios metadata refresh that commits reviewed token metadata/logos into shared resources; the app must never fetch Koios or remote logos at runtime.
 - iOS wallet setup and runtime integrations are unavailable; see `IOS_FOLLOW_UP.md`.
-- Only the Mainnet connector/adaptor services under `crustypants.com` are supported for deployment and device acceptance testing. Do not gate work on or test against `ferret.channel`.
-- Live Google Drive verification requires a Google account and OAuth authorization on the Android device; release checks remain credential-gated.
+- Add, close, elapse, end, and squash channel controls are not connected to UI or controlled lifecycle acceptance yet.
+- Funded Mainnet ADA transfer/process-kill/finality acceptance, the two-device Drive takeover matrix, and the close/sweep/removal scenario remain.
+- Production release verification still requires the real Google OAuth client ID, signing material, and device security review.
+- Only Mainnet services under `crustypants.com` are supported. Preprod and `ferret.channel` do not count as deployment or release evidence.
 - No dark theme is implemented.
 
 ## Decisions
@@ -66,17 +70,29 @@ Settings reads channel lifecycle and pending-operation status from the encrypted
 
 ## Verification
 
-Primary commands:
+Primary Ferret commands:
 
 ```sh
 ./gradlew :shared:allTests
 ./gradlew androidCheck
 ./gradlew :shared:compileKotlinIosSimulatorArm64
+FERRET_GOOGLE_SERVER_CLIENT_ID='<client-id>' ./gradlew androidReleaseCheck
 ```
 
-Android installation and manual onboarding verification require an API 36 emulator or device. Networked scenarios use low-value Mainnet wallets against the controlled `crustypants.com` services only. Release checks require `FERRET_GOOGLE_SERVER_CLIENT_ID`.
+Android installation and manual verification require an API 36 device or emulator. The default debug build contains the same production-enabled financial routes; no acceptance feature property is required. Networked scenarios use low-value Mainnet wallets against the controlled `crustypants.com` services only.
 
 ## Session log
+
+Entries below are chronological evidence. Older “remaining” or “gated” statements describe their date and are superseded by the Snapshot, Known platform gaps, and newest entry above.
+
+### 2026-09-15 — Controlled Mainnet channel and payment acceptance
+
+- A funded Mainnet channel opening completed against the controlled connector/adaptor deployment using pinned Konduit transaction semantics, encrypted Drive write-ahead, a checkpoint-bound writer lease, and durable reconciliation.
+- QR-only BOLT11 payment completed on the Android device. The app now rechecks invoice expiry after quote and before payment, distinguishes quote/payment failure reasons, displays backup and confirmation progress, and clears retained scanner errors when the Home QR action is used.
+- Konduit quote routing moved from graph-only `QueryRoutes` to invoice-aware `EstimateRouteFee`, uses mission control, rounds millisatoshis exactly, normalizes absolute or relative LND timelocks, and applies explicit payment timeout, fee, and CLTV limits.
+- Successful Konduit payments now atomically persist the returned preimage into the channel receipt. Ferret safely replays a stable submitted authorization to recover an already-paid preimage, then persists the verified receipt, updates L2 spendable balance, and changes payment activity from pending to settled.
+- Drive writer verification now lists backup metadata and decrypts only the latest matching object instead of downloading the full chain on every payment.
+- Removed the debug-only Mainnet acceptance flag. Transfer, channel opening, QR payment, and wallet removal are enabled in default debug and release builds while their foreground, Mainnet, validated-service, encrypted-backup, balance, and unresolved-operation checks remain mandatory.
 
 ### 2026-09-09 — Missing Drive backup recovery
 

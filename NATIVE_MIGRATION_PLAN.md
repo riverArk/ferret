@@ -1,473 +1,199 @@
-# Native Migration Plan
+# Native Migration Status and Remaining Plan
 
-## Scope recovered from prior sessions
+## Scope and deployment decisions
 
-The original migration contract is the greenfield plan preserved in the prior agent artifact `kotlin-multiplatform-wallet-plan.md`, corroborated by the `SecurityBoundaryMap`, `UxBehaviorMap`, `DomainRuntimeMap`, and `BuildTestMap` session reports. The product is:
+Ferret is an Android-first Kotlin Multiplatform Cardano and Lightning wallet with shared Compose UI. The native cutover is complete: no PWA, Svelte, WASM, browser storage, raw-key import, plaintext backup, arbitrary endpoint, fiat, manual invoice entry, LNURL, or offline mutation path remains.
 
-- one shared Compose UI for Android and iOS, with Android completed and hardened first;
-- independent 24-word wallet profiles for the existing networks, with supported deployment and all device acceptance testing restricted to Mainnet;
-- Cardano L1 funding, same-network transfers, balances, and history;
-- one Konduit L2 channel per wallet, encrypted Google Drive channel recovery, and one active writer device;
-- QR-only BOLT11 payments with durable reconciliation;
-- safe wallet removal after channel closure, balance sweep, and finality;
-- no retained PWA, Svelte architecture, WASM runtime, old signing-key import, plaintext backup, fiat/FX, custom endpoints, mutable network setting, manual invoice entry, LNURL, or offline wallet use.
+Production development and acceptance use low-value Mainnet wallets against the controlled connector and adaptor services under `crustypants.com`. Preprod remains in persisted domain models but is unsupported for deployment evidence. `ferret.channel` is not a dependency or test target.
 
-Later user sessions additionally required the full visual refresh, documentation refresh, a proper adaptive Android icon, random recovery-word verification positions, live ADA balance, and pull-to-refresh. Those requirements are included below.
+Android is the implemented product. iOS remains a compile-only platform gate until `IOS_FOLLOW_UP.md` is complete.
 
-**Deployment decision (2026-09-04):** Preprod and all `ferret.channel` services are out of scope because they are not controlled by this project. Networked development, device acceptance, and release evidence use low-value Mainnet wallets against the controlled `crustypants.com` connector/adaptor services only. Existing Preprod model support is not release evidence.
+## Current status — 2026-09-15
 
-## Android execution record — 2026-09-09
-
-Evidence references are command or device observations from this worktree. “Blocked” and “Partial” are intentionally not promoted by source presence or a passing build.
-
-| Source item | Result | Evidence / remaining gate |
+| Area | Status | Current evidence and boundary |
 |---|---|---|
-| P0.1 | Partial | `./gradlew androidCheck` passed. API 36 cold launch reached the protected Unlock surface; the 4:59/5:00, airplane-mode, and authenticated recovery device matrix was not executed. |
-| P0.2 | Partial | Durable L1 journals, strict Transfer/Sweep transaction envelopes, exact spending-witness authorization, coordinated local balance/history projection, and focused tests passed. No funded controlled-Mainnet transfer, process-kill, depth-5, or depth-2160 observation was authorized. |
-| P0.3 | Partial | Local `:androidApp:verifyReleaseSecurity` passed with a non-production OAuth placeholder; release is non-debuggable/minified, backup and cleartext are disabled, notices are packaged, pin expirations were removed, and a 291-component CycloneDX 1.5 SBOM was generated from `androidApp/gradle.lockfile`. No provisioned signed-release/OAuth/device MASVS inspection was available. |
-| 1 Build/cutover | Complete | `./gradlew androidCheck :shared:compileKotlinIosSimulatorArm64` passed; no web runtime is used. |
-| 2 State/navigation | Partial | One typed `Route` model remains, `Route.OpenChannel` is registered, payment IDs are repository-generated, and removal uses the wallet mutex. Concrete open/add/close/squash controls remain gated pending controlled deployment acceptance. |
-| 3 Custody/onboarding | Partial | Existing deterministic tests passed. No new physical-device create/restore, invalidated-keystore, or cross-network duplicate-credential evidence was captured. |
-| 4 Visual/accessibility | Partial | Existing Ferret primitives and 48/56dp controls are reused; Home and Channel have explicit Refresh controls and sweep has preview/confirm. No 200% font/TalkBack matrix was available. |
-| 5 Transport/deployment | Partial | Strict DTOs, bounded responses, no mutation retry, adaptor/connector isolation, writer fencing, and Android pins are present. The deployed `crustypants.com` revision and pins were not independently operator-verified. |
-| 6 Cardano conformance | Partial | Transfer and Sweep now reject raw body/witness contamination and require exactly one valid wallet spending witness; shared/Android intent tests still cover Open, Add, and Close semantics. Pinned-Konduit golden equivalence and controlled-Mainnet node evaluation remain unavailable. |
-| 7 Home | Partial | Refresh reconciles L1/channel/payment before combined L1+verified-channel spendable projection and merged history. Separate L2 available/locked/reserve presentation still lacks controlled datum/receipt evidence and remains unavailable rather than fabricated. |
-| 8 QR/clipboard | Partial | Address QR and conditional 60-second clipboard clearing remain tested; scanner lifecycle now invalidates late callbacks. No camera/address round-trip device evidence was captured. |
-| 9 Transfer | Partial | Same-network profile-only preview/submission and durable reconciliation tests passed. Funded Mainnet execution remains blocked. |
-| 10 Drive/writer | Partial | Exact interrupted-write adoption, V2 channel+payment recovery, lease takeover/fencing, and server contract tests passed. Real Google account/two-device takeover was unavailable. |
-| 11 Channel | Partial | Exact durable payloads, typed pinned datum/redeemer semantics, Drive write-ahead, adaptor operation persistence, and connector isolation are implemented. End-to-end open/add/squash/close UI and controlled-node lifecycle evidence remain gated. |
-| 12 Payment | Partial | One quote snapshot, checked fee decomposition, repository-generated IDs, durable signed request, idempotent completion, unlocked-receipt verification, and hardened QR lifecycle are implemented. No controlled BOLT11/LND payment or camera-permission device matrix was available. |
-| 13 History | Partial | L1 and payment records merge with immutable preparation timestamps and retained finality state. Controlled adaptor/connector ID and depth comparisons remain unavailable. |
-| 14 Settings | Partial | Runtime settings/diagnostics/Drive verification/takeover remain wired; no release-device inspection was available. |
-| 15 Removal | Partial | Asset-bearing wallets block, sweep requires an exact semantic preview, deletion is wallet-serialized and resumes from an encrypted Drive-first marker, and interruption tests passed. Genuine depth-2160/Drive-delete/mnemonic-restore evidence was unavailable. |
-| 16 iOS | Excluded | User scope excludes iOS implementation; `:shared:compileKotlinIosSimulatorArm64` is only a compatibility gate. |
-| 17 Mainnet release | Blocked | Production gates remain false. Missing: authorized low-value funds, provisioned OAuth/signing material, operator-confirmed deployed revisions/pins, Google account/device, second takeover device, and the full signed-release Mainnet scenario. |
-| 18 Exclusions | Complete | Reachable UI retains no web runtime, raw-key/plaintext backup, custom endpoint, fiat/FX, manual invoice, LNURL, or offline financial queue. |
+| Native build and shared UI | Complete | Kotlin Multiplatform, shared Compose Material 3 UI, Android host, typed `Route`, Java 17, SDK 28/36, dependency locks, `androidCheck`, release checks, and the iOS compile gate are present. |
+| Android custody and onboarding | Complete | Biometric/device-credential unlock, encrypted atomic profiles and seed files, 24-word create/restore, resumable recovery confirmation, duplicate-credential rejection, and the five-minute background lock are implemented. |
+| Deployment and transport | Complete for controlled Mainnet | HTTPS-only pinned connector/adaptor clients, bounded strict DTOs, validated deployment identity, foreground cancellation, session leases, and operation lookup/reconciliation are wired. Other deployments are unsupported. |
+| L1 dashboard and top-up | Complete for ADA | Home loads connector ADA balance/history, refreshes pending records every 20 seconds while started, and exposes local address QR plus owned sensitive clipboard expiry. Connector DTOs retain native assets, but the UI does not yet expose their balances. |
+| L1 transfer and sweep | Implemented for ADA; live acceptance pending | Mainnet ADA transfer and send-all routes are production-enabled. Current input selection and transaction inspection deliberately reject native-asset UTxOs, so USDM/USDCx transfer and channel funding are not implemented. A funded ADA device transfer/process-kill/finality run also remains. |
+| Encrypted Drive recovery | Implemented; multi-device acceptance pending | appData-only encrypted snapshots, hash chaining, latest-only verification, missing-initial-backup replacement, restore, stale-writer detection, takeover, read-back verification, and checkpoint-bound writer leases are wired. A complete device-A/device-B takeover matrix remains. |
+| Channel lifecycle | One ADA channel; open complete | Controlled Mainnet ADA channel opening succeeded on the Android device. The current journal contains one `ChannelSnapshot` per wallet, the transaction engine requires an ADA channel output, and payment resolves one wallet-wide keytag. Add, close, elapse, end, and squash transaction semantics exist below UI level, but their product controls and controlled lifecycle runs remain unfinished. |
+| Stablecoin and multi-channel support | Required; not implemented | Ferret does not yet model Konduit's asset catalog, fund native-asset channel outputs, persist multiple channels per wallet, or let the payer select an ADA, USDM, USDCx, or other supported channel. The required cutover is defined below. |
+| Lightning payment | Complete for one ADA channel | QR-only BOLT11 scan, `lightning:` normalization, expiry/network/amount/duplicate checks, invoice-aware quote, guarded confirmation, backup-before-payment, durable authorization, safe failure reasons, server preimage persistence, submitted-payment replay, verified receipt, L2 balance update, and activity settlement passed on the Android device. Amounts and fees are currently represented as `Lovelace` and the gateway resolves one channel from the wallet. |
+| Activity and history | Complete for connected ADA L1/L2 sources | Connector history and durable payment records merge by immutable timestamp. Payment pending, failed, and settled states survive encrypted journal recreation. Asset identity and source-channel identity are not yet represented in activity. |
+| Wallet removal | Implemented for the current ADA model; full device acceptance pending | Removal blocks active channels, unresolved operations, Drive conflicts, native assets, nonzero unswept balance, and insufficient finality. Multi-asset removal must account for every channel and L1 asset before this can be complete. The funded close/sweep/finality/delete/restore scenario remains. |
+| Android release | Partial | Financial actions are enabled in debug and release builds. Local `androidReleaseCheck` passes with a non-production OAuth placeholder. Production OAuth/signing material and the release-device MASVS matrix remain operator prerequisites. |
+| iOS | Deferred | Shared contracts compile for `iosSimulatorArm64`; no Xcode project or iOS custody, Cardano, Drive, TLS, QR, lifecycle, or signing adapters exist. |
+
+## Controlled Mainnet evidence
 
-Additional server evidence: `cargo test --locked --workspace` in `../konduit` passed 447 tests with 18 ignored. Android debug acceptance wiring passed with `-PferretMainnetAcceptance=true`; a release invocation with that property was rejected as debug-only.
+The current Android/Konduit integration has completed these device scenarios:
+
+1. Created and restored encrypted Mainnet wallet state.
+2. Connected and verified the Google Drive appData writer.
+3. Built, signed, submitted, and reconciled a funded Mainnet channel opening.
+4. Scanned a fresh BOLT11 invoice and obtained an invoice-aware LND route estimate.
+5. Persisted the payment authorization before the Lightning side effect.
+6. Completed the Lightning payment, persisted the returned preimage into the server receipt, reconciled the durable client record, reduced L2 spendable balance, and changed activity from pending to settled.
+7. Re-entered QR payment from Home without retaining a prior payment error screen.
 
-## Current conclusion
+The payment investigation also established two compatibility requirements now implemented by the controlled Konduit service:
 
-The KMP shell, Android secure onboarding, shared visual system, adaptive icon, validated foreground session, live L1 dashboard, top-up, history, durable transfer orchestration, encrypted channel recovery, native Google account selection, Drive appData backup initialization/verification/restoration/takeover, payment reconciliation, settings/diagnostics, safe removal boundaries, and read-only channel lifecycle navigation are implemented. Mnemonic restore installs only a fully verified encrypted Drive channel backup into the local journal. Settings identifies a newer remote backup as a stale local writer and requires explicit confirmation before restoring it and starting a new generation. Explicit Drive verification and takeover now claim the writer lease against the exact verified generation and ciphertext hash, signed by the wallet and bound to the per-install device identity; background, connectivity loss, and lock clear the cached lease. Channel mutation and reconciliation interfaces revalidate the remote Drive checkpoint immediately before requiring the exact writer lease, so a missing, changed, or superseded backup fails before journaling or any remote side effect. The adaptor client has strict pinned-Konduit quote/pay/squash/receipt wire types, duration encoding, keytag construction, bounded collections, and canonical JSON/CBOR fixtures instead of accepting raw protocol bodies. Channel write-ahead journals the exact action and its visible opening/closing lifecycle, reclaims a lease bound to the resulting Drive checkpoint, and safely replays the same operation ID when an interrupted remote call cannot be reconciled. Home projects channel lifecycle from the encrypted journal and keeps its 20-second refresh cadence active while a channel operation awaits reconciliation. Financial mutations remain unreachable until every required Mainnet contract is verified on the controlled `crustypants.com` services. The remaining concrete channel transaction adapters, balance projection, and open/add/close controls are the next financial functionality.
+- `EstimateRouteFee` must use the actual BOLT11 invoice. Graph-only `QueryRoutes` can report a path that `SendPaymentV2` cannot use.
+- LND variants may return `time_lock_delay` as either a relative delay or an absolute block height. Konduit normalizes both before adding the invoice final CLTV delta.
 
-Status legend: **Complete** means connected behavior exists; **Partial** means reusable code exists but the end-to-end feature does not; **Missing** means no usable implementation exists; **Deferred** is an explicit sequencing decision.
+Konduit atomically stores a successful payment preimage with its reserved authorization. Replaying the same submitted authorization is idempotent and recovers an already-paid preimage instead of issuing a second payment.
 
-## Next implementation set
+## Required stablecoin and multi-channel expansion
 
-### P0.1 — Foreground lock and validated online session
+Stablecoin payment is required scope. Konduit's generic contracts and asset catalog now support ADA, USDM, USDCx, USDA, and configured assets, but Ferret still assumes one ADA-denominated channel per wallet. Ferret must not claim stablecoin support until every requirement and acceptance scenario in this section is complete.
 
-**Current status:** Complete. Android retains the unlocked vault only while foregrounded, locks at the exact five-minute continuous-background boundary, cancels in-flight balance/history refreshes on background or connectivity loss, and exposes no wallet data while checking or offline. `RefreshCoordinator` validates the selected profile against connector health/network and the pinned adaptor identity/script tuple before `Ready`; foreground retry repeats every deployment check. Authentication and keystore failures preserve encrypted wallet files and fail back to `Locked`.
+### Asset identity and amounts
 
-**Missing work:** None.
+- Add one shared channel-asset value containing the canonical alias, Cardano policy ID plus asset name (or ADA), decimal count, pricing definition, and verified catalog digest.
+- Accept only assets from the controlled Konduit catalog whose digest matches adaptor discovery. Persist the complete asset identity with every channel, operation, quote, receipt, backup, and history record; never trust a ticker or alias alone.
+- Ship the built-in definitions with Ferret. A later configured asset requires an authenticated, bounded catalog payload from the controlled deployment or a release-bundled definition; in either case its canonical digest must equal `asset_catalog_digest` before the asset or its channels become actionable.
+- Represent all balances, transfers, channel capacities, quotes, and fees as integer base units tagged with their asset identity. Decimal formatting is presentation only; binary floating point must not authorize value.
+- Built-in support must include ADA, USDM, and USDCx. USDA and later configured assets may use the same path only when the controlled deployment advertises and pins their definitions. An unknown or changed definition is unavailable, not guessed or silently treated as ADA.
 
-**Affected files:** `androidApp/src/main/kotlin/io/riverark/ferret/MainActivity.kt`; `shared/src/commonMain/kotlin/io/riverark/ferret/core/model/WalletRepository.kt`; `shared/src/commonMain/kotlin/io/riverark/ferret/core/network/Clients.kt`; `shared/src/commonMain/kotlin/io/riverark/ferret/core/network/FerretHttpClient.kt`; a minimal coordinator under `core/network`; Android lifecycle tests.
+### Embedded token presentation metadata
 
-**Dependencies:** Existing `AndroidSecureVault`, `AndroidUserAuthenticator`, deployment constants, pinned network-security config, and `WalletRepository`. No new framework is needed.
+Token presentation data is a build-time input, never a mobile runtime dependency:
 
-**Acceptance criteria:**
+- Add an explicit maintainer task, `updateEmbeddedAssetMetadata`, that reads the approved native-asset identities from Ferret's pinned Konduit catalog and bulk-posts them to Mainnet Koios `POST https://api.koios.rest/api/v1/asset_info` as `_asset_list` policy-ID/asset-name pairs. ADA branding remains a local Ferret resource because ADA is not a native asset.
+- Extract only bounded presentation fields needed by Ferret: CIP-14 fingerprint and Cardano Token Registry `name`, `ticker`, `description`, `url`, and base64 PNG `logo`. Do not embed volatile supply, mint-count, creation-time, or transaction metadata.
+- Treat the Konduit definition as authoritative for policy ID, asset name, decimals, and pricing. Koios metadata is presentation-only. The updater must fail on missing/duplicate responses, identity mismatch, or a Koios registry decimal count that differs from the pinned Konduit definition.
+- Decode each logo during generation, require a valid PNG, bound decoded bytes and dimensions, and write deterministic filenames. Sanitize and bound every text field before generating files.
+- Commit a deterministic manifest and its PNGs under shared Compose resources so Android and future iOS code load identical packaged metadata without HTTP. Sort by canonical asset identity and store source/API version plus content hashes so reviews show intentional metadata changes.
+- The refresh task may use the network only when a maintainer invokes it explicitly. Normal compilation, tests, CI verification, application startup, balance refresh, and payment flows must never contact Koios or any logo URL.
+- Add an offline `verifyEmbeddedAssetMetadata` task and make `androidCheck`/`androidReleaseCheck` depend on it. It validates schema, hashes, PNG bounds, unique identities/tickers, catalog membership, and required embedded entries for USDM and USDCx without regenerating or making network calls.
+- A release may continue using the last reviewed embedded metadata when Koios is unavailable. Adding or changing a supported asset requires rerunning the updater and reviewing the checked-in manifest and image diff.
 
-- After 4:59 continuously backgrounded, returning does not prompt; at 5:00, the vault key is wiped, `AppState.Locked` is published, and returning requires authentication.
-- Connector/adaptor network or identity mismatch prevents `Ready` and exposes only `Offline` with retry.
-- Disabling connectivity before unlock or while ready exposes no wallet balance/history/actions, cancels work, and creates no pending operation.
-- Foreground recovery succeeds only after all deployment checks pass.
+### L1 asset transfer and L2 funding
 
-**Verification:** `./gradlew androidCheck`; install with `./gradlew :androidApp:installDebug`, then perform the 4:59/5:00 background checks and an airplane-mode unlock/retry check on an API 36 device. Add one lifecycle test using an injected clock so the five-minute boundary is deterministic.
+- Show L1 balances per asset and allow a user to select an asset before transfer or channel funding.
+- Extend input selection, previews, transaction building, signing inspection, and reconciliation to preserve every native asset exactly. The selected stablecoin quantity, minimum ADA carried by native-token outputs, fees paid in ADA, and all multi-asset change must be shown separately.
+- Open or add funds to a channel with the selected catalog asset. A USDM/USDCx channel output must contain the exact token quantity and only the required ADA collateral; transaction validation must reject asset substitution, policy/name mismatch, token loss, unexpected tokens, or change sent outside the wallet.
+- Keep arbitrary native-token transfer out of scope initially. The minimum safe implementation supports assets in the verified Konduit catalog rather than turning Ferret into a generic token wallet.
 
-### P0.2 — Complete the Android L1 wallet vertical slice
+### Multiple channels per wallet
 
-**Current status:** Partial. Home loads the real connector balance and immutable history together. Top Up is reachable, generates its address QR locally, and uses explicit sensitive clipboard copy with conditional 60-second clearing. Transfer is registered in the existing `NavHost`, accepts only another same-network profile, previews amount/fee bound/change/recipient/network, inspects unsigned and signed intent semantics, journals before signing/submission, and reconciles a stable operation ID after process death without reposting.
+- Replace the single wallet-wide `ChannelSnapshot` with a collection keyed by stable channel identity/keytag. Each entry owns its asset definition, state, spendable capacity, pending operation, receipt chain, and immutable history.
+- Migrate the current encrypted single-channel journal and Drive recovery payload into the collection without losing the existing ADA channel. Backup, restore, stale-writer takeover, and reconciliation must cover the collection atomically under the existing wallet writer lease.
+- Allow multiple open channels with different assets and multiple channels of the same asset. Display asset, spendable balance, lifecycle state, and a short stable channel identifier so same-asset channels remain distinguishable.
+- Mutations and reconciliation address one explicit channel. The existing wallet lock may serialize operations initially, but a pending operation on one channel must not be mistaken for another channel's state.
 
-The encrypted L1 record preserves its preparation timestamp and local transfer details across submission and restart. Submit/lookup responses must match both the operation UUID and expected transaction hash. Foreground/pull refresh reconciles confirmed records through settlement at depth 2160, including rollback before settlement; confirmed transfers still permit a subsequent transfer. Strict operation DTOs require depth and consistent status/transaction identity. Deterministic recovery and wire-boundary checks pass; funded Mainnet deployment acceptance remains outstanding.
+### Payment channel selection
 
-Transfer previews now resolve destination identity from the vault, display actual decoded change, and bind the unsigned body hash to pre-sign revalidation and post-sign submission. Altered metadata or unsigned bytes fail before journal/seed/sign/POST; a signed-body mismatch remains PREPARED for lookup-free rejection after restart. Offline repository and real Android-engine host regressions pass; this does not enable Transfer.
+- After decoding the BOLT11 invoice, show compatible open channels before requesting the final quote. If more than one channel can pay, selection is mandatory; Ferret must not silently prefer ADA, a stablecoin, the largest balance, or the last-used channel.
+- If exactly one compatible channel exists it may be preselected, but confirmation must still name its asset, short channel identifier, spendable balance, payment amount, routing fee, adaptor fee, and post-payment balance in that asset.
+- Quote and submit with the selected channel keytag. Persist the channel identity and complete asset definition in the durable payment authorization before the side effect, then verify the receipt against both on reconciliation.
+- Insufficient capacity is evaluated against the selected channel only. The first implementation does not split a payment across channels and does not retry against another channel after submission; either behavior would create a second authorization path.
+- Home and History show balances and activity per asset and source channel. An ADA, USDM, or USDCx payment must update only the selected channel while leaving every other open channel unchanged.
 
-Initial Transfer and SweepWallet bodies now expose every consumed input and validate those references against the exact connector ledger snapshot before preview authorization. Empty, duplicate, unknown, foreign, asset-bearing, datum-bearing, and reference-script inputs fail closed; selected ADA inputs must exactly equal all outputs plus the decoded fee with checked arithmetic. Unselected protected UTxOs are ignored. This closes initial L1 input provenance and value-conservation validation without enabling mutations.
-Transfer and SweepWallet now require a strict four-item CBOR transaction envelope, supported Conway body keys, a true validity flag, matching explicit network ID, no L1 script/datum/redeemer/collateral/prohibited fields, no non-key witness variants, and exactly one valid spending witness matching the vault profile credential. Unsigned bodies require zero witnesses. Every preview, pre-journal, and post-sign boundary rechecks the envelope; post-sign rejection leaves PREPARED for lookup-free restart rejection.
+### Stablecoin acceptance
 
-**Missing work:**
+Using controlled low-value Mainnet assets:
 
-1. Validate L1 history against a funded low-value Mainnet wallet on the controlled connector; merge verified L2 records in P2.
-2. Verify the controlled Mainnet L1 operation endpoint, idempotent submission, and process-kill reconciliation before setting `l1MutationsAvailable`; Transfer remains unreachable until this deployment gate passes.
-3. Keep external-address entry out of normal transfer. It belongs only to wallet removal.
+1. Detect and display L1 ADA, USDM, and USDCx balances with exact decimal/base-unit conversion.
+2. Fund a new USDM channel from the L1 wallet, including minimum ADA and exact native-token change, then restore it from encrypted Drive state.
+3. Keep ADA, USDM, and USDCx channels open simultaneously and select each explicitly for separate Lightning invoices.
+4. Confirm each quote, fee, durable authorization, receipt, L2 balance, and history item retains the selected channel and asset identity.
+5. Kill the app before and after payment submission and prove reconciliation cannot charge a different channel, repeat the payment, or change an unrelated channel.
+6. Reject catalog-digest changes, alias/identity substitution, decimal mismatch, insufficient selected-channel capacity, unknown assets, and malformed multi-asset transaction bodies.
+7. Close or sweep each asset channel and prove wallet removal remains blocked until all channels, native assets, pending operations, and finality requirements are resolved.
+8. Build, launch, browse balances/channels, and complete a payment with Koios unreachable; verify packaged USDM/USDCx names, tickers, and logos render with no Koios or remote-image request.
 
-**Affected files:** `shared/src/commonMain/kotlin/io/riverark/ferret/FerretApp.kt`; `shared/src/commonMain/kotlin/io/riverark/ferret/feature/wallet/WalletScreens.kt`; `shared/src/commonMain/kotlin/io/riverark/ferret/feature/wallet/WalletViewModels.kt`; `shared/src/commonMain/kotlin/io/riverark/ferret/core/network/Clients.kt`; `shared/src/commonMain/kotlin/io/riverark/ferret/core/cardano/CardanoTransactionEngine.kt`; `shared/src/androidMain/kotlin/io/riverark/ferret/core/cardano/AndroidCardanoTransactionEngine.kt`; `androidApp/src/main/kotlin/io/riverark/ferret/MainActivity.kt`.
+## Security and recovery invariants
 
-**Dependencies:** P0.1 validated online session; existing vault, wallet mutex, connector, deployment, and Android Cardano engine. Use an already installed local QR library only if present; otherwise prefer the smallest platform implementation and add no general image framework.
+These remain release requirements, not optional feature gates:
 
-**Controlled deployment prerequisite:** Only the Mainnet connector/adaptor services
-under `crustypants.com` are in scope. `/protocol-parameters` is deployed there.
-Before enabling a financial mutation, verify its operation lookup, idempotent
-submission, writer-lease, and reconciliation contracts on those owned services.
-Preprod and `ferret.channel` availability must not block or satisfy this gate.
+- `SecureVault` is the only persistence boundary for wallet profiles, seed entropy, and operation journals.
+- Mnemonics and seed entropy are never logged, copied, or exposed outside protected flows.
+- Sensitive Android routes retain `FLAG_SECURE` and clear it when leaving composition.
+- Channel and payment mutations require a validated foreground session, selected Mainnet wallet, current encrypted Drive checkpoint, and matching signed writer lease.
+- Every financial mutation writes durable local and Drive state before its external side effect. Backup must not move after payment or transaction submission.
+- Reconciliation reuses the original operation identity and exact signed payload; it never invents a replacement operation.
+- Payment receipt signatures, cheque identity, amount, index, lock/preimage, and channel keytag are verified before settlement.
+- Transaction inspection rejects unknown inputs, value imbalance, unexpected scripts/datums/redeemers, invalid witnesses, stale protocol parameters, and changed transaction bodies.
+- Offline or mismatched deployment state exposes no cached financial actions.
+- Koios and token logo URLs are forbidden at runtime. Only reviewed, bounded, hash-verified metadata and images packaged in the application may be rendered.
 
-**Minimal cross-repository unblock plan:**
+## Remaining Android work
 
-1. In Konduit's `packages/cardano/connector-server`, keep the existing
-   lease-gated `/submit` for channel transactions. Add a separate L1 operation
-   endpoint whose request contains `operation_id`, the expected
-   `transaction_id`, and signed transaction CBOR. A signed Cardano transaction
-   already authorizes an independent L1 spend; it must not depend on the
-   channel backup writer lease.
-2. Persist the L1 operation ID and expected transaction ID before submission,
-   reject reuse of an operation ID with different transaction bytes, and expose
-   `GET /operations/{operation_id}`. Reconciliation returns the original
-   transaction ID and queries chain state; it never creates a second operation
-   or substitutes a different transaction.
-3. Add Konduit contract tests for exact UUID/hex validation, conflicting reuse,
-   concurrent duplicate submission, lookup before/after upstream acceptance,
-   and lookup after client disconnect. Update OpenAPI, deploy to the controlled
-   Mainnet services, and verify `/protocol-parameters`, L1 submission, and
-   operation lookup there before changing Ferret reachability.
-4. In Ferret, add strict typed UTxO/protocol/operation DTOs and response bounds;
-   an encrypted atomic L1 journal in the existing wallet secret; one
-   `L1WalletRepository` using the existing per-wallet mutex and Android
-   transaction engine; and Transfer screen/ViewModel/navigation wiring.
-   Journal before signing/submission, inspect with `requireMatches`, and on
-   restart reconcile the stored operation ID instead of posting again.
-5. Verify with shared boundary tests, Android semantic tests, and
-   `./gradlew androidCheck`, then run two funded low-value Mainnet wallets on a
-   device with a process kill after submit. Only after one operation ID resolves
-   to one transaction through confirmed/settled may Transfer become reachable.
+### P0 — Asset and multi-channel foundation
 
-**Acceptance criteria:**
+Implement the required stablecoin and multi-channel expansion above as a clean model/storage cutover:
 
-- A funded low-value Mainnet wallet shows the exact connector balance and refreshed immutable history after pull-to-refresh.
-- Top-up QR payload equals the full selected wallet address; copy occurs only on explicit action and is cleared after 60 seconds when still owned.
-- Transfer destinations contain same-network profiles only. Cross-network transfer fails before transaction building.
-- One submitted transfer has one stable operation ID, passes signed-intent inspection, appears pending, and reconciles to confirmed/settled without duplicate submission after process death.
-- Top-up, Transfer, and History are reachable through the single `Route`/`NavHost` model.
+- introduce verified asset identity and integer asset amounts;
+- migrate one `ChannelSnapshot` into a keyed channel collection;
+- bind operations, writer backups, quotes, receipts, balances, and history to one channel and asset;
+- expose ADA, USDM, and USDCx balances and channel identities without adding a second wallet or navigation store.
+- add the explicit Koios refresh task and offline embedded-metadata verifier before asset presentation UI ships.
 
-**Verification:** `./gradlew androidCheck`; run the existing Android transaction semantic tests plus new shared transfer/history contract tests; on funded low-value Mainnet wallets, top up, copy/scan the QR, transfer between profiles, kill after submit, relaunch, and observe one transaction ID and updated balances/history.
+Migration must restore existing encrypted ADA channel data. Do not leave a legacy single-channel path or convert old amounts without explicitly assigning ADA.
 
-### P0.3 — Finish Android release security for the L1 slice
+### P1 — L1 transfer acceptance and asset-channel funding
 
-**Current status:** Partial. Dependency locks/checksums, min/target SDK policy, cleartext denial, SPKI pins, release OAuth configuration gate, encrypted vault, packaged notices, minification checks, deterministic version/build diagnostics, stable bounded local diagnostic codes, and release-wide production logging rejection exist. Unlock, mnemonic, transfer confirmation, payment, and removal routes use reference-counted `FLAG_SECURE` protection. An API 36 emulator confirmed the secure window produces a black screenshot and startup logs contain no wallet secrets.
+First run the outstanding low-value Mainnet ADA transfer and verify:
 
-**Missing work:** Perform the focused MASVS review and repeat the release screenshot/log/file/clipboard checks with the real release OAuth configuration and funded Mainnet wallets. Do not add analytics, remote crash reporting, root-detection, or Play Integrity without a consuming policy.
+- exact preview amount, fee, change, recipient, and transaction ID;
+- one stable operation ID through submission;
+- process kill after upstream acceptance without duplicate submission;
+- confirmed, rollback, reconfirmed, and depth-2160 settlement transitions;
+- refreshed connector balance and immutable activity.
 
-**Affected files:** `androidApp/build.gradle.kts`; Android manifest/resources/proguard configuration; `MainActivity.kt`; shared settings/diagnostics models; CI/release configuration when present.
+Then extend the same transaction boundary to catalog assets and complete the USDM funding scenario. Stablecoin funding must prove token conservation, separate ADA fees/minimum output value, safe multi-asset change, submission reconciliation, and Drive recovery before USDM or USDCx payment is enabled.
 
-**Dependencies:** P0.1 and P0.2 behavior complete.
+### P2 — Multi-channel payment and lifecycle controls
 
-**Acceptance criteria:** Release build is non-debuggable, cleartext-disabled, backup-disabled, minified, dependency-verified, and contains required notices. Sensitive routes never appear in screenshots/app switcher. App-private files, clipboard, and captured logs contain no mnemonic, entropy, private key, invoice, signed CBOR, or decrypted channel state.
+Make channel selection part of the payment flow and prove ADA, USDM, and USDCx payments debit only the chosen channel. Then wire Add funds, Close, Elapse, End, and Squash through the keyed `ChannelRepository`, transaction authorizer, Drive write-ahead, connector operation identity, and adaptor reconciliation. Do not add another coordinator or state store.
 
-**Verification:** `FERRET_GOOGLE_SERVER_CLIENT_ID='<client-id>' ./gradlew androidReleaseCheck`; inspect the release APK manifest with Android Studio APK Analyzer; execute the sensitive-route screenshot/log/file/clipboard checks on a release build; record the MASVS checklist result before enabling financial actions.
+For each asset and control, run controlled Mainnet evaluation plus interruption checks before and after the external side effect. Reuse the existing Channel screen for the channel list and lifecycle controls.
 
-## Full original-scope coverage map
+### P3 — Drive takeover matrix
 
-### 1. Greenfield KMP cutover and build — Complete
+With two Android installations and the production OAuth configuration, verify:
 
-**Current status:** The Svelte/PWA/WASM runtime is gone. Root Gradle Kotlin DSL, `shared`, `androidApp`, iOS framework targets, locked dependencies, checksums, Java 17, SDK 28/36, manual dependency construction, `androidCheck`, and `androidReleaseCheck` exist.
+- initial backup creation and latest-only read-back;
+- mnemonic restore of all channel assets, identities, operations, and receipts from the latest encrypted checkpoint;
+- stale-writer detection and explicit takeover;
+- device A rejection after device B takes over;
+- tamper, missing-object, broken-chain, same-generation divergence, and asset-catalog mismatch rejection;
+- successful restoration of terminal channel and payment records.
 
-**Missing work:** None for the cutover itself. The iOS Xcode host remains under item 15.
+### P4 — Removal and release acceptance
 
-**Priority:** Done.
+Exercise closure of every asset channel, same-network ADA/native-asset sweep, finality, verified Drive deletion, local vault deletion, and mnemonic restoration. Then run the signed release with production OAuth credentials through the sensitive-screen, log, file, clipboard, backup, and network checks.
 
-**Affected files:** Root Gradle files, `gradle/libs.versions.toml`, `shared/build.gradle.kts`, `androidApp/build.gradle.kts`.
+### P5 — iOS implementation
 
-**Dependencies:** None.
+Execute `IOS_FOLLOW_UP.md` only after the Android contracts above are stable. Reuse shared asset/channel state, navigation, repositories, and Compose UI; do not create a duplicate SwiftUI product tree.
 
-**Acceptance criteria:** No web runtime is needed to build or run Android; dependencies are pinned and locked.
+## Verification commands
 
-**Verification:** `./gradlew androidCheck`; repository inspection confirms no Svelte/Vite/npm runtime files.
+Primary Ferret checks:
 
-### 2. Shared state, typed navigation, and coroutine ownership — Partial
+```sh
+./gradlew :shared:allTests
+./gradlew androidCheck
+./gradlew :shared:compileKotlinIosSimulatorArm64
+FERRET_GOOGLE_SERVER_CLIENT_ID='<client-id>' ./gradlew androidReleaseCheck
+```
 
-**Current status:** Immutable domain types, `WalletRepository`, per-wallet mutexes, shared ViewModels, serializable `Route`, and one root `NavHost` exist. Implemented onboarding, wallet, Transfer, History, and read-only Channel destinations use this navigation model. Durable L1 records share the encrypted wallet operation journal with channel/payment records; reconciliation uses the existing wallet mutex and foreground refresh ownership.
+Install the production-enabled debug behavior without feature properties:
 
-**Missing work:** Register remaining product destinations as their integrations land; keep all actions in the existing repository/ViewModel boundaries, cancellation lifecycle-owned, and errors redacted. Do not introduce MVI, reducers, generic use cases, a DI framework, or a second navigator.
+```sh
+./gradlew :androidApp:installDebug
+```
 
-**Priority:** P0 through P2, incrementally.
+Relevant controlled Konduit checks after payment or channel protocol changes:
 
-**Affected files:** `FerretApp.kt`, `Route.kt`, wallet/payment ViewModels, `WalletRepository.kt`, channel repositories.
+```sh
+cd ../konduit
+cargo test -p bln-client -p konduit-server
+cargo build --release -p konduit-server
+```
 
-**Dependencies:** Feature implementations below.
-
-**Acceptance criteria:** Every reachable screen is represented by `Route`; process recreation restores only non-secret identifiers; no second active-wallet store or navigator exists; concurrent mutations for one wallet serialize.
-
-**Verification:** `./gradlew androidCheck`; navigation tests exercise each registered route and process recreation without secrets in route arguments.
-
-### 3. Android custody, multi-wallet onboarding, and recovery — Complete
-
-**Current status:** Android biometric/device-credential unlock, StrongBox-with-fallback Keystore wrapping, encrypted atomic profile/seed files, 32-byte entropy, BIP-39 create/restore, existing Preprod/Mainnet profiles, duplicate credential rejection across networks, secure mnemonic routes, resumable confirmation, random three-position verification, the exact five-minute background lock, Drive backup discovery during restore, and Settings rename are implemented. Deployment and device acceptance testing are Mainnet-only. Old raw-key/Svelte backups are unsupported as required.
-
-**Missing work:** None.
-
-**Priority:** Done.
-
-**Affected files:** `AndroidSecurity.kt`, `MainActivity.kt`, `WalletManager.kt`, `WalletViewModels.kt`, `WalletScreens.kt`.
-
-**Dependencies:** Drive discovery for channel restore.
-
-**Acceptance criteria:** New-wallet confirmation resumes after process death; restored wallets skip confirmation; three distinct random positions are verified; duplicate entropy/payment credentials are rejected across profiles; no seed or mnemonic leaves protected memory/UI.
-
-**Verification:** `./gradlew androidCheck`; existing `WalletManagerTest`, `RecoveryVerificationTest`, and `SecurityTest`; device create/restore/restart/invalidated-key scenarios.
-
-### 4. Ferret visual system, accessibility, icon, and docs — Complete for connected screens; Partial overall
-
-**Current status:** Shared cream/charcoal/yellow/coral theme, bundled Exo 2/Ubuntu Mono fonts, Material Symbols, reusable components, 48dp targets, safe insets, bundled art, adaptive launcher resources, refreshed README/CONTEXT/AGENTS/NOTICE, and styled wallet/payment/settings/channel-lifecycle surfaces exist. The adaptive circular launcher and random recovery verification requested in later sessions are present.
-
-**Missing work:** Apply existing components to the missing Open Channel and channel mutation controls, and verify TalkBack semantics, non-gesture alternatives, and live announcements when those controls become reachable. No dark theme was in the original scope.
-
-**Priority:** Alongside each feature, not a separate redesign.
-
-**Affected files:** `FerretTheme.kt`, `FerretComponents.kt`, feature screens, Compose resources, Android launcher resources.
-
-**Dependencies:** Reachable feature screens.
-
-**Acceptance criteria:** Every new screen reuses shared tokens/components, supports system text scaling and 48dp controls, and provides TalkBack labels/state descriptions. Decorative imagery is not authoritative.
-
-**Verification:** Install the app and inspect each reachable screen with TalkBack and font scale 200%; verify adaptive and round launcher icons on API 36. No additional documentation refresh is required until behavior changes.
-
-### 5. Deployment validation, transport, refresh, and offline policy — Partial
-
-**Current status:** Immutable deployment tuples, connector/adaptor clients, HTTPS-only Android config, no redirects, strict JSON, timeouts, actual-body byte limits across connector/adaptor responses, strict transaction/operation/session/adaptor DTO validation, and current/backup SPKI pins exist. Only the controlled Mainnet `crustypants.com` tuple is a supported deployment/test target. Home uses the real connector balance and repeats coordinated balance/history/channel refresh every 20 seconds while an L1, journal-backed payment, or encrypted-journal channel record is pending and the Home lifecycle is started.
-
-**Missing work:** Confirm the controlled connector/adaptor services support idempotent L1 submission, signed `/session/claim`, operation lookup/reconciliation, and shared lease enforcement before enabling mutations.
-
-**Priority:** P0; server contract is a blocker for P1/P2.
-
-**Affected files:** `Deployments.kt`, `Clients.kt`, `FerretHttpClient.kt`, `MainActivity.kt`, external Konduit connector/adaptor services.
-
-**Dependencies:** Valid Ferret deployment identity/pins and server support.
-
-**Acceptance criteria:** Wrong host/network/identity/pin fails closed; GET retries at most once only for timeout; mutations never blindly retry; foreground/pull/pending refresh rules are exact; no offline data/actions are exposed.
-
-**Verification:** `./gradlew androidCheck`; controlled HTTP contract tests for mismatch, redirect, timeout, oversized response, unknown field, and operation reconciliation; device airplane-mode scenario.
-
-### 6. Android Cardano engine and semantic conformance — Partial
-
-**Current status:** Common typed intents and Android Bloxbean derivation/build/sign/inspect implementations exist for Transfer, OpenChannel, AddChannelFunds, CloseChannel, and SweepWallet. Transfer and SweepWallet enforce selected-input provenance, exact overflow-safe ADA conservation, a strict raw four-item transaction envelope, supported Conway body keys, true validity, matching explicit network ID, script/datum/redeemer/collateral/prohibited-field absence, and no non-key witnesses. Their builders validate unsigned output/funding semantics; repository preview and submission boundaries require zero unsigned witnesses and exactly one cryptographically valid signed witness matching the vault profile credential. Witness-only mutations preserve the body ID but fail before remote submission, with PREPARED operations rejected without lookup after restart. Transfer remains disabled, and controlled-node evaluation/golden equivalence to pinned Konduit is not evidenced.
-
-**Missing work:** Complete dynamic min-ADA and pinned-Konduit golden conformance plus funded P0 transfer acceptance, then exact channel/removal script, datum, redeemer, signer, fee, and value conformance. Add golden semantic fixtures from pinned Konduit commit `a68cfedd4a0188ef9adad970e89c12b2b805b678` and controlled-node evaluation for all five intents.
-
-**Priority:** P0 transfer; P1 channel; P3 removal; Mainnet release blocker.
-
-**Affected files:** `CardanoTransactionEngine.kt`, `AndroidCardanoTransactionEngine.kt`, Android host tests, connector submission orchestration.
-
-**Dependencies:** Current protocol parameters/UTxOs from validated connector; pinned Konduit fixtures.
-
-**Acceptance criteria:** All five intents conserve value and match expected outputs, scripts/datums/redeemers, signer set, validity, and fee bounds; mutated intent semantics are rejected; a controlled Mainnet node evaluates each transaction successfully.
-
-**Verification:** `./gradlew :shared:testAndroidHostTest`; run the five fixture evaluations against a controlled Mainnet node; include exact decoded summaries in test artifacts.
-
-### 7. Home balance and pull-to-refresh — Complete for the connected L1 dashboard
-
-**Current status:** The selected profile’s connector balance, immutable unified history, latest activity, refresh timestamp, and encrypted-journal channel lifecycle update together on initial load and pull-to-refresh. While an L1, journal-backed payment, or channel record is pending, Home repeats the same coordinated refresh every 20 seconds and stops when the record becomes terminal or Home leaves the started lifecycle. The primary action follows the journal-backed wallet state: zero L1 balance offers top-up, a funded wallet without an open channel keeps channel opening disabled, and an open channel keeps payment disabled until its deployment gate passes. No fiat value is shown.
-
-**Missing work:** Add the L2 balance projection and verified channel-operation records to history in P1.
-
-**Priority:** P1 extension.
-
-**Affected files:** `FerretApp.kt`, `WalletViewModels.kt`, `WalletScreens.kt`.
-
-**Dependencies:** Connected channel repository for L2 and pending-operation state.
-
-**Acceptance criteria:** Balance exactly matches connector UTxOs; one refresh updates balance, latest immutable activity, and refresh timestamp; action precedence matches channel state; connectivity failure routes to Offline before cached wallet data is exposed.
-
-**Verification:** `WalletBalanceTest`; `./gradlew androidCheck`; API 34 device pull-to-refresh confirms the timestamp and dashboard activity state update together.
-
-### 8. Top-up address QR and clipboard — Complete
-
-**Current status:** `TopUpScreen` is reachable from Home, renders a locally encoded QR containing the exact payment address, and copies only on explicit action. Android marks the clip sensitive and clears it after 60 seconds only when its unique Ferret label and address still match.
-
-**Missing work:** None.
-
-**Priority:** P0.
-
-**Affected files:** `WalletScreens.kt`, `FerretApp.kt`, Android clipboard/QR implementation.
-
-**Dependencies:** Selected ready wallet and validated network.
-
-**Acceptance criteria:** QR and clipboard contain exactly the full selected network address; ordinary address screen remains shareable; mnemonic/invoice/signed payload copy actions do not exist.
-
-**Verification:** Android host decoding verifies exact address payloads. On a Pixel 8a, the rendered Mainnet QR decoded to the full displayed address, explicit copy produced the same address, and the owned clip cleared after the 60-second timeout when Ferret resumed; replacement clips are protected by the unique-label/address ownership check.
-
-### 9. Same-network L1 transfer — Partial
-
-**Current status:** Typed `Route.Transfer`, shared screen/ViewModel, `DefaultL1WalletRepository`, Android transaction builder, encrypted write-ahead journal, and Android composition are connected behind `l1MutationsAvailable = false`. Normal transfer accepts only another same-network profile. Durable operation identity, immutable activity time, lookup-only restart recovery, rollback, and confirmation-to-settlement reconciliation have deterministic regression coverage.
-
-**Missing work:** Funded low-value Mainnet two-wallet submission and process-kill acceptance on the controlled connector before enabling Transfer. P0.2 is not deployment-complete.
-
-**Priority:** P0.
-
-**Affected files:** Cardano engine, wallet feature screens/ViewModels, connector, `FerretApp.kt`, Android composition root.
-
-**Dependencies:** P0.1, connector protocol parameters/submit/reconcile, same-network profiles.
-
-**Acceptance criteria:** Only available L1 funds and same-network profiles are selectable; preview shows amount/fee/change/network; one process-death-safe operation is submitted; active channel UTxOs are never selected.
-
-**Verification:** Shared boundary tests plus a funded low-value Mainnet two-wallet device scenario and process-kill reconciliation.
-
-### 10. Encrypted Drive recovery and single-writer ownership — Partial
-
-**Current status:** Partial. `FerretChannelBackupV1`, HKDF/AES-GCM/hash-chain repository logic, backup state types, a bounded Drive appData-only REST client, Android crypto, native Google account selection, OAuth scope authorization, encrypted initial backup read-back/decrypt verification, checkpoint persistence, and Settings verification are connected. Mnemonic restoration offers Google Drive recovery, fails closed on missing/conflicting/modified backup data, and installs the verified channel snapshot into the encrypted local journal. Verification distinguishes a valid newer remote checkpoint from corruption; Settings presents the stale writer and requires confirmation before restoring the newest snapshot and starting a new generation. Explicit backup verification and takeover claim a signed session lease for the exact verified generation, ciphertext hash, adaptor identity, and stable per-install device identity. Background, connectivity loss, and lock clear the cached lease. Every channel mutation and reconciliation revalidates the remote Drive checkpoint before resolving a writer lease, so a takeover invalidates the stale device before its next journal or remote side effect. Concrete channel mutations still do not consume that claimant.
-
-**Missing work:** Reuse the connected checkpoint-bound claimant from channel creation and share the resulting lease with the concrete remote adapter. Never put wallet identifiers, network, addresses, or credentials in Drive metadata.
-
-**Priority:** P1; hard blocker for channel creation.
-
-**Affected files:** `DriveBackup.kt`, `AndroidBackupCrypto.kt`, new Android OAuth/Drive adapters, secure wallet journal schema, `SessionLeaseRepository.kt`, settings/restore UI, Android composition root, external connector/adaptor servers.
-
-**Dependencies:** Google OAuth client, dedicated Drive test account, server-enforced generation lease, P0 online/session lifecycle.
-
-**Acceptance criteria:** Channel open is disabled until backup round-trips and decrypts; tampered headers/ciphertext, broken chain, stale generation, and same-generation divergence fail closed; takeover on device B invalidates device A before its next mutation; Drive failure after write-ahead blocks later L2 action without losing authorization state.
-
-**Verification:** `FERRET_GOOGLE_SERVER_CLIENT_ID='<client-id>' ./gradlew androidReleaseCheck`; automated crypto/hash-chain fixtures; device A/B Drive initial backup, tamper, restore, takeover, stale-writer, and conflict scenarios.
-
-### 11. Channel protocol and lifecycle — Partial
-
-**Current status:** Protocol wire/signing types, Android signer/verifier, session lease repository, channel state machine, per-wallet mutex, concrete encrypted `ChannelJournal`, Drive backup protocol adapter, and tests exist. The connector exposes strict transaction lookup and makes a validated writer lease mandatory for channel submission. The adaptor client uses strict pinned-Konduit quote, pay, squash, and receipt types; duration encoding; keytag construction; bounded protocol collections; and canonical JSON/CBOR fixtures that reject unknown variants and fields. Receipt and squash-status responses verify every signed squash and locked/unlocked cheque against the wallet key and tag before the client returns them. Every channel mutation preflights the remote Drive checkpoint before local journaling, records the exact action and visible opening/closing lifecycle in write-ahead, then reclaims the writer lease against that new checkpoint before remote execution. Reconciliation first queries the remote operation and, when no result exists, safely replays the journaled action with the same operation ID. Active and transitional wallets now reach a typed read-only Channel screen that loads the encrypted journal and displays lifecycle and pending reconciliation state. No complete remote channel implementation, balance projection, or open/add/close controls exist.
-
-**Missing work:** Complete the channel transaction construction plus connector/adaptor mutation and reconciliation orchestration; claim the writer lease from the verified Drive checkpoint and stable device identity in Android composition; preview dynamic min-ADA/fees; wire open/add/close/squash controls through the existing local journal → Drive write-ahead → idempotent remote execution → chain/adaptor reconciliation → terminal Drive snapshot; reconcile from chain, adaptor, local journal, and Drive on launch/resume.
-
-**Priority:** P1 after item 10 and server contract.
-
-**Affected files:** `ProtocolWire.kt`, `AndroidProtocolSigner.kt`, `SessionLeaseRepository.kt`, `ChannelRepository.kt`, secure vault schema, network clients, new channel screens/ViewModels, `FerretApp.kt`, Android composition root.
-
-**Dependencies:** Items 5, 6, and 10; controlled Mainnet `crustypants.com` services; server operation IDs and writer lease.
-
-**Acceptance criteria:** Repository rejects illegal/concurrent actions independent of UI; open/add/close survive process death at every external-side-effect boundary with one reconciled result; missing/conflicting backup blocks mutation; channel balance excludes exact protocol-required min-ADA from transaction preview, not a fixed UI constant.
-
-**Verification:** `./gradlew androidCheck`; pinned wire/conformance vectors; kill-before-submit, kill-after-submit, and kill-after-adaptor-acceptance scenarios for open/add/close; controlled Mainnet chain/adaptor reconciliation.
-
-### 12. BOLT11 QR payment — Partial
-
-**Current status:** CameraX/ML Kit QR-only scanner, denial/settings UI, ACINQ BOLT11 parsing, expiry/network/amount checks, three-second guard, payment state model, confirmation screen, and durable-style receipt screen exist. They are unreachable and have no real `PaymentGateway`, `ChannelRemote`, Drive write-ahead, receipt verification, duplicate persistence, or reconciliation wiring.
-
-**Missing work:** Register scan/confirm/receipt routes; construct the scanner on Android only; implement gateway/adaptor quote validation and receipt verification; persist paid hashes/quote index; execute payment through the item 11 journal/Drive/lease path; stop camera after one value and on background; restore pending reconciliation after interruption. Keep QR-only: no paste, manual entry, deep link, LNURL, or Lightning Address.
-
-**Priority:** P2 after a verified open channel.
-
-**Affected files:** `QrPaymentScannerScreen.kt`, `AndroidQrScanner.kt`, `PaymentViewModel.kt`, `PaymentScreens.kt`, `ChannelRepository.kt`, network/protocol adapters, `FerretApp.kt`, Android composition root.
-
-**Dependencies:** Open channel, verified Drive writer, adaptor identity, session lease, ACINQ parser.
-
-**Acceptance criteria:** Invalid/expired/wrong-network/duplicate/amountless or amount-mismatched QR never requests a quote; camera stops after one accepted result and on background; confirmation shows amount, both fees, total, expiry, and three-second guard; one confirmation yields one durable verified/pending receipt and no duplicate authorization after process death.
-
-**Verification:** `./gradlew androidCheck`; scanner lifecycle/permission tests; controlled valid and invalid BOLT11 fixtures; kill before/after adaptor acceptance and verify one reconciled payment.
-
-### 13. Activity/history — Partial
-
-**Current status:** L1 connector parsing, immutable ordering/merge policy, deterministic finality states, pull-to-refresh, typed History navigation, expandable detail, refresh timestamp, and Home’s latest-activity projection are connected. Journal-backed payment records are merged into history. Verified channel activity is not connected.
-
-**Missing work:** Validate the L1 response against a funded low-value Mainnet wallet, then merge verified journal/adaptor activity in P2. Preserve immutable ordering, status semantics, amount, fee, realm, ID, and last refresh.
-
-**Priority:** P0 for L1; P2 for L2.
-
-**Affected files:** `Clients.kt`, domain transaction models, wallet/channel repositories, `WalletScreens.kt`, `FerretApp.kt`.
-
-**Dependencies:** Connector transaction contract; later verified adaptor records.
-
-**Acceptance criteria:** L1 and L2 records are merged by immutable timestamp without source mutation; 5-block confirmed and 2160-block settled labels are deterministic; pending/failed survive refresh and process interruption through their journals.
-
-**Verification:** Shared ordering/status tests; funded low-value Mainnet transfer/channel/payment scenario; compare displayed IDs/statuses to connector/adaptor responses.
-
-### 14. Settings and diagnostics — Complete
-
-**Current status:** `SettingsScreen` is reachable from Home and projects the selected wallet's credentials, immutable network, live encrypted-journal channel lifecycle and pending-operation state, validated-session adaptor status, Drive account/generation/sequence, lock state, version/build commit, and redacted diagnostic code. Rename, Drive connect/verify/takeover, and Remove Wallet navigation are wired. Original placeholder settings remain removed: no custom endpoints, mutable network, fiat, FX, language, raw-key export, or plaintext backup.
-
-**Missing work:** None. Keep the channel projection backed by the runtime journal as concrete adapters land, and do not restore removed web settings.
-
-**Priority:** Done.
-
-**Affected files:** `SettingsScreen.kt`, wallet/backup/channel repositories, build metadata, `FerretApp.kt`, Android composition root.
-
-**Dependencies:** Drive and channel state for meaningful status.
-
-**Acceptance criteria:** Every displayed value comes from the selected wallet/runtime; backup verification runs the real read-back/decrypt path; diagnostics contain no sensitive values; prohibited settings/actions are absent.
-
-**Verification:** `./gradlew androidCheck`; navigation/projection tests; device inspection for each status and diagnostic redaction.
-
-### 15. Safe wallet removal — Partial
-
-**Current status:** `WalletRemovalManager`, the protected confirmation screen/ViewModel, typed navigation, and Android readiness producer are connected. Removal checks closed/absent channel state, pending L1/channel/payment journals, live balance, transaction finality, and the encrypted Drive checkpoint. An already empty, settled wallet can delete its verified Drive backup with read-after-delete verification before the local encrypted profile, seed, and journals are deleted. Same-network sweep orchestration remains unavailable.
-
-**Missing work:** Add same-network wallet or validated external sweep through journaled `SweepWallet` submission/reconciliation, then perform the funded-device interruption and mnemonic-restore scenario. The UI already explains that mnemonic/provider retention cannot be erased.
-
-**Priority:** P3 after transfer, Drive, and channel lifecycle.
-
-**Affected files:** `WalletRemoval.kt`, Cardano engine, vault, backup/channel repositories, new removal UI/ViewModel, `FerretApp.kt`, Android composition root.
-
-**Dependencies:** Items 6, 10, and 11; finality data from connector.
-
-**Acceptance criteria:** Removal is blocked for active channel, pending operation, Drive conflict, nonzero unswept balance, or depth below 2160; successful removal deletes local profile/seed/journal and Drive object; unlock cannot find the wallet; mnemonic restore recreates its L1 identity.
-
-**Verification:** `./gradlew androidCheck`; readiness boundary tests; device close/sweep/finality/delete/restore scenario with Drive object inspection.
-
-### 16. iOS 17 parity — Deferred, compile gate only
-
-**Current status:** Shared iOS framework targets compile and a thin Swift source host exists, but there is no Xcode project. `walletManager = null` intentionally renders platform unavailable. No Keychain/LocalAuthentication vault, atomic files, CSL bridge, CryptoKit backup, Google Drive, Darwin TLS/pinning, AVFoundation scanner, Core Image QR, pasteboard expiry, lifecycle protection, or physical-device verification exists.
-
-**Missing work:** Execute `IOS_FOLLOW_UP.md` only after Android P0–P3 contracts are stable: Xcode host; narrow CSL 17.0.0 Rust C ABI/XCFramework; security and lifecycle adapters; byte-compatible backup crypto and Drive; Darwin transport/pins; scanner/QR/clipboard; sensitive UI protection; Android behavioral parity.
-
-**Priority:** P4.
-
-**Affected files:** `iosApp`, `shared/src/iosMain`, `native/cardano-ios-bridge`, shared platform interfaces.
-
-**Dependencies:** Stable Android semantics, macOS/Xcode/signing, Apple/Google credentials, pinned Rust toolchain, controlled fixtures.
-
-**Acceptance criteria:** iOS no longer passes a null manager; simulator and physical iOS 17 device pass the same create/restore/transfer/Drive/channel/payment/removal and interruption contracts as Android; decoded CSL intent semantics match Bloxbean fixtures.
-
-**Verification:** Linux gate `./gradlew :shared:compileKotlinIosSimulatorArm64`; on macOS `./gradlew :shared:iosSimulatorArm64Test`; `xcodebuild -project iosApp/iosApp.xcodeproj -scheme iosApp -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 16' test`; execute the ten physical-device checks in `IOS_FOLLOW_UP.md`.
-
-### 17. Mainnet release gate — Missing
-
-**Current status:** Mainnet wallet creation/restore and immutable deployment configuration exist. No connected transfer/channel/payment/removal path or controlled Mainnet release evidence exists.
-
-**Missing work:** Keep unfinished financial actions unreachable. After P0–P3, independently verify deployment tuple and pins; run low-value Mainnet create/restore, transfer, channel open/pay/close, Drive takeover, and removal; complete release hardening and SBOM/license/security review.
-
-**Priority:** Final Android gate before P4/App Store work.
-
-**Affected files:** Release configuration and evidence; no feature-specific alternate Mainnet implementation.
-
-**Dependencies:** All Android features and external production services.
-
-**Acceptance criteria:** Every financial action uses the selected immutable Mainnet deployment and passes the semantic, recovery, interruption, and security checks against the controlled `crustypants.com` services.
-
-**Verification:** `FERRET_GOOGLE_SERVER_CLIENT_ID='<client-id>' ./gradlew androidReleaseCheck`; documented controlled low-value Mainnet scenario covering all actions and interruption boundaries.
-
-### 18. Explicitly excluded web behavior — Complete by omission
-
-**Current status:** The native repository does not retain the PWA, browser history, localStorage, raw 64-hex key import, Svelte JSON backup, arbitrary connector/adaptor URLs, mutable network, fiat/FX/language placeholders, manual invoice entry, LNURL/Lightning Address, background/offline queued actions, or immediate fake wallet exit.
-
-**Missing work:** None. Do not reintroduce these as compatibility shims.
-
-**Priority:** Permanent constraint.
-
-**Affected files:** All future feature work.
-
-**Dependencies:** None.
-
-**Acceptance criteria:** Searches and reachable UI show none of the excluded controls/runtime paths; wallet restore accepts only the approved 24-word flow.
-
-**Verification:** Repository/UI inspection after each phase; security review rejects any reintroduced plaintext secret export, custom endpoint, manual/LNURL payment, offline mutation, or local-delete-only exit.
-
-## Execution order and gates
-
-1. **P0 Android L1:** P0.1 lifecycle/network gate → P0.2 top-up/history/transfer → P0.3 release security. Keep channel/payment actions disabled.
-2. **P1 Recovery and channel:** Drive/Google identity + server lease → concrete channel adapters → open/add/close and reconciliation.
-3. **P2 Payment:** QR scan → quote → guarded confirmation → journaled payment → durable receipt/history.
-4. **P3 Product closure:** Settings/diagnostics/rename → safe sweep/removal → Android Mainnet gate.
-5. **P4 iOS:** Implement `IOS_FOLLOW_UP.md` against stable Android contracts; no duplicate SwiftUI product tree.
-
-A phase does not open the next financial action merely because UI exists. Its acceptance scenario, interruption checks, and security prerequisites must pass first.
-
-## Evidence cross-check
-
-The coverage map accounts for every product capability and constraint in the original migration plan and prior agent reports:
-
-- build/cutover, shared Compose, manual dependencies, state/navigation/coroutines;
-- Android custody, biometric/device credential, multi-wallet 24-word create/restore, random verification, process-death recovery, and Mainnet-only deployment acceptance;
-- visual system, resources, accessibility, adaptive icon, and documentation;
-- immutable deployments, connector/adaptor transport, TLS pins, offline policy, refresh behavior;
-- Bloxbean Cardano intents and conformance;
-- Home balance and pull-to-refresh, top-up QR/copy, transfer, and history;
-- encrypted Drive recovery, conflict/takeover, signed single-writer lease, journal/write-ahead protocol;
-- channel open/add/pay/close/squash and interruption reconciliation;
-- QR-only BOLT11 confirmation and durable receipt;
-- settings/diagnostics and safe wallet removal;
-- release hardening/Mainnet gate and full iOS parity;
-- explicit rejection of legacy web architecture and unsafe/placeholder behaviors.
-
-No repository evidence conflicts with the recovered scope. `CONTEXT.md`, `README.md`, and `IOS_FOLLOW_UP.md` describe a subset/current-state handoff consistent with the original Android-first sequencing.
+Device evidence must use the controlled Mainnet services. Passing builds alone do not replace the required ADA/USDM/USDCx multi-channel scenarios, funded transfer, multi-device Drive, channel-control, removal, or signed-release scenarios.
