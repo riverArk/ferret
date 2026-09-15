@@ -1,0 +1,47 @@
+{
+    "schema": 1,
+    "source": {
+        "url": "https://api.koios.rest/api/v1/asset_info",
+        "api_version": "v1",
+        "spec_version": "v1.4.2"
+    },
+    "catalog_digest": "09ce40fc9bfd7b600506400417b4c09ba0ca2bd5b58703aeb00699c084d298ae",
+    "entries": [
+        {
+            "alias": "usdcx",
+            "policy_id": "1f3aec8bfe7ea4fe14c5f121e2a92e301afe414147860d557cac7e34",
+            "asset_name": "5553444378",
+            "fingerprint": "asset1e7eewpjw8ua3f2gpfx7y34ww9vjl63hayn80kl",
+            "name": "USDCx",
+            "ticker": "USDCx",
+            "description": "USDCx is a dollar-denominated stablecoin issued on Cardano as a Cardano Native Asset (CNA). Each USDCx is redeemable 1:1 for native USDC through xReserve, Circle's smart contract and interoperability infrastructure that verifies deposits, minting, and crosschain transfers. The underlying USDC is independently backed by Circle's dollar reserves.",
+            "url": "",
+            "logo": "drawable/asset_1f3aec8bfe7ea4fe14c5f121e2a92e301afe414147860d557cac7e34_5553444378.png",
+            "logo_sha256": "8bc5be50c59bc5abe448b7f7ebf1f9f88b2a08119077a1d41aeb897370c3e654"
+        },
+        {
+            "alias": "usdm",
+            "policy_id": "c48cbb3d5e57ed56e276bc45f99ab39abe94e6cd7ac39fb402da47ad",
+            "asset_name": "0014df105553444d",
+            "fingerprint": "asset12ffdj8kk2w485sr7a5ekmjjdyecz8ps2cm5zed",
+            "name": "USDM",
+            "ticker": "USDM",
+            "description": "Fiat-backed stablecoin native to the Cardano blockchain",
+            "url": "https://moneta.global/",
+            "logo": "drawable/asset_c48cbb3d5e57ed56e276bc45f99ab39abe94e6cd7ac39fb402da47ad_0014df105553444d.png",
+            "logo_sha256": "5a5f6ef81aa87270fe10d826ef1e48335ead24e54093170f259fc41f5a8bd7fd"
+        },
+        {
+            "alias": "usda",
+            "policy_id": "fe7c786ab321f41c654ef6c1af7b3250a613c24e4213e0425a7ae456",
+            "asset_name": "55534441",
+            "fingerprint": "asset16fq594uun90f2jajmecjcdt4jnsnq7r3jdqsw5",
+            "name": "USDA",
+            "ticker": "USDA",
+            "description": "Anzens USDA Stablecoin",
+            "url": "https://www.anzens.com",
+            "logo": "drawable/asset_fe7c786ab321f41c654ef6c1af7b3250a613c24e4213e0425a7ae456_55534441.png",
+            "logo_sha256": "2e5d868a432f991f0d3e6554d31f4612e2836387b87e2598209acda1778d5af6"
+        }
+    ]
+}

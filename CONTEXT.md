@@ -51,7 +51,7 @@ Top-up renders a local address QR with owned sensitive-clipboard expiry. Transfe
 
 ## Known platform gaps
 
-- Stablecoin payments are not implemented in Ferret. The app does not expose native-asset balances, fund USDM/USDCx channel outputs, persist multiple channels per wallet, or select a source channel for payment. `NATIVE_MIGRATION_PLAN.md` defines this as required P0–P2 work, including an explicit maintainer-only Koios metadata refresh that commits reviewed token metadata/logos into shared resources; the app must never fetch Koios or remote logos at runtime.
+- Stablecoin payments are not implemented in Ferret. Reviewed Konduit catalog definitions and Koios presentation metadata/logos are now bundled in shared resources, refreshed only by an explicit maintainer task, and verified offline by Android checks. The app still does not expose native-asset balances, fund USDM/USDCx channel outputs, persist multiple channels per wallet, select a source channel for payment, or enforce the catalog at runtime; `NATIVE_MIGRATION_PLAN.md` owns the remaining P0–P2 work.
 - iOS wallet setup and runtime integrations are unavailable; see `IOS_FOLLOW_UP.md`.
 - Add, close, elapse, end, and squash channel controls are not connected to UI or controlled lifecycle acceptance yet.
 - Funded Mainnet ADA transfer/process-kill/finality acceptance, the two-device Drive takeover matrix, and the close/sweep/removal scenario remain.
@@ -84,6 +84,12 @@ Android installation and manual verification require an API 36 device or emulato
 ## Session log
 
 Entries below are chronological evidence. Older “remaining” or “gated” statements describe their date and are superseded by the Snapshot, Known platform gaps, and newest entry above.
+
+### 2026-09-15 — Embedded asset presentation metadata
+
+- Bundled the canonical four-entry Konduit catalog and reviewed Koios registry metadata/logos for USDA, USDCx, and USDM in shared Compose resources. The explicit updater validates the controlled deployment digest and performs one bounded bulk Mainnet Koios request; normal builds and runtime never invoke it.
+- Added strict canonical catalog/manifest, normalized text, identity/decimal, hash, path, PNG structure/CRC/dimension/decode, deterministic generation, failure-safety, and tamper validation using Gradle's bundled Groovy JSON plus JDK facilities.
+- The focused offline checks, no-external-connect `strace` run, `androidCheck`, local `androidReleaseCheck` with a non-production OAuth placeholder, both dry-run task graphs, configuration-cache reuse, visual logo inspection, and byte-for-byte debug APK resource comparison passed. No app/device payment acceptance was performed because financial and UI behavior did not change.
 
 ### 2026-09-15 — Controlled Mainnet channel and payment acceptance
 
