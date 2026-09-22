@@ -165,7 +165,7 @@ class MainActivity : FragmentActivity() {
             { id, bytes, checkpoint -> channelJournal.installBackup(id, bytes, checkpoint) },
         )
         paymentStore = VaultPaymentStore(channelJournal)
-        val cardanoEngine = androidCardanoTransactionEngine { network, cbor ->
+        val cardanoEngine = androidCardanoTransactionEngine(assetCatalog) { network, cbor ->
             connectors.getValue(network).evaluate(cbor.joinToString("") { byte ->
                 byte.toUByte().toString(16).padStart(2, '0')
             })
@@ -326,7 +326,6 @@ class MainActivity : FragmentActivity() {
                             DefaultPaymentGateway(
                                 adaptor = { adaptors.getValue(profile.network) },
                                 selected = { id, keytag ->
-                                    channelRepository.load(id)
                                     channelRepository.snapshots.value.getValue(id).channels.getValue(keytag.value)
                                 },
                                 writer = { verifiedWriter(it) },
@@ -337,6 +336,7 @@ class MainActivity : FragmentActivity() {
                                 assets = assetCatalog,
                             ),
                             System::currentTimeMillis,
+                            assetCatalog,
                         )
                     },
                     loadPaymentReceipt = paymentStore::receipt,

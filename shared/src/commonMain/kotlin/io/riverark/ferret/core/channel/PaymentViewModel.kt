@@ -44,6 +44,14 @@ data class PaymentQuote(
 
 data class ChannelChoice(val keytag: ProtocolKeytag, val asset: ChannelAsset, val spendable: AssetAmount)
 
+internal fun ChannelSnapshot.isEligibleForPayment(catalog: AssetCatalog) =
+    catalog.asset(asset.alias) == asset &&
+        spendableBalance.asset == asset &&
+        state is ChannelState.Open &&
+        pending == null &&
+        payments.pending == null &&
+        spendableBalance.baseUnits > 0
+
 sealed interface PaymentUiState {
     data object Scanning : PaymentUiState
     data object Quoting : PaymentUiState
@@ -150,6 +158,7 @@ class DefaultPaymentGateway(
         val body = SquashBodyWire(0, 0, emptyList())
         val request = SignedSquashWire(body, signer.sign(body.taggedCbor(ProtocolTag(keytag.value.drop(64)))).hex())
         val zero = AssetAmount(entry.asset, 0)
+        val adaZero = AssetAmount(assets.ada, 0)
         return ChannelPreview(
             PreparedChannelOperation(
                 operationId,
@@ -162,7 +171,7 @@ class DefaultPaymentGateway(
                 ChannelPayload.Squash(request),
                 entry.spendableBalance,
             ),
-            zero, zero, zero, zero, zero, zero, entry.spendableBalance, network(walletId),
+            zero, zero, zero, null, adaZero, adaZero, entry.spendableBalance, network(walletId), adaZero,
         )
     }
 
@@ -192,7 +201,7 @@ class DefaultPaymentGateway(
         val authorization = body.taggedCbor(ProtocolTag(keytag.value.drop(64)))
         val request = AdaptorPayRequest(body, signer.sign(authorization).hex(), invoice)
         val fee = quote.routingFee + quote.adaptorFee
-        val zero = AssetAmount(entry.asset, 0)
+        val adaZero = AssetAmount(assets.ada, 0)
         return ChannelPreview(
             PreparedChannelOperation(
                 operationId,
@@ -205,14 +214,14 @@ class DefaultPaymentGateway(
                 ChannelPayload.Payment(authorization, invoice, quote.invoiceHash, quote.id, request, quote),
                 entry.spendableBalance - total,
             ),
-            quote.amount, fee, fee, zero, zero, zero, entry.spendableBalance - total, network(walletId),
+            quote.amount, fee, fee, null, adaZero, adaZero, entry.spendableBalance - total, network(walletId), adaZero,
         )
     }
 
     private suspend fun requireSelected(walletId: WalletId, keytag: ProtocolKeytag): ChannelSnapshot =
         selected(walletId, keytag).also {
             require(it.keytag == keytag && it.asset == assets.requireAsset(it.asset))
-            require(it.asset == assets.ada && it.state is ChannelState.Open && it.pending == null && it.spendableBalance.baseUnits > 0)
+            require(it.isEligibleForPayment(assets))
         }
 
     @Serializable
@@ -236,6 +245,7 @@ class PaymentViewModel(
     private val channels: ChannelRepository,
     private val gateway: PaymentGateway,
     private val clock: () -> Long,
+    private val assets: AssetCatalog,
 ) : ViewModel() {
     private val mutableState = MutableStateFlow<PaymentUiState>(PaymentUiState.Scanning)
     private var acceptingScan = false
@@ -260,10 +270,14 @@ class PaymentViewModel(
                 val amountMsat = parsed.amount?.msat ?: error("Amountless invoices are unsupported.")
                 channels.load(walletId)
                 val collection = requireNotNull(channels.snapshots.value[walletId])
+                if (collection.unresolvedLegacy.isNotEmpty()) {
+                    mutableState.value = PaymentUiState.Error("Channel recovery is required before payment.")
+                    return@launch
+                }
                 require(hash !in collection.paidHashes && collection.channels.values.none { it.payments.pending?.paymentHash == hash })
-                val choices = collection.channels.values.filter {
-                    it.asset.policyId == null && it.state is ChannelState.Open && it.pending == null && it.spendableBalance.baseUnits > 0
-                }.sortedBy { it.keytag.value }.map { ChannelChoice(it.keytag, it.asset, it.spendableBalance) }
+                val choices = collection.channels.values.filter { it.isEligibleForPayment(assets) }
+                    .sortedBy { it.keytag.value }
+                    .map { ChannelChoice(it.keytag, it.asset, it.spendableBalance) }
                 if (choices.isEmpty()) {
                     mutableState.value = PaymentUiState.Error("No compatible payment channel.")
                     return@launch
@@ -299,9 +313,17 @@ class PaymentViewModel(
                 val quote = gateway.quote(walletId, keytag, encodedInvoice, checkNotNull(invoiceHash), checkNotNull(invoiceAmountMsat))
                 val quotedAt = clock()
                 require(!Bolt11Invoice.read(encodedInvoice).get().isExpired(quotedAt / 1_000))
-                require(quote.expiresAtEpochMillis > quotedAt && quote.keytag == keytag)
-                require((quote.amount + quote.routingFee + quote.adaptorFee).baseUnits <= choice.spendable.baseUnits)
-                mutableState.value = PaymentUiState.Confirming(description, quote, choice.spendable, quotedAt + 3_000)
+                val currentEntry = requireNotNull(channels.snapshots.value[walletId]?.channels?.get(keytag.value))
+                require(currentEntry.isEligibleForPayment(assets))
+                require(quote.keytag == choice.keytag && quote.amount.asset == choice.asset && choice.asset == currentEntry.asset)
+                require(quote.invoiceHash == checkNotNull(invoiceHash) && quote.invoiceAmountMsat == checkNotNull(invoiceAmountMsat))
+                require(quote.expiresAtEpochMillis > quotedAt)
+                val total = quote.amount + quote.routingFee + quote.adaptorFee
+                if (total.baseUnits > currentEntry.spendableBalance.baseUnits) {
+                    mutableState.value = PaymentUiState.Error("Insufficient selected channel capacity.")
+                    return@launch
+                }
+                mutableState.value = PaymentUiState.Confirming(description, quote, currentEntry.spendableBalance, quotedAt + 3_000)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: PaymentQuoteRejected) {
@@ -314,7 +336,12 @@ class PaymentViewModel(
 
     fun confirm(nowEpochMillis: Long) {
         val confirming = mutableState.value as? PaymentUiState.Confirming ?: return
-        require(nowEpochMillis >= confirming.confirmAfterEpochMillis && nowEpochMillis < confirming.quote.expiresAtEpochMillis)
+        if (nowEpochMillis < confirming.confirmAfterEpochMillis) return
+        if (nowEpochMillis >= confirming.quote.expiresAtEpochMillis) {
+            mutableState.value = PaymentUiState.Error("This payment quote has expired. Scan the invoice again.")
+            clearInvoice()
+            return
+        }
         val encodedInvoice = checkNotNull(invoice)
         if (Bolt11Invoice.read(encodedInvoice).get().isExpired(nowEpochMillis / 1_000)) {
             failExpired()

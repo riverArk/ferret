@@ -1,6 +1,6 @@
 package io.riverark.ferret.core.backup
 
-import io.riverark.ferret.core.channel.ChannelCollectionV3
+import io.riverark.ferret.core.channel.ChannelCollectionV4
 import io.riverark.ferret.core.channel.VaultChannelJournal
 import io.riverark.ferret.core.model.AssetCatalog
 import io.riverark.ferret.core.model.AssetPricing
@@ -87,7 +87,7 @@ class DriveBackupRepositoryTest {
         resumed.clear()
     }
 
-    private fun assertCollectionEquals(expected: ChannelCollectionV3, actual: ChannelCollectionV3) {
+    private fun assertCollectionEquals(expected: ChannelCollectionV4, actual: ChannelCollectionV4) {
         assertEquals(expected.schema, actual.schema)
         assertEquals(expected.walletId, actual.walletId)
         assertEquals(expected.catalogDigest, actual.catalogDigest)
@@ -170,6 +170,6 @@ class DriveBackupRepositoryTest {
             DIGEST,
             emptyMap(),
         )
-        val COLLECTION = ChannelCollectionV3(walletId = WALLET, catalogDigest = DIGEST)
+        val COLLECTION = ChannelCollectionV4(walletId = WALLET, catalogDigest = DIGEST)
     }
 }

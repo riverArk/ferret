@@ -8,7 +8,7 @@ import androidx.biometric.BiometricPrompt
 import androidx.biometric.BiometricManager
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
-import io.riverark.ferret.core.channel.ChannelCollectionV3
+import io.riverark.ferret.core.channel.ChannelCollectionV4
 import io.riverark.ferret.core.channel.VaultChannelJournal
 import io.riverark.ferret.core.model.AssetCatalog
 import io.riverark.ferret.core.model.BackupStatus
@@ -121,11 +121,11 @@ class AndroidSecureVault(
             }
             val collection = if (useProfileState) {
                 if (profile.channelState == ChannelState.Absent) {
-                    ChannelCollectionV3(walletId = profile.id, catalogDigest = catalog.digest)
+                    ChannelCollectionV4(walletId = profile.id, catalogDigest = catalog.digest)
                 } else {
                     val evidence = json.encodeToString(LegacyWalletProfile.serializer(), profile).encodeToByteArray()
                     try {
-                        ChannelCollectionV3(
+                        ChannelCollectionV4(
                             walletId = profile.id,
                             catalogDigest = catalog.digest,
                             unresolvedLegacy = evidence.copyOf(),

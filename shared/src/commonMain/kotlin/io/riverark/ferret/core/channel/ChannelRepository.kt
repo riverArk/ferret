@@ -87,11 +87,12 @@ data class ChannelPreview(
     val amount: AssetAmount,
     val actualFee: AssetAmount,
     val feeBound: AssetAmount,
-    val sourceChange: AssetAmount,
+    val sourceChange: io.riverark.ferret.core.cardano.TransactionOutputSummary?,
     val ledgerMinAda: AssetAmount,
     val protocolReserve: AssetAmount,
     val resultingSpendableBalance: AssetAmount,
     val network: io.riverark.ferret.core.model.CardanoNetwork,
+    val outputAda: AssetAmount,
 )
 
 @kotlinx.serialization.Serializable
@@ -109,16 +110,16 @@ data class ChannelSnapshot(
 class InactiveChannelCleanupRejected(message: String) : IllegalStateException(message)
 
 interface ChannelJournal {
-    suspend fun load(walletId: WalletId): ChannelCollectionV3
-    suspend fun persist(walletId: WalletId, collection: ChannelCollectionV3)
-    fun cleanupInactive(collection: ChannelCollectionV3): ChannelCollectionV3 =
+    suspend fun load(walletId: WalletId): ChannelCollectionV4
+    suspend fun persist(walletId: WalletId, collection: ChannelCollectionV4)
+    fun cleanupInactive(collection: ChannelCollectionV4): ChannelCollectionV4 =
         error("Legacy channel cleanup is unavailable.")
 }
 
 interface ChannelBackupProtocol {
     suspend fun requireVerifiedWriter(walletId: WalletId): WriterLease
-    suspend fun writeAhead(walletId: WalletId, collection: ChannelCollectionV3)
-    suspend fun commit(walletId: WalletId, collection: ChannelCollectionV3)
+    suspend fun writeAhead(walletId: WalletId, collection: ChannelCollectionV4)
+    suspend fun commit(walletId: WalletId, collection: ChannelCollectionV4)
 }
 
 interface ChannelRemote {
@@ -134,12 +135,12 @@ class ChannelRepository(
     private val newOperationId: () -> String = { error("operation ID generator unavailable") },
     private val transactions: OpenChannelTransactions? = null,
 ) {
-    private val mutableSnapshots = MutableStateFlow<Map<WalletId, ChannelCollectionV3>>(emptyMap())
-    val snapshots: StateFlow<Map<WalletId, ChannelCollectionV3>> = mutableSnapshots.asStateFlow()
+    private val mutableSnapshots = MutableStateFlow<Map<WalletId, ChannelCollectionV4>>(emptyMap())
+    val snapshots: StateFlow<Map<WalletId, ChannelCollectionV4>> = mutableSnapshots.asStateFlow()
 
     suspend fun load(walletId: WalletId) = wallets.withWalletLock(walletId) { publish(walletId, journal.load(walletId)) }
 
-    suspend fun cleanupInactive(walletId: WalletId): ChannelCollectionV3 = wallets.withWalletLock(walletId) {
+    suspend fun cleanupInactive(walletId: WalletId): ChannelCollectionV4 = wallets.withWalletLock(walletId) {
         val current = current(walletId)
         if (current.channels.values.any { it.pending != null || it.payments.pending != null }) {
             throw InactiveChannelCleanupRejected("Pending channel work must finish before cleanup.")
@@ -232,7 +233,7 @@ class ChannelRepository(
     suspend fun submit(walletId: WalletId, preview: ChannelPreview): String =
         wallets.withWalletLock(walletId) { submitLocked(walletId, current(walletId), preview).operationId }
 
-    private suspend fun submitLocked(walletId: WalletId, original: ChannelCollectionV3, preview: ChannelPreview): ChannelRemoteResult {
+    private suspend fun submitLocked(walletId: WalletId, original: ChannelCollectionV4, preview: ChannelPreview): ChannelRemoteResult {
         requireMutable(original)
         val operation = preview.operation
         require(operation.asset == preview.amount.asset)
@@ -314,7 +315,7 @@ class ChannelRepository(
         return keys.mapNotNull { reconcile(walletId, it) }
     }
 
-    private suspend fun reconcileLocked(walletId: WalletId, initial: ChannelCollectionV3, keytag: ProtocolKeytag): ChannelRemoteResult? {
+    private suspend fun reconcileLocked(walletId: WalletId, initial: ChannelCollectionV4, keytag: ProtocolKeytag): ChannelRemoteResult? {
         val current = requireNotNull(initial.channels[keytag.value])
         val pending = current.pending ?: return null
         var replayBase = initial
@@ -364,7 +365,7 @@ class ChannelRepository(
         return complete(walletId, replayBase, result)
     }
 
-    private suspend fun complete(walletId: WalletId, current: ChannelCollectionV3, result: ChannelRemoteResult): ChannelRemoteResult {
+    private suspend fun complete(walletId: WalletId, current: ChannelCollectionV4, result: ChannelRemoteResult): ChannelRemoteResult {
         val entry = requireNotNull(current.channels[result.keytag.value])
         val pending = requireNotNull(entry.pending)
         require(result.operationId == pending.operationId && result.intentHash == pending.intentHash)
@@ -414,21 +415,21 @@ class ChannelRepository(
     private suspend fun current(walletId: WalletId) =
         mutableSnapshots.value[walletId] ?: journal.load(walletId).also { publish(walletId, it) }
 
-    private suspend fun persist(walletId: WalletId, collection: ChannelCollectionV3) {
+    private suspend fun persist(walletId: WalletId, collection: ChannelCollectionV4) {
         journal.persist(walletId, collection)
         publish(walletId, collection)
     }
 
-    private fun publish(walletId: WalletId, collection: ChannelCollectionV3) {
+    private fun publish(walletId: WalletId, collection: ChannelCollectionV4) {
         require(collection.walletId == walletId)
         mutableSnapshots.value = mutableSnapshots.value + (walletId to collection)
     }
 
-    private fun requireMutable(collection: ChannelCollectionV3) {
+    private fun requireMutable(collection: ChannelCollectionV4) {
         require(collection.unresolvedLegacy.isEmpty()) { "Legacy channel recovery requires verified identity." }
     }
 
-    private fun ChannelCollectionV3.withEntry(entry: ChannelSnapshot): ChannelCollectionV3 =
+    private fun ChannelCollectionV4.withEntry(entry: ChannelSnapshot): ChannelCollectionV4 =
         copy(channels = channels + (entry.keytag.value to entry))
 
     private fun requireAllowed(state: ChannelState, action: ChannelAction) {

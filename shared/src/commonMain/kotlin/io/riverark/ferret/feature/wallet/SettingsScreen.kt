@@ -14,7 +14,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import io.riverark.ferret.core.channel.ChannelCollectionV3
+import io.riverark.ferret.core.channel.ChannelCollectionV4
 import io.riverark.ferret.core.model.WalletProfile
 import io.riverark.ferret.ui.FerretDangerButton
 import io.riverark.ferret.ui.FerretListRow
@@ -29,7 +29,7 @@ data class WalletSettings(
     val paymentCredential: String,
     val stakingCredential: String,
     val balance: WalletBalance,
-    val channels: ChannelCollectionV3,
+    val channels: ChannelCollectionV4,
     val adaptorStatus: String,
     val driveAccount: String?,
     val driveGeneration: Long?,

@@ -34,7 +34,7 @@ import ferret.shared.generated.resources.Res
 import ferret.shared.generated.resources.splash_ferret
 import io.riverark.ferret.core.backup.StaleBackupWriterException
 import io.riverark.ferret.core.backup.MissingBackupException
-import io.riverark.ferret.core.channel.ChannelCollectionV3
+import io.riverark.ferret.core.channel.ChannelCollectionV4
 import io.riverark.ferret.core.channel.ChannelPreview
 import io.riverark.ferret.core.channel.InactiveChannelCleanupRejected
 import io.riverark.ferret.core.channel.PaymentUiState
@@ -100,8 +100,8 @@ data class FerretDependencies(
     val encodeQr: ((String) -> QrCode)? = null,
     val copyAddress: ((String) -> Unit)? = null,
     val l1WalletRepository: L1WalletRepository? = null,
-    val loadChannels: (suspend (WalletId) -> ChannelCollectionV3)? = null,
-    val cleanupInactiveChannels: (suspend (WalletId) -> ChannelCollectionV3)? = null,
+    val loadChannels: (suspend (WalletId) -> ChannelCollectionV4)? = null,
+    val cleanupInactiveChannels: (suspend (WalletId) -> ChannelCollectionV4)? = null,
     val paymentViewModelFactory: ((WalletId) -> PaymentViewModel)? = null,
     val loadPaymentReceipt: (suspend (WalletId, ProtocolKeytag, String) -> io.riverark.ferret.core.model.Receipt?)? = null,
     val invoiceScanner: (@Composable ((String) -> Unit, () -> Unit) -> Unit)? = null,
@@ -183,8 +183,8 @@ private fun WalletNavigation(
     encodeQr: (String) -> QrCode,
     copyAddress: (String) -> Unit,
     l1WalletRepository: L1WalletRepository?,
-    loadChannels: (suspend (WalletId) -> ChannelCollectionV3)?,
-    cleanupInactiveChannels: (suspend (WalletId) -> ChannelCollectionV3)?,
+    loadChannels: (suspend (WalletId) -> ChannelCollectionV4)?,
+    cleanupInactiveChannels: (suspend (WalletId) -> ChannelCollectionV4)?,
     paymentViewModelFactory: ((WalletId) -> PaymentViewModel)?,
     loadPaymentReceipt: (suspend (WalletId, ProtocolKeytag, String) -> io.riverark.ferret.core.model.Receipt?)?,
     invoiceScanner: (@Composable ((String) -> Unit, () -> Unit) -> Unit)?,
@@ -506,7 +506,7 @@ private fun WalletNavigation(
             val profile = (state as? AppState.Ready)?.wallets?.firstOrNull { it.id.value == route.walletId }
             if (profile != null && loadChannels != null) {
                 val scope = rememberCoroutineScope()
-                var collection by remember(profile.id) { mutableStateOf<ChannelCollectionV3?>(null) }
+                var collection by remember(profile.id) { mutableStateOf<ChannelCollectionV4?>(null) }
                 var error by remember(profile.id) { mutableStateOf<String?>(null) }
                 var cleaning by remember(profile.id) { mutableStateOf(false) }
                 var reload by remember(profile.id) { mutableStateOf(0) }

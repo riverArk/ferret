@@ -22,8 +22,8 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
-data class ChannelCollectionV3(
-    val schema: Int = 3,
+data class ChannelCollectionV4(
+    val schema: Int = 4,
     val walletId: WalletId,
     val catalogDigest: String,
     val channels: Map<String, ChannelSnapshot> = emptyMap(),
@@ -31,7 +31,7 @@ data class ChannelCollectionV3(
     val unresolvedLegacy: ByteArray = byteArrayOf(),
 ) {
     init {
-        require(schema == 3)
+        require(schema == 4)
         require(SHA256.matches(catalogDigest))
         require(channels.size <= MAX_CHANNELS)
         require(channels.all { (key, entry) -> key == entry.keytag.value && entry.asset.catalogDigest == catalogDigest })
@@ -67,7 +67,7 @@ class VaultChannelJournal(
     private val catalog: AssetCatalog,
     private val json: Json = Json { ignoreUnknownKeys = false; encodeDefaults = true },
 ) : ChannelJournal {
-    override suspend fun load(walletId: WalletId): ChannelCollectionV3 {
+    override suspend fun load(walletId: WalletId): ChannelCollectionV4 {
         val state = vault.walletState(walletId)
         if (state.operationJournal.isEmpty()) {
             state.channelRecovery.fill(0)
@@ -103,7 +103,7 @@ class VaultChannelJournal(
         }
     }
 
-    override suspend fun persist(walletId: WalletId, collection: ChannelCollectionV3) {
+    override suspend fun persist(walletId: WalletId, collection: ChannelCollectionV4) {
         val normalized = validate(walletId, collection)
         val state = vault.walletState(walletId)
         val envelope = decodeEnvelope(state.operationJournal)
@@ -124,12 +124,12 @@ class VaultChannelJournal(
 
     suspend fun backupSnapshot(walletId: WalletId): ByteArray = encode(load(walletId))
 
-    fun decodeBackup(walletId: WalletId, bytes: ByteArray): ChannelCollectionV3 = decode(walletId, bytes)
+    fun decodeBackup(walletId: WalletId, bytes: ByteArray): ChannelCollectionV4 = decode(walletId, bytes)
 
     fun normalizeBackup(walletId: WalletId, bytes: ByteArray): ByteArray = encode(decode(walletId, bytes))
-    fun encodeBackup(collection: ChannelCollectionV3): ByteArray = encode(collection)
+    fun encodeBackup(collection: ChannelCollectionV4): ByteArray = encode(collection)
 
-    override fun cleanupInactive(collection: ChannelCollectionV3): ChannelCollectionV3 {
+    override fun cleanupInactive(collection: ChannelCollectionV4): ChannelCollectionV4 {
         val current = validate(collection.walletId, collection)
         require(current.unresolvedLegacy.isNotEmpty()) { "No legacy channel cleanup is needed." }
         val (snapshot, payment) = legacySource(current.unresolvedLegacy)
@@ -185,7 +185,7 @@ class VaultChannelJournal(
         return validate(current.walletId, current.copy(channels = retained, unresolvedLegacy = byteArrayOf()))
     }
 
-    suspend fun installBackup(walletId: WalletId, bytes: ByteArray, checkpoint: BackupCheckpointV1): ChannelCollectionV3 {
+    suspend fun installBackup(walletId: WalletId, bytes: ByteArray, checkpoint: BackupCheckpointV1): ChannelCollectionV4 {
         val collection = decode(walletId, bytes)
         val state = vault.walletState(walletId)
         val envelope = decodeEnvelope(state.operationJournal)
@@ -211,18 +211,109 @@ class VaultChannelJournal(
         }
     }
 
-    private fun decode(walletId: WalletId, bytes: ByteArray): ChannelCollectionV3 {
+    private fun decode(walletId: WalletId, bytes: ByteArray): ChannelCollectionV4 {
         require(bytes.size in 1..MAX_JOURNAL_BYTES)
         val root = json.parseToJsonElement(bytes.decodeToString()).jsonObject
         val schema = root["schema"]?.jsonPrimitive?.intOrNull
         return when {
-            schema == 3 || schema == null && ("walletId" in root || "channels" in root) ->
+            schema == 4 || schema == null && ("walletId" in root || "channels" in root) ->
                 validate(walletId, json.decodeFromString(bytes.decodeToString()))
+            schema == 3 -> validate(
+                walletId,
+                json.decodeFromJsonElement(ChannelCollectionV4.serializer(), convertCollectionV3(root)),
+            )
             schema == 2 || schema == null && "channel" in root ->
                 migrateRecovery(walletId, json.decodeFromString(bytes.decodeToString()), bytes)
             schema == null && "state" in root -> migrateSnapshot(walletId, root, null, bytes)
             else -> error("unsupported channel backup schema")
         }
+    }
+    private fun convertCollectionV3(root: JsonObject): JsonObject {
+        require(root["schema"]?.jsonPrimitive?.intOrNull == 3)
+        val walletId = json.decodeFromJsonElement(WalletId.serializer(), root.getValue("walletId"))
+        require(walletId.value.isNotBlank())
+        require(root.getValue("catalogDigest").jsonPrimitive.content == catalog.digest)
+        val channels = root.getValue("channels").jsonObject
+        val converted = channels.mapValues { (key, rawEntry) ->
+            val entry = rawEntry.jsonObject
+            val entryAsset = catalog.requireAsset(
+                json.decodeFromJsonElement(ChannelAsset.serializer(), entry.getValue("asset")),
+            )
+            require(key == json.decodeFromJsonElement(ProtocolKeytag.serializer(), entry.getValue("keytag")).value)
+            val pending = entry["pending"]
+            if (pending == null || pending is kotlinx.serialization.json.JsonNull) return@mapValues rawEntry
+            val operation = pending.jsonObject
+            val operationAsset = catalog.requireAsset(
+                json.decodeFromJsonElement(ChannelAsset.serializer(), operation.getValue("asset")),
+            )
+            require(operationAsset == entryAsset)
+            val payload = operation.getValue("payload").jsonObject
+            val intentElement = payload["intent"]
+            if (intentElement == null || intentElement is kotlinx.serialization.json.JsonNull) return@mapValues rawEntry
+            val intent = intentElement.jsonObject
+            val ada = catalog.ada
+            require(entryAsset == ada)
+            val action = operation.getValue("action").jsonObject
+            operation["resultingSpendableBalance"]?.takeUnless { it is kotlinx.serialization.json.JsonNull }?.let {
+                require(json.decodeFromJsonElement(AssetAmount.serializer(), it).asset == ada)
+            }
+
+            fun constants(value: JsonElement): JsonObject {
+                val datum = value.jsonObject
+                val constants = datum.getValue("constants").jsonObject
+                require("asset" !in constants)
+                return JsonObject(datum.toMutableMap().apply {
+                    put("constants", JsonObject(constants.toMutableMap().apply {
+                        put("asset", json.encodeToJsonElement(ChannelAsset.serializer(), ada))
+                    }))
+                })
+            }
+
+            val convertedIntent = when {
+                "validatorAddress" in intent -> {
+                    val actionAmount = json.decodeFromJsonElement(
+                        AssetAmount.serializer(),
+                        action.getValue("amount"),
+                    )
+                    require(actionAmount.asset == ada)
+                    val units = when (val oldAmount = intent.getValue("amount")) {
+                        is JsonObject -> {
+                            require(oldAmount.keys == setOf("value"))
+                            oldAmount.getValue("value").jsonPrimitive.content.toLong()
+                        }
+                        else -> error("invalid schema-3 open amount")
+                    }
+                    require(units == actionAmount.baseUnits)
+                    JsonObject(intent.toMutableMap().apply {
+                        put("amount", json.encodeToJsonElement(AssetAmount.serializer(), actionAmount))
+                        put("datum", constants(intent.getValue("datum")))
+                    })
+                }
+                "currentDatum" in intent -> {
+                    action["amount"]?.let {
+                        require(json.decodeFromJsonElement(AssetAmount.serializer(), it).asset == ada)
+                    }
+                    JsonObject(intent.toMutableMap().apply {
+                        put("currentDatum", constants(intent.getValue("currentDatum")))
+                        intent["resultingDatum"]?.takeUnless { it is kotlinx.serialization.json.JsonNull }?.let {
+                            put("resultingDatum", constants(it))
+                        }
+                    })
+                }
+                else -> error("unsupported schema-3 channel intent")
+            }
+            JsonObject(entry.toMutableMap().apply {
+                put("pending", JsonObject(operation.toMutableMap().apply {
+                    put("payload", JsonObject(payload.toMutableMap().apply {
+                        put("intent", convertedIntent)
+                    }))
+                }))
+            })
+        }
+        return JsonObject(root.toMutableMap().apply {
+            put("schema", JsonPrimitive(4))
+            put("channels", JsonObject(converted))
+        })
     }
 
     private fun decodeEnvelope(bytes: ByteArray): WalletOperationJournalV2 {
@@ -245,7 +336,7 @@ class VaultChannelJournal(
         walletId: WalletId,
         old: WalletOperationJournalV1,
         source: ByteArray,
-    ): ChannelCollectionV3 = try {
+    ): ChannelCollectionV4 = try {
         if (old.channel.isEmpty()) {
             if (legacyPaymentEmpty(old.payment)) empty(walletId) else empty(walletId).copy(unresolvedLegacy = source.copyOf())
         } else {
@@ -258,7 +349,7 @@ class VaultChannelJournal(
         old.payment.fill(0)
     }
 
-    private fun migrateRecovery(walletId: WalletId, old: LegacyChannelRecoveryV2, source: ByteArray): ChannelCollectionV3 {
+    private fun migrateRecovery(walletId: WalletId, old: LegacyChannelRecoveryV2, source: ByteArray): ChannelCollectionV4 {
         require(old.schema == 2)
         return migrateSnapshot(walletId, old.channel.jsonObject, old.payment, source)
     }
@@ -311,7 +402,7 @@ class VaultChannelJournal(
         snapshot: JsonObject,
         payment: JsonElement?,
         source: ByteArray,
-    ): ChannelCollectionV3 {
+    ): ChannelCollectionV4 {
         if (isEmptyLegacy(snapshot, payment)) return empty(walletId)
         val currentEvidence = buildSet {
             snapshot.string("verifiedChannelData")?.takeIf(::validKeytag)?.let(::add)
@@ -355,7 +446,7 @@ class VaultChannelJournal(
             paidHashes = payment?.jsonObject?.arrayStrings("paidHashes")?.toSet().orEmpty(),
             unresolvedLegacy = source.copyOf(),
         )
-        return validate(walletId, ChannelCollectionV3(
+        return validate(walletId, ChannelCollectionV4(
             walletId = walletId,
             catalogDigest = catalog.digest,
             channels = entries,
@@ -432,7 +523,7 @@ class VaultChannelJournal(
             put("asset", json.encodeToJsonElement(ChannelAsset.serializer(), catalog.ada))
         })
 
-    private fun validate(walletId: WalletId, value: ChannelCollectionV3): ChannelCollectionV3 {
+    private fun validate(walletId: WalletId, value: ChannelCollectionV4): ChannelCollectionV4 {
         require(value.walletId == walletId && value.catalogDigest == catalog.digest)
         val ids = mutableMapOf<String, Pair<ProtocolKeytag, String>>()
         fun record(operationId: String, keytag: ProtocolKeytag, intentHash: String) {
@@ -489,15 +580,29 @@ class VaultChannelJournal(
             require(it.quote.keytag == entry.keytag && it.quote.amount.asset == entry.asset)
             require(it.invoiceHash == it.quote.invoiceHash)
         }
+        (operation.payload as? ChannelPayload.Transaction)?.intent?.let { intent ->
+            if (intent is io.riverark.ferret.core.cardano.CardanoIntent.OpenChannel) {
+                val action = operation.action as? ChannelAction.Open ?: error("invalid open transaction")
+                require(intent.amount == action.amount)
+                require(intent.amount.asset == operation.asset && operation.asset == entry.asset)
+                require(intent.datum.constants.asset == entry.asset)
+                require(operation.keytag == ProtocolKeytag.from(
+                    intent.datum.constants.addVerificationKeyHex,
+                    ProtocolTag(intent.datum.constants.tagHex),
+                    32,
+                ))
+                require(operation.resultingSpendableBalance?.asset == entry.asset)
+            }
+        }
     }
 
-    private fun encode(value: ChannelCollectionV3): ByteArray {
+    private fun encode(value: ChannelCollectionV4): ByteArray {
         val bytes = json.encodeToString(validate(value.walletId, value)).encodeToByteArray()
         require(bytes.size <= MAX_JOURNAL_BYTES) { "Channel history storage is full." }
         return bytes
     }
 
-    private fun empty(walletId: WalletId) = ChannelCollectionV3(walletId = walletId, catalogDigest = catalog.digest)
+    private fun empty(walletId: WalletId) = ChannelCollectionV4(walletId = walletId, catalogDigest = catalog.digest)
     private fun validKeytag(value: String) = runCatching { ProtocolKeytag(value) }.isSuccess
     private fun isEmptyLegacy(snapshot: JsonObject, payment: JsonElement?): Boolean {
         val state = snapshot.obj("state")
@@ -535,10 +640,10 @@ class DriveChannelBackupProtocol(
         return try { requireWriter(walletId, checkpoint) } finally { checkpoint.clear() }
     }
 
-    override suspend fun writeAhead(walletId: WalletId, collection: ChannelCollectionV3) = write(walletId, collection)
-    override suspend fun commit(walletId: WalletId, collection: ChannelCollectionV3) = write(walletId, collection)
+    override suspend fun writeAhead(walletId: WalletId, collection: ChannelCollectionV4) = write(walletId, collection)
+    override suspend fun commit(walletId: WalletId, collection: ChannelCollectionV4) = write(walletId, collection)
 
-    private suspend fun write(walletId: WalletId, collection: ChannelCollectionV3) {
+    private suspend fun write(walletId: WalletId, collection: ChannelCollectionV4) {
         val bytes = journal.encodeBackup(collection)
         try { backups.writeNext(walletId, bytes) } finally { bytes.fill(0) }
     }

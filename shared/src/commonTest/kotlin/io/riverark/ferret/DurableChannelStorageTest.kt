@@ -1,13 +1,25 @@
 package io.riverark.ferret
 
-import io.riverark.ferret.core.channel.ChannelCollectionV3
+import io.riverark.ferret.core.cardano.CardanoIntent
+import io.riverark.ferret.core.cardano.ChannelConstants
+import io.riverark.ferret.core.cardano.ChannelDatum
+import io.riverark.ferret.core.cardano.ChannelDatumStage
+import io.riverark.ferret.core.cardano.LedgerUtxo
+import io.riverark.ferret.core.channel.ChannelAction
+import io.riverark.ferret.core.channel.ChannelPayload
+import io.riverark.ferret.core.channel.ChannelCollectionV4
 import io.riverark.ferret.core.channel.ChannelSnapshot
 import io.riverark.ferret.core.channel.ProtocolKeytag
+import io.riverark.ferret.core.channel.PreparedChannelOperation
+import io.riverark.ferret.core.channel.ProtocolTag
 import io.riverark.ferret.core.channel.VaultChannelJournal
 import io.riverark.ferret.core.model.AssetCatalog
 import io.riverark.ferret.core.model.AssetPricing
 import io.riverark.ferret.core.model.CardanoNetwork
 import io.riverark.ferret.core.model.ChannelAsset
+import io.riverark.ferret.core.model.AssetAmount
+import io.riverark.ferret.core.model.Lovelace
+import io.riverark.ferret.core.model.OperationState
 import io.riverark.ferret.core.model.ChannelState
 import io.riverark.ferret.core.model.WalletId
 import io.riverark.ferret.core.model.WalletProfile
@@ -19,6 +31,10 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -31,7 +47,7 @@ class DurableChannelStorageTest {
         val journal = VaultChannelJournal(vault, CATALOG)
         val first = entry("01")
         val second = entry("02")
-        val collection = ChannelCollectionV3(
+        val collection = ChannelCollectionV4(
             walletId = WALLET,
             catalogDigest = DIGEST,
             channels = linkedMapOf(second.keytag.value to second, first.keytag.value to first),
@@ -85,6 +101,85 @@ class DurableChannelStorageTest {
         assertEquals(1_500_000, receipt.amount.baseUnits)
         assertEquals(1_414, receipt.fee.baseUnits)
         assertEquals(ADA, receipt.amount.asset)
+    }
+
+    @Test fun schemaThreePendingOpenMigratesToAdaAssetIntent() {
+        val journal = VaultChannelJournal(FakeVault(), CATALOG)
+        val tag = "01".repeat(32)
+        val verificationKey = "02".repeat(32)
+        val keytag = ProtocolKeytag.from(verificationKey, ProtocolTag(tag), 32)
+        val amount = AssetAmount(ADA, 5_000_000)
+        val datum = ChannelDatum(
+            "03".repeat(28),
+            ChannelConstants(tag, verificationKey, "04".repeat(32), 1_800_000, ADA),
+            ChannelDatumStage.Opened(0),
+        )
+        val intent = CardanoIntent.OpenChannel(
+            "addr1source",
+            "addr1validator",
+            LedgerUtxo("11".repeat(32), 0, "addr1reference", Lovelace(2_000_000)),
+            datum,
+            amount,
+            "00000000-0000-4000-8000-000000000001",
+            10,
+            20,
+        )
+        val pending = PreparedChannelOperation(
+            intent.operationId,
+            "22".repeat(32),
+            keytag,
+            ADA,
+            ChannelAction.Open(amount),
+            preparedAtEpochMillis = 123,
+            payload = ChannelPayload.Transaction(byteArrayOf(1), "33".repeat(32), intent = intent, feeBound = Lovelace(200_000)),
+            resultingSpendableBalance = AssetAmount(ADA, 3_000_000),
+            state = OperationState.PROPOSED,
+        )
+        val current = ChannelCollectionV4(
+            walletId = WALLET,
+            catalogDigest = DIGEST,
+            channels = mapOf(keytag.value to ChannelSnapshot(
+                keytag,
+                ADA,
+                ChannelState.Opening(intent.operationId),
+                pending,
+                spendableBalance = AssetAmount(ADA, 3_000_000),
+            )),
+        )
+        val root = Json.parseToJsonElement(journal.encodeBackup(current).decodeToString()).jsonObject
+        val channels = root.getValue("channels").jsonObject
+        val entry = channels.getValue(keytag.value).jsonObject
+        val operation = entry.getValue("pending").jsonObject
+        val payload = operation.getValue("payload").jsonObject
+        val oldIntent = payload.getValue("intent").jsonObject
+        val oldDatum = oldIntent.getValue("datum").jsonObject
+        val oldConstants = oldDatum.getValue("constants").jsonObject
+        val schemaThreeIntent = JsonObject(oldIntent.toMutableMap().apply {
+            put("amount", JsonObject(mapOf("value" to JsonPrimitive(amount.baseUnits))))
+            put("datum", JsonObject(oldDatum.toMutableMap().apply {
+                put("constants", JsonObject(oldConstants.toMutableMap().apply { remove("asset") }))
+            }))
+        })
+        val schemaThree = JsonObject(root.toMutableMap().apply {
+            put("schema", JsonPrimitive(3))
+            put("channels", JsonObject(channels.toMutableMap().apply {
+                put(keytag.value, JsonObject(entry.toMutableMap().apply {
+                    put("pending", JsonObject(operation.toMutableMap().apply {
+                        put("payload", JsonObject(payload.toMutableMap().apply {
+                            put("intent", schemaThreeIntent)
+                        }))
+                    }))
+                }))
+            }))
+        }).toString().encodeToByteArray()
+
+        val migrated = journal.decodeBackup(WALLET, schemaThree)
+        val migratedIntent = (migrated.channels.getValue(keytag.value).pending?.payload as ChannelPayload.Transaction)
+            .intent as CardanoIntent.OpenChannel
+
+        assertEquals(4, migrated.schema)
+        assertEquals(amount, migratedIntent.amount)
+        assertEquals(ADA, migratedIntent.datum.constants.asset)
     }
 
     @Test fun guardedCleanupRemovesOnlyFailedEmptyAttemptsAndPreservesOpenChannel() {

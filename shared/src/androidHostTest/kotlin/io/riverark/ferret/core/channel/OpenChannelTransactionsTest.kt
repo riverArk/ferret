@@ -9,6 +9,7 @@ import com.bloxbean.cardano.client.common.model.Networks
 import com.bloxbean.cardano.client.crypto.bip39.MnemonicCode
 import com.bloxbean.cardano.client.util.HexUtil
 import io.riverark.ferret.core.cardano.AndroidCardanoTransactionEngine
+import io.riverark.ferret.core.cardano.CardanoIntent
 import io.riverark.ferret.core.cardano.ChannelConstants
 import io.riverark.ferret.core.cardano.ChannelDatum
 import io.riverark.ferret.core.cardano.ChannelDatumStage
@@ -74,7 +75,7 @@ class OpenChannelTransactionsTest {
         @Suppress("UNCHECKED_CAST")
         override fun evaluateTx(cbor: ByteArray, inputUtxos: Set<Utxo>): Result<List<EvaluationResult>> =
             Result.success("fixture").withValue(Collections.emptyList<EvaluationResult>()) as Result<List<EvaluationResult>>
-    })
+    }, catalog)
     private val derived = runBlocking { engine.deriveWallet(entropy, CardanoNetwork.MAINNET) }
     private val profile = WalletProfile(
         WalletId("mainnet-${derived.paymentCredentialHex}"),
@@ -130,7 +131,7 @@ class OpenChannelTransactionsTest {
         assertEquals(AssetAmount(ada, 3_000_000), preview.resultingSpendableBalance)
         assertEquals(
             100_000_000L - preview.amount.baseUnits - preview.actualFee.baseUnits,
-            preview.sourceChange.baseUnits,
+            preview.sourceChange?.lovelace?.value,
         )
         assertTrue(preview.ledgerMinAda.baseUnits > 0)
         assertEquals(1, vault.seedRequests)
@@ -141,7 +142,7 @@ class OpenChannelTransactionsTest {
             WalletRepository(),
             object : ChannelJournal {
                 override suspend fun load(walletId: WalletId) = stored
-                override suspend fun persist(walletId: WalletId, collection: ChannelCollectionV3) {
+                override suspend fun persist(walletId: WalletId, collection: ChannelCollectionV4) {
                     stored = collection
                     val pending = collection.channels[preview.operation.keytag.value]?.pending
                     trace += if ((pending?.payload as? ChannelPayload.Transaction)?.signedTransaction?.isNotEmpty() == true) {
@@ -153,7 +154,7 @@ class OpenChannelTransactionsTest {
             },
             object : ChannelBackupProtocol {
                 override suspend fun requireVerifiedWriter(walletId: WalletId) = writer()
-                override suspend fun writeAhead(walletId: WalletId, collection: ChannelCollectionV3) {
+                override suspend fun writeAhead(walletId: WalletId, collection: ChannelCollectionV4) {
                     val pending = requireNotNull(collection.channels[preview.operation.keytag.value]?.pending)
                     trace += if ((pending.payload as ChannelPayload.Transaction).signedTransaction.isEmpty()) {
                         "drive-unsigned"
@@ -161,7 +162,7 @@ class OpenChannelTransactionsTest {
                         "drive-signed"
                     }
                 }
-                override suspend fun commit(walletId: WalletId, collection: ChannelCollectionV3) {
+                override suspend fun commit(walletId: WalletId, collection: ChannelCollectionV4) {
                     trace += "drive-terminal"
                 }
             },
@@ -234,20 +235,25 @@ class OpenChannelTransactionsTest {
         assertEquals(null, saved.pending)
     }
 
-    @Test fun signedProposedRecoveryReplaysExactAuthorizationOnce() = runBlocking {
+    @Test fun nativeSignedRecoveryReplaysExactAuthorizationOnce() = runBlocking {
         val trace = mutableListOf<String>()
         val vault = TestVault(profile, entropy, trace)
-        val transactions = transactions(vault)
+        val usdm = requireNotNull(catalog.asset("usdm"))
+        val nativeLedger = ledger.copy(utxos = listOf(
+            ledger.utxos.first().copy(assets = mapOf(usdm.connectorUnit to 10_000_000)),
+            reference,
+        ))
+        val transactions = transactions(vault, nativeLedger)
         val preview = transactions.preview(
             profile.id,
-            AssetAmount(ada, 5_000_000),
+            AssetAmount(usdm, 1_250_000),
             "00000000-0000-4000-8000-000000000018",
         )
         val signed = transactions.sign(profile.id, preview.operation)
         val signedBytes = (signed.payload as ChannelPayload.Transaction).signedTransaction.copyOf()
         var stored = collection(ChannelSnapshot(
             signed.keytag,
-            ada,
+            usdm,
             ChannelState.Opening(signed.operationId),
             signed,
         ))
@@ -274,6 +280,7 @@ class OpenChannelTransactionsTest {
         assertEquals(1, posts)
         assertEquals(null, stored.channels[signed.keytag.value]?.pending)
         assertContentEquals(signedBytes, signed.payload.signedTransaction)
+        assertEquals(AssetAmount(usdm, 1_250_000), stored.channels.getValue(signed.keytag.value).spendableBalance)
     }
 
     @Test fun differentAdaKeytagCoexistsAndIsNotConsumed() = runBlocking {
@@ -292,7 +299,7 @@ class OpenChannelTransactionsTest {
             Lovelace(5_000_000),
             datumHex = ChannelDatum(
                 MAINNET.validatorHashHex,
-                ChannelConstants("02".repeat(32), walletVerificationKey, MAINNET.adaptorIdentityHex, 1_800_000),
+                ChannelConstants("02".repeat(32), walletVerificationKey, MAINNET.adaptorIdentityHex, 1_800_000, ada),
                 ChannelDatumStage.Opened(0),
             ).plutus().serializeToHex(),
         )
@@ -357,21 +364,29 @@ class OpenChannelTransactionsTest {
         assertEquals(mapOf(duplicate.keytag.value to duplicate), stored.channels)
     }
 
-    @Test fun nativePreviewRejectsBeforeLedgerBuildOrSigning() = runBlocking {
+    @Test fun nativePreviewCarriesAdaAndPreservesOtherAssets() = runBlocking {
         val vault = TestVault(profile, entropy, mutableListOf())
-        var ledgerLoads = 0
-        val transactions = transactions(vault, beforeLedger = { ledgerLoads++ })
+        val usdm = requireNotNull(catalog.asset("usdm"))
+        val usdcx = requireNotNull(catalog.asset("usdcx"))
+        val nativeLedger = ledger.copy(utxos = listOf(
+            ledger.utxos.first().copy(assets = mapOf(
+                usdm.connectorUnit to 10_000_000,
+                usdcx.connectorUnit to 3_000_000,
+            )),
+            reference,
+        ))
+        val preview = transactions(vault, nativeLedger).preview(
+            profile.id,
+            AssetAmount(usdm, 1_250_000),
+            "00000000-0000-4000-8000-000000000018",
+        )
 
-        assertFailsWith<IllegalArgumentException> {
-            transactions.preview(
-                profile.id,
-                AssetAmount(requireNotNull(catalog.asset("usdm")), 5_000_000),
-                "00000000-0000-4000-8000-000000000018",
-            )
-        }
-
-        assertEquals(0, ledgerLoads)
-        assertEquals(0, vault.seedRequests)
+        assertEquals(AssetAmount(usdm, 1_250_000), preview.resultingSpendableBalance)
+        assertEquals(8_750_000L, preview.sourceChange?.assets?.get(usdm.connectorUnit))
+        assertEquals(3_000_000L, preview.sourceChange?.assets?.get(usdcx.connectorUnit))
+        assertTrue(preview.outputAda.baseUnits >= 2_000_000)
+        assertEquals(usdm, (preview.operation.payload as ChannelPayload.Transaction)
+            .let { it.intent as CardanoIntent.OpenChannel }.datum.constants.asset)
     }
 
     @Test fun previewReportsInsufficientConfirmedAda() = runBlocking {
@@ -424,20 +439,20 @@ class OpenChannelTransactionsTest {
 
     private fun recoveryRepository(
         transactions: OpenChannelTransactions,
-        loadCollection: () -> ChannelCollectionV3,
-        saveCollection: (ChannelCollectionV3) -> Unit,
+        loadCollection: () -> ChannelCollectionV4,
+        saveCollection: (ChannelCollectionV4) -> Unit,
         reconcileCall: suspend (WalletId, PreparedChannelOperation, WriterLease) -> ChannelRemoteResult?,
         mutateCall: suspend (WalletId, PreparedChannelOperation, WriterLease) -> ChannelRemoteResult,
     ) = ChannelRepository(
         WalletRepository(),
         object : ChannelJournal {
             override suspend fun load(walletId: WalletId) = loadCollection()
-            override suspend fun persist(walletId: WalletId, collection: ChannelCollectionV3) = saveCollection(collection)
+            override suspend fun persist(walletId: WalletId, collection: ChannelCollectionV4) = saveCollection(collection)
         },
         object : ChannelBackupProtocol {
             override suspend fun requireVerifiedWriter(walletId: WalletId) = writer()
-            override suspend fun writeAhead(walletId: WalletId, collection: ChannelCollectionV3) = Unit
-            override suspend fun commit(walletId: WalletId, collection: ChannelCollectionV3) = Unit
+            override suspend fun writeAhead(walletId: WalletId, collection: ChannelCollectionV4) = Unit
+            override suspend fun commit(walletId: WalletId, collection: ChannelCollectionV4) = Unit
         },
         object : ChannelRemote {
             override suspend fun mutate(walletId: WalletId, operation: PreparedChannelOperation, writer: WriterLease) =
@@ -467,7 +482,7 @@ class OpenChannelTransactionsTest {
         nowEpochMillis = { 123 },
     )
 
-    private fun emptyCollection() = ChannelCollectionV3(walletId = profile.id, catalogDigest = digest)
+    private fun emptyCollection() = ChannelCollectionV4(walletId = profile.id, catalogDigest = digest)
 
     private fun collection(vararg entries: ChannelSnapshot) = emptyCollection().copy(
         channels = entries.associateBy { it.keytag.value },

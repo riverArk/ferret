@@ -1,6 +1,6 @@
 package io.riverark.ferret
 
-import io.riverark.ferret.core.channel.ChannelCollectionV3
+import io.riverark.ferret.core.channel.ChannelCollectionV4
 import io.riverark.ferret.core.channel.ChannelJournal
 import io.riverark.ferret.core.channel.ChannelSnapshot
 import io.riverark.ferret.core.channel.PaymentJournalV2
@@ -38,7 +38,7 @@ class PaymentStoreTest {
             bindingVersion = 2,
         )
         val receipt = Receipt("settled", PAID_HASH, first, AssetAmount(ADA, 20), AssetAmount(ADA, 1), true)
-        val collection = ChannelCollectionV3(
+        val collection = ChannelCollectionV4(
             walletId = WALLET,
             catalogDigest = DIGEST,
             channels = mapOf(
@@ -68,10 +68,10 @@ class PaymentStoreTest {
         assertEquals(0, journal.writes)
     }
 
-    private class FakeJournal(private var collection: ChannelCollectionV3) : ChannelJournal {
+    private class FakeJournal(private var collection: ChannelCollectionV4) : ChannelJournal {
         var writes = 0
         override suspend fun load(walletId: WalletId) = collection
-        override suspend fun persist(walletId: WalletId, collection: ChannelCollectionV3) {
+        override suspend fun persist(walletId: WalletId, collection: ChannelCollectionV4) {
             writes++
             this.collection = collection
         }

@@ -2,11 +2,12 @@ package io.riverark.ferret.feature.wallet
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import io.riverark.ferret.core.channel.ChannelCollectionV3
+import io.riverark.ferret.core.channel.ChannelCollectionV4
 import io.riverark.ferret.core.channel.ChannelPreview
 import io.riverark.ferret.core.cardano.CardanoIntent
 import io.riverark.ferret.core.cardano.UnsignedTransaction
 import io.riverark.ferret.core.cardano.InsufficientFundsException
+import io.riverark.ferret.core.cardano.TransactionOutputSummary
 import io.riverark.ferret.core.model.AssetAmount
 import io.riverark.ferret.core.model.CardanoNetwork
 import io.riverark.ferret.core.model.CreatedWallet
@@ -104,13 +105,17 @@ data class TransferPreview(
     val destination: TransferDestination,
     val amount: AssetAmount,
     val feeBound: AssetAmount,
-    val change: AssetAmount,
+    val change: TransactionOutputSummary?,
+    val recipientAda: AssetAmount,
+    val ledgerMinAda: AssetAmount,
     val intent: CardanoIntent.Transfer? = null,
     val unsigned: UnsignedTransaction? = null,
     val transactionId: String? = null,
 ) {
     init {
-        require(amount.asset == feeBound.asset && amount.asset == change.asset)
+        require(amount.asset.catalogDigest == feeBound.asset.catalogDigest)
+        require(feeBound.asset == recipientAda.asset && feeBound.asset == ledgerMinAda.asset)
+        require(feeBound.asset.policyId == null)
     }
 }
 
@@ -134,7 +139,7 @@ interface L1WalletRepository {
 data class HomeUiState(
     val profile: WalletProfile,
     val balance: WalletBalance? = null,
-    val channels: ChannelCollectionV3? = null,
+    val channels: ChannelCollectionV4? = null,
     val latestActivity: TransactionRecord? = null,
     val loading: Boolean = true,
     val error: String? = null,
@@ -145,7 +150,7 @@ class HomeViewModel(
     private val profile: WalletProfile,
     private val loadBalance: suspend (WalletProfile) -> WalletBalance,
     private val loadHistory: suspend (WalletProfile) -> List<TransactionRecord>,
-    private val loadChannels: suspend (WalletId) -> ChannelCollectionV3,
+    private val loadChannels: suspend (WalletId) -> ChannelCollectionV4,
     private val nowEpochMillis: () -> Long = { 0 },
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(HomeUiState(profile))
@@ -334,7 +339,7 @@ class OpenChannelViewModel(
                 throw cancelled
             } catch (_: InsufficientFundsException) {
                 mutableState.value = OpenChannelUiState(
-                    error = "Insufficient confirmed ADA for the channel deposit and transaction fee.",
+                    error = "Insufficient selected asset or ADA for the channel output and transaction fee.",
                 )
             } catch (_: Exception) {
                 mutableState.value = OpenChannelUiState(

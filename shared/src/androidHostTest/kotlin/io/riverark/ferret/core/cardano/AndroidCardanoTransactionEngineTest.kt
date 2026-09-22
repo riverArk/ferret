@@ -78,9 +78,9 @@ class AndroidCardanoTransactionEngineTest {
     private val assetCatalog = AssetCatalog(
         listOf(
             ChannelAsset("ada", null, null, 6, AssetPricing.ADA, "a".repeat(64)),
-            ChannelAsset("usda", "1".repeat(56), "", 6, AssetPricing.USD_PEG, "a".repeat(64)),
-            ChannelAsset("usdcx", "2".repeat(56), "", 6, AssetPricing.USD_PEG, "a".repeat(64)),
-            ChannelAsset("usdm", "3".repeat(56), "", 6, AssetPricing.USD_PEG, "a".repeat(64)),
+            ChannelAsset("usda", "fe7c786ab321f41c654ef6c1af7b3250a613c24e4213e0425a7ae456", "55534441", 6, AssetPricing.USD_PEG, "a".repeat(64)),
+            ChannelAsset("usdcx", "1f3aec8bfe7ea4fe14c5f121e2a92e301afe414147860d557cac7e34", "5553444378", 6, AssetPricing.USD_PEG, "a".repeat(64)),
+            ChannelAsset("usdm", "c48cbb3d5e57ed56e276bc45f99ab39abe94e6cd7ac39fb402da47ad", "0014df105553444d", 6, AssetPricing.USD_PEG, "a".repeat(64)),
         ),
         "a".repeat(64),
         emptyMap(),
@@ -112,7 +112,7 @@ class AndroidCardanoTransactionEngineTest {
 
     private fun channelDatum(stage: ChannelDatumStage, addVerificationKeyHex: String = "02".repeat(32)) = ChannelDatum(
         fixture("validator_hash"),
-        ChannelConstants("01".repeat(32), addVerificationKeyHex, "03".repeat(32), 1_800_000),
+        ChannelConstants("01".repeat(32), addVerificationKeyHex, "03".repeat(32), 1_800_000, assetCatalog.ada),
         stage,
     )
 
@@ -220,7 +220,7 @@ class AndroidCardanoTransactionEngineTest {
             requests += cbor.copyOf()
             @Suppress("UNCHECKED_CAST")
             (Result.success("fixture").withValue(exactEvaluation(cbor)) as Result<List<EvaluationResult>>)
-        })
+        }, assetCatalog)
         val entropy = ByteArray(32) { it.toByte() }
         val source = engine.deriveWallet(entropy, CardanoNetwork.MAINNET)
         val current = channelDatum(ChannelDatumStage.Opened(0), walletAddKey(entropy))
@@ -266,13 +266,13 @@ class AndroidCardanoTransactionEngineTest {
                     val memory = if (changingCalls == requests.size) BigInteger.valueOf(10_001) else BigInteger.valueOf(10_000)
                     @Suppress("UNCHECKED_CAST")
                     (Result.success("fixture").withValue(exactEvaluation(cbor, memory)) as Result<List<EvaluationResult>>)
-                }).build(intent, ledger)
+                }, assetCatalog).build(intent, ledger)
             }.message,
         )
 
         suspend fun reject(response: (ByteArray) -> Result<List<EvaluationResult>>) {
             assertFailsWith<IllegalArgumentException> {
-                AndroidCardanoTransactionEngine(processor(response)).build(intent, ledger)
+                AndroidCardanoTransactionEngine(processor(response), assetCatalog).build(intent, ledger)
             }
         }
         fun success(values: List<EvaluationResult>): Result<List<EvaluationResult>> {
@@ -312,9 +312,9 @@ class AndroidCardanoTransactionEngineTest {
         val engine = AndroidCardanoTransactionEngine(processor { cbor ->
             @Suppress("UNCHECKED_CAST")
             (Result.success("fixture").withValue(exactEvaluation(cbor)) as Result<List<EvaluationResult>>)
-        })
+        }, assetCatalog)
         val source = engine.deriveWallet(entropy, CardanoNetwork.MAINNET)
-        val constants = ChannelConstants("01".repeat(32), walletAddKey(entropy), "03".repeat(32), 1_800_000)
+        val constants = ChannelConstants("01".repeat(32), walletAddKey(entropy), "03".repeat(32), 1_800_000, assetCatalog.ada)
         fun datum(stage: ChannelDatumStage) = ChannelDatum(fixture("validator_hash"), constants, stage)
         val reference = fixtureReference()
         fun channelInput(stage: ChannelDatumStage, lovelace: Long = 5_000_000) = LedgerUtxo(
@@ -420,7 +420,7 @@ class AndroidCardanoTransactionEngineTest {
         val engine = AndroidCardanoTransactionEngine(processor { cbor ->
             @Suppress("UNCHECKED_CAST")
             (Result.success("fixture").withValue(exactEvaluation(cbor)) as Result<List<EvaluationResult>>)
-        })
+        }, assetCatalog)
         try {
             val source = engine.deriveWallet(entropy, CardanoNetwork.MAINNET)
             val datum = channelDatum(ChannelDatumStage.Opened(0), walletAddKey(entropy))
@@ -518,7 +518,7 @@ class AndroidCardanoTransactionEngineTest {
                 error("evaluation must not run")
             }
         }
-        val engine = AndroidCardanoTransactionEngine(countingProcessor)
+        val engine = AndroidCardanoTransactionEngine(countingProcessor, assetCatalog)
         val source = engine.deriveWallet(ByteArray(32) { it.toByte() }, CardanoNetwork.MAINNET)
         val current = channelDatum(ChannelDatumStage.Opened(0))
         val reference = fixtureReference()
@@ -563,7 +563,7 @@ class AndroidCardanoTransactionEngineTest {
                 evaluations++
                 error("evaluation must not run")
             }
-        })
+        }, assetCatalog)
         val source = engine.deriveWallet(ByteArray(32) { it.toByte() }, CardanoNetwork.MAINNET)
         val reference = fixtureReference()
         val opened = channelDatum(ChannelDatumStage.Opened(0))
@@ -575,16 +575,9 @@ class AndroidCardanoTransactionEngineTest {
             Lovelace(5_000_000),
             datumHex = datum.plutus().serializeToHex(),
         )
-        val open = CardanoIntent.OpenChannel(
-            source.paymentAddress,
-            MAINNET.validatorAddress,
-            reference,
-            opened,
-            Lovelace(5_000_000),
-            "00000000-0000-4000-8000-000000000020",
-            100,
-            200,
-        )
+        val open = CardanoIntent.OpenChannel(source.paymentAddress, MAINNET.validatorAddress, reference, opened, AssetAmount(assetCatalog.ada, 5_000_000), "00000000-0000-4000-8000-000000000020",
+        100,
+        200,)
         val add = CardanoIntent.AddChannelFunds(
             source.paymentAddress,
             channelInput("22".repeat(32), opened),
@@ -660,23 +653,16 @@ class AndroidCardanoTransactionEngineTest {
     }
 
     @Test fun openChannelBuildAndSignPreservePinnedKonduitSemantics() = runBlocking {
-        val engine = AndroidCardanoTransactionEngine(processor)
+        val engine = AndroidCardanoTransactionEngine(processor, assetCatalog)
         val entropy = ByteArray(32) { it.toByte() }
         try {
             assertEquals(PINNED_KONDUIT_COMMIT, fixture("source_commit"))
             val source = engine.deriveWallet(entropy, CardanoNetwork.MAINNET)
             val reference = fixtureReference()
             val datum = channelDatum(ChannelDatumStage.Opened(0), walletAddKey(entropy))
-            val intent = CardanoIntent.OpenChannel(
-                source.paymentAddress,
-                MAINNET.validatorAddress,
-                reference,
-                datum,
-                Lovelace(5_000_000),
-                "00000000-0000-4000-8000-000000000018",
-                4_492_800,
-                4_492_900,
-            )
+            val intent = CardanoIntent.OpenChannel(source.paymentAddress, MAINNET.validatorAddress, reference, datum, AssetAmount(assetCatalog.ada, 5_000_000), "00000000-0000-4000-8000-000000000018",
+            4_492_800,
+            4_492_900,)
             val ledger = LedgerSnapshot(
                 CardanoNetwork.MAINNET,
                 listOf(
@@ -728,7 +714,7 @@ class AndroidCardanoTransactionEngineTest {
     }
 
     @Test fun derivesStableNetworkCorrectCip1852Identity() = runBlocking {
-        val engine = AndroidCardanoTransactionEngine(processor)
+        val engine = AndroidCardanoTransactionEngine(processor, assetCatalog)
         val entropy = ByteArray(32) { it.toByte() }
         val first = engine.deriveWallet(entropy, CardanoNetwork.PREPROD)
         val second = engine.deriveWallet(entropy, CardanoNetwork.PREPROD)
@@ -757,17 +743,12 @@ class AndroidCardanoTransactionEngineTest {
     }
 
     @Test fun transferBuildPreservesConfirmedSemantics() = runBlocking {
-        val engine = AndroidCardanoTransactionEngine(processor)
+        val engine = AndroidCardanoTransactionEngine(processor, assetCatalog)
         val source = engine.deriveWallet(ByteArray(32) { it.toByte() }, CardanoNetwork.PREPROD)
         val destination = engine.deriveWallet(ByteArray(32) { (it + 1).toByte() }, CardanoNetwork.PREPROD)
-        val intent = CardanoIntent.Transfer(
-            source.paymentAddress,
-            destination.paymentAddress,
-            Lovelace(5_000_000),
-            "00000000-0000-0000-0000-000000000001",
-            100,
-            200,
-        )
+        val intent = CardanoIntent.Transfer(source.paymentAddress, destination.paymentAddress, AssetAmount(assetCatalog.ada, 5_000_000), "00000000-0000-0000-0000-000000000001",
+        100,
+        200,)
         val ledger = LedgerSnapshot(
             CardanoNetwork.PREPROD,
             listOf(LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000))),
@@ -778,26 +759,163 @@ class AndroidCardanoTransactionEngineTest {
         val unsigned = engine.build(intent, ledger)
         engine.inspect(unsigned.cbor).requireMatches(intent, CardanoNetwork.PREPROD, unsigned.feeBound)
     }
+    @Test fun nativeTransferAndOpenPreserveEveryInputUnit() = runBlocking {
+        val engine = AndroidCardanoTransactionEngine(processor, assetCatalog)
+        val entropy = ByteArray(32) { it.toByte() }
+        try {
+            val source = engine.deriveWallet(entropy, CardanoNetwork.MAINNET)
+            val destination = engine.deriveWallet(ByteArray(32) { (it + 1).toByte() }, CardanoNetwork.MAINNET)
+            val usdm = requireNotNull(assetCatalog.asset("usdm"))
+            val usdcx = requireNotNull(assetCatalog.asset("usdcx"))
+            val unknown = "4".repeat(56)
+            val fuel = LedgerUtxo(
+                "00".repeat(32),
+                0,
+                source.paymentAddress,
+                Lovelace(20_000_000),
+                mapOf(usdm.connectorUnit to 10_000_000, usdcx.connectorUnit to 3_000_000, unknown to 1),
+            )
+            val transfer = CardanoIntent.Transfer(
+                source.paymentAddress,
+                destination.paymentAddress,
+                AssetAmount(usdm, 1_250_000),
+                "00000000-0000-4000-8000-000000000030",
+                4_492_800,
+                4_492_900,
+            )
+            val transferLedger = LedgerSnapshot(
+                CardanoNetwork.MAINNET,
+                listOf(fuel),
+                channelProtocolParameters,
+                4_492_800,
+            )
+            val unsignedTransfer = engine.build(transfer, transferLedger)
+            val transferSummary = engine.inspect(unsignedTransfer.cbor)
+            val recipient = transferSummary.outputs.single { it.address == destination.paymentAddress }
+            val change = transferSummary.outputs.single { it.address == source.paymentAddress }
+            assertEquals(mapOf(usdm.connectorUnit to 1_250_000L), recipient.assets)
+            assertEquals(engine.minimumAdaForOutput(unsignedTransfer.cbor, channelProtocolParameters, transferSummary.outputs.indexOf(recipient)), recipient.lovelace)
+            assertEquals(
+                mapOf(usdm.connectorUnit to 8_750_000L, usdcx.connectorUnit to 3_000_000L, unknown to 1L),
+                change.assets,
+            )
+            assertEquals(
+                20_000_000 - recipient.lovelace.value - transferSummary.fee.value,
+                change.lovelace.value,
+            )
+            val signedTransfer = engine.sign(unsignedTransfer, entropy, transfer, transferLedger)
+            assertEquals(engine.transactionId(unsignedTransfer.cbor), engine.transactionId(signedTransfer.cbor))
+            assertEquals(
+                transferSummary,
+                engine.inspect(signedTransfer.cbor).copy(keyWitnesses = emptyList()),
+            )
 
-    @Test fun transferRejectsEveryProtectedOnlyFundingForm() = runBlocking<Unit> {
-        val engine = AndroidCardanoTransactionEngine(processor)
+            listOf(usdm to 10_000_000L, usdcx to 3_000_000L).forEachIndexed { index, (selected, total) ->
+                val datum = channelDatum(ChannelDatumStage.Opened(0), walletAddKey(entropy)).let {
+                    it.copy(constants = it.constants.copy(asset = selected))
+                }
+                val open = CardanoIntent.OpenChannel(
+                    source.paymentAddress,
+                    MAINNET.validatorAddress,
+                    fixtureReference(),
+                    datum,
+                    AssetAmount(selected, 1_250_000),
+                    "00000000-0000-4000-8000-00000000003${index + 1}",
+                    4_492_800,
+                    4_492_900,
+                )
+                val existingChannel = LedgerUtxo(
+                    "55".repeat(32),
+                    0,
+                    MAINNET.validatorAddress,
+                    Lovelace(5_000_000),
+                    datumHex = channelDatum(ChannelDatumStage.Opened(0)).plutus().serializeToHex(),
+                )
+                val ledger = LedgerSnapshot(
+                    CardanoNetwork.MAINNET,
+                    listOf(fuel, fixtureReference(), existingChannel),
+                    channelProtocolParameters,
+                    4_492_800,
+                )
+                val unsigned = engine.build(open, ledger)
+                val summary = engine.inspect(unsigned.cbor)
+                assertTrue(summary.inputs.none { it.transactionId == existingChannel.transactionId })
+                val output = summary.outputs.single { it.address == MAINNET.validatorAddress }
+                assertEquals(mapOf(selected.connectorUnit to 1_250_000L), output.assets)
+                assertEquals(datum, engine.decodeChannelDatum((output.datum as TransactionDatum.Inline).cborHex))
+                assertTrue(output.lovelace.value >= KONDUIT_MIN_ADA_BUFFER)
+                assertEquals(total - 1_250_000, summary.outputs.single { it.address == source.paymentAddress }.assets.getValue(selected.connectorUnit))
+            }
+        } finally {
+            entropy.fill(0)
+        }
+    }
+
+    @Test fun nativeTransferUsesSeparateAdaFuelAndTokenUtxo() = runBlocking {
+        val engine = AndroidCardanoTransactionEngine(processor, assetCatalog)
         val source = engine.deriveWallet(ByteArray(32) { it.toByte() }, CardanoNetwork.MAINNET)
         val destination = engine.deriveWallet(ByteArray(32) { (it + 1).toByte() }, CardanoNetwork.MAINNET)
+        val usdm = requireNotNull(assetCatalog.asset("usdm"))
+        val usdcx = requireNotNull(assetCatalog.asset("usdcx"))
         val intent = CardanoIntent.Transfer(
             source.paymentAddress,
             destination.paymentAddress,
-            Lovelace(5_000_000),
-            "00000000-0000-4000-8000-000000000002",
-            100,
-            200,
+            AssetAmount(usdm, 100_000),
+            "00000000-0000-4000-8000-000000000035",
+            4_492_800,
+            4_492_900,
         )
+        val ledger = LedgerSnapshot(
+            CardanoNetwork.MAINNET,
+            listOf(
+                LedgerUtxo(
+                    "00".repeat(32),
+                    0,
+                    source.paymentAddress,
+                    Lovelace(1_172_320),
+                    mapOf(usdm.connectorUnit to 1_100_000),
+                ),
+                LedgerUtxo(
+                    "01".repeat(32),
+                    0,
+                    source.paymentAddress,
+                    Lovelace(1_159_390),
+                    mapOf(usdcx.connectorUnit to 1_100_000),
+                ),
+                LedgerUtxo("11".repeat(32), 1, source.paymentAddress, Lovelace(2_314_808)),
+            ),
+            channelProtocolParameters,
+            4_492_800,
+        )
+
+        val unsigned = engine.build(intent, ledger)
+        val summary = engine.inspect(unsigned.cbor)
+        val recipient = summary.outputs.single { it.address == destination.paymentAddress }
+        val change = summary.outputs.single { it.address == source.paymentAddress }
+
+        assertEquals(mapOf(usdm.connectorUnit to 100_000L), recipient.assets)
+        assertEquals(
+            mapOf(usdcx.connectorUnit to 1_100_000L, usdm.connectorUnit to 1_000_000L),
+            summary.outputs.single { it.address == source.paymentAddress }.assets,
+        )
+        assertEquals(4_646_518, summary.outputs.sumOf { it.lovelace.value } + summary.fee.value)
+    }
+
+
+    @Test fun transferRejectsEveryProtectedOnlyFundingForm() = runBlocking<Unit> {
+        val engine = AndroidCardanoTransactionEngine(processor, assetCatalog)
+        val source = engine.deriveWallet(ByteArray(32) { it.toByte() }, CardanoNetwork.MAINNET)
+        val destination = engine.deriveWallet(ByteArray(32) { (it + 1).toByte() }, CardanoNetwork.MAINNET)
+        val intent = CardanoIntent.Transfer(source.paymentAddress, destination.paymentAddress, AssetAmount(assetCatalog.ada, 5_000_000), "00000000-0000-4000-8000-000000000002",
+        100,
+        200,)
         val protected = listOf(
             Json.decodeFromString<ConnectorUtxoDto>(
                 """{"transaction_id":"${"22".repeat(32)}","output_index":0,"address":"${source.paymentAddress}","value":[{"unit":"lovelace","quantity":"100000000"}],"datum_hash":"${"33".repeat(32)}"}""",
             ).ledger(),
             LedgerUtxo("33".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000), datumHex = "d87980"),
             LedgerUtxo("44".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000), scriptRefHashHex = "55".repeat(28)),
-            LedgerUtxo("55".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000), mapOf("66".repeat(28) to 0)),
+            LedgerUtxo("55".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000), mapOf("66".repeat(28) to 1)),
         )
 
         protected.forEach { utxo ->
@@ -812,7 +930,7 @@ class AndroidCardanoTransactionEngineTest {
     }
 
     @Test fun automaticWalletIntentsSpendOnlyEligibleInputs() = runBlocking {
-        val engine = AndroidCardanoTransactionEngine(processor)
+        val engine = AndroidCardanoTransactionEngine(processor, assetCatalog)
         val source = engine.deriveWallet(ByteArray(32) { it.toByte() }, CardanoNetwork.MAINNET)
         val destination = engine.deriveWallet(ByteArray(32) { (it + 1).toByte() }, CardanoNetwork.MAINNET)
         val eligible = LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000))
@@ -823,14 +941,14 @@ class AndroidCardanoTransactionEngineTest {
                 LedgerUtxo("11".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000), datumHashHex = "aa".repeat(32)),
                 LedgerUtxo("22".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000), datumHex = "d87980"),
                 LedgerUtxo("33".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000), scriptRefHashHex = "bb".repeat(28)),
-                LedgerUtxo("44".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000), mapOf("cc".repeat(28) to 0)),
+                LedgerUtxo("44".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000), mapOf("cc".repeat(28) to 1)),
                 LedgerUtxo("55".repeat(32), 0, destination.paymentAddress, Lovelace(100_000_000)),
             ),
             PROTOCOL_PARAMETERS,
             100,
         )
         val intents = listOf<CardanoIntent>(
-            CardanoIntent.Transfer(source.paymentAddress, destination.paymentAddress, Lovelace(5_000_000), "00000000-0000-4000-8000-000000000003", 100, 200),
+            CardanoIntent.Transfer(source.paymentAddress, destination.paymentAddress, AssetAmount(assetCatalog.ada, 5_000_000), "00000000-0000-4000-8000-000000000003", 100, 200),
             CardanoIntent.SweepWallet(source.paymentAddress, destination.paymentAddress, Lovelace(5_000_000), "00000000-0000-4000-8000-000000000004", 100, 200),
         )
 
@@ -846,14 +964,11 @@ class AndroidCardanoTransactionEngineTest {
     }
 
     @Test fun signingPreservesOriginalBodyHashAndBodyMutationsAreDetected() = runBlocking<Unit> {
-        val engine = AndroidCardanoTransactionEngine(processor)
+        val engine = AndroidCardanoTransactionEngine(processor, assetCatalog)
         val entropy = ByteArray(32) { it.toByte() }
         val source = engine.deriveWallet(entropy, CardanoNetwork.MAINNET)
         val destination = engine.deriveWallet(ByteArray(32) { (it + 1).toByte() }, CardanoNetwork.MAINNET)
-        val intent = CardanoIntent.Transfer(
-            source.paymentAddress, destination.paymentAddress, Lovelace(5_000_000),
-            "00000000-0000-4000-8000-000000000001", 100, 200,
-        )
+        val intent = CardanoIntent.Transfer(source.paymentAddress, destination.paymentAddress, AssetAmount(assetCatalog.ada, 5_000_000), "00000000-0000-4000-8000-000000000001", 100, 200,)
         val eligible = LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000))
         val protected = LedgerUtxo("11".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000), datumHashHex = "aa".repeat(32))
         val ledger = LedgerSnapshot(
@@ -911,7 +1026,7 @@ class AndroidCardanoTransactionEngineTest {
         }
     }
     @Test fun l1AuthorizationEnvelopeComesFromRawBytes() = runBlocking<Unit> {
-        val engine = AndroidCardanoTransactionEngine(processor)
+        val engine = AndroidCardanoTransactionEngine(processor, assetCatalog)
         val entropy = ByteArray(32) { it.toByte() }
         val otherEntropy = ByteArray(32) { (it + 2).toByte() }
         val destinationEntropy = ByteArray(32) { (it + 1).toByte() }
@@ -926,10 +1041,7 @@ class AndroidCardanoTransactionEngineTest {
                 100,
             )
             listOf<CardanoIntent>(
-                CardanoIntent.Transfer(
-                    source.paymentAddress, destination.paymentAddress, Lovelace(5_000_000),
-                    "00000000-0000-4000-8000-000000000005", 100, 200,
-                ),
+                CardanoIntent.Transfer(source.paymentAddress, destination.paymentAddress, AssetAmount(assetCatalog.ada, 5_000_000), "00000000-0000-4000-8000-000000000005", 100, 200,),
                 CardanoIntent.SweepWallet(
                     source.paymentAddress, destination.paymentAddress, Lovelace(5_000_000),
                     "00000000-0000-4000-8000-000000000006", 100, 200,
@@ -1038,7 +1150,7 @@ class AndroidCardanoTransactionEngineTest {
     }
 
     @Test fun enforcesPinnedKonduitOutputMinimumsWithoutNormalization() {
-        val engine = AndroidCardanoTransactionEngine(processor)
+        val engine = AndroidCardanoTransactionEngine(processor, assetCatalog)
         // a68cfedd4a0188ef9adad970e89c12b2b805b678:packages/cardano/sdk/src/cardano/output.rs
         val vectors = listOf(
             OutputMinimumVector(ENTERPRISE_ADDRESS, true, 39, 857_690),
@@ -1084,7 +1196,7 @@ class AndroidCardanoTransactionEngineTest {
     }
 
     @Test fun observesExactOutputMinimumAndStrictChannelDatums() {
-        val engine = AndroidCardanoTransactionEngine(processor)
+        val engine = AndroidCardanoTransactionEngine(processor, assetCatalog)
         val first = output(ENTERPRISE_ADDRESS, 1_000_000, false)
         val second = output(BASE_ADDRESS, 2_000_000, true)
         val cbor = transaction(listOf(first, second))
@@ -1110,7 +1222,7 @@ class AndroidCardanoTransactionEngineTest {
     }
 
     @Test fun rejectsInvalidProtocolOutputCostsAndOverflow() {
-        val engine = AndroidCardanoTransactionEngine(processor)
+        val engine = AndroidCardanoTransactionEngine(processor, assetCatalog)
         val valid = transaction(listOf(output(ENTERPRISE_ADDRESS, 1_000_000, false)))
         listOf(
             "{}",
@@ -1136,7 +1248,7 @@ class AndroidCardanoTransactionEngineTest {
     }
 
     @Test fun checksEveryOutputCollateralDatumAndOriginalEncoding() {
-        val engine = AndroidCardanoTransactionEngine(processor)
+        val engine = AndroidCardanoTransactionEngine(processor, assetCatalog)
         val recipient = output(ENTERPRISE_ADDRESS, 857_690, true)
         val change = output(BASE_ADDRESS, 978_370, true)
         val complete = transaction(listOf(recipient, change), recipient)
@@ -1200,7 +1312,7 @@ class AndroidCardanoTransactionEngineTest {
     }
 
     @Test fun localMainnetTransferAndSweepPassAtCurrentAndDoubledCost() = runBlocking {
-        val engine = AndroidCardanoTransactionEngine(processor)
+        val engine = AndroidCardanoTransactionEngine(processor, assetCatalog)
         val sourceEntropy = ByteArray(32) { it.toByte() }
         val destinationEntropy = ByteArray(32) { (it + 1).toByte() }
         try {
@@ -1214,10 +1326,7 @@ class AndroidCardanoTransactionEngineTest {
                     100,
                 )
                 listOf<CardanoIntent>(
-                    CardanoIntent.Transfer(
-                        source.paymentAddress, destination.paymentAddress, Lovelace(5_000_000),
-                        "00000000-0000-4000-8000-000000000015", 100, 200,
-                    ),
+                    CardanoIntent.Transfer(source.paymentAddress, destination.paymentAddress, AssetAmount(assetCatalog.ada, 5_000_000), "00000000-0000-4000-8000-000000000015", 100, 200,),
                     CardanoIntent.SweepWallet(
                         source.paymentAddress, destination.paymentAddress, Lovelace(5_000_000),
                         "00000000-0000-4000-8000-000000000016", 100, 200,
@@ -1254,7 +1363,7 @@ class AndroidCardanoTransactionEngineTest {
     }
 
     @Test fun lowBalanceSweepConvergesToOneOutput() = runBlocking {
-        val engine = AndroidCardanoTransactionEngine(processor)
+        val engine = AndroidCardanoTransactionEngine(processor, assetCatalog)
         val sourceEntropy = ByteArray(32) { it.toByte() }
         val destinationEntropy = ByteArray(32) { (it + 1).toByte() }
         try {
@@ -1306,7 +1415,7 @@ class AndroidCardanoTransactionEngineTest {
     }
 
     @Test fun repositoryRejectsTransferAndSweepParameterDriftBeforeSideEffects() = runBlocking {
-        val engine = AndroidCardanoTransactionEngine(processor)
+        val engine = AndroidCardanoTransactionEngine(processor, assetCatalog)
         val sourceEntropy = ByteArray(32) { it.toByte() }
         val destinationEntropy = ByteArray(32) { (it + 1).toByte() }
         try {

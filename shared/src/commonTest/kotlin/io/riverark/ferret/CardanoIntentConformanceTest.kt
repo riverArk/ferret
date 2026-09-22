@@ -14,15 +14,20 @@ import io.riverark.ferret.core.cardano.TransactionSummary
 import io.riverark.ferret.core.cardano.requireMatches
 import io.riverark.ferret.core.cardano.requireL1Funding
 import io.riverark.ferret.core.cardano.requireL1Witnesses
+import io.riverark.ferret.core.model.AssetAmount
+import io.riverark.ferret.core.model.AssetPricing
+import io.riverark.ferret.core.model.ChannelAsset
 import io.riverark.ferret.core.model.CardanoNetwork
 import io.riverark.ferret.core.model.Lovelace
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
 
 class CardanoIntentConformanceTest {
+    private val ada = ChannelAsset("ada", null, null, 6, AssetPricing.ADA, "a".repeat(64))
+    private val usdm = ChannelAsset("usdm", "11".repeat(28), "5553444d", 6, AssetPricing.USD_PEG, "a".repeat(64))
     private val source = "addr_test1source"
     private val intents = listOf(
-        CardanoIntent.Transfer(source, "addr_test1destination", Lovelace(1_000_000), OPERATION_ID, 10, 20),
+        CardanoIntent.Transfer(source, "addr_test1destination", AssetAmount(ada, 1_000_000), OPERATION_ID, 10, 20),
         CardanoIntent.SweepWallet(source, "addr_test1sweep", Lovelace(1_000_000), OPERATION_ID, 10, 20),
     )
 
@@ -97,7 +102,7 @@ class CardanoIntentConformanceTest {
                 }
             }
             val zero = when (intent) {
-                is CardanoIntent.Transfer -> intent.copy(amount = Lovelace(0))
+                is CardanoIntent.Transfer -> intent.copy(amount = AssetAmount(ada, 0))
                 is CardanoIntent.SweepWallet -> intent.copy(amount = Lovelace(0))
                 else -> error("not L1")
             }
@@ -168,7 +173,7 @@ class CardanoIntentConformanceTest {
             LedgerUtxo("33".repeat(32), 0, source, Lovelace(9_000_000), datumHashHex = "aa".repeat(32)),
             LedgerUtxo("44".repeat(32), 0, source, Lovelace(9_000_000), datumHex = "d87980"),
             LedgerUtxo("55".repeat(32), 0, source, Lovelace(9_000_000), scriptRefHashHex = "bb".repeat(28)),
-            LedgerUtxo("66".repeat(32), 0, source, Lovelace(9_000_000), mapOf("cc".repeat(28) to 0)),
+            LedgerUtxo("66".repeat(32), 0, source, Lovelace(9_000_000), mapOf("cc".repeat(28) to 1)),
         )
         val valid = summary(intent)
         valid.requireL1Funding(intent, LedgerSnapshot(CardanoNetwork.PREPROD, listOf(selected) + protected, "", 0))
@@ -188,7 +193,7 @@ class CardanoIntentConformanceTest {
         }
         listOf(
             selected.copy(address = "addr_test1foreign"),
-            selected.copy(assets = mapOf("cc".repeat(28) to 0)),
+            selected.copy(assets = mapOf("cc".repeat(28) to 1)),
             selected.copy(datumHashHex = "aa".repeat(32)),
             selected.copy(datumHex = "d87980"),
             selected.copy(scriptRefHashHex = "bb".repeat(28)),
@@ -198,7 +203,7 @@ class CardanoIntentConformanceTest {
             }
         }
         assertFailsWith<IllegalArgumentException> {
-            valid.requireL1Funding(intent.copy(amount = Lovelace(0)), LedgerSnapshot(CardanoNetwork.PREPROD, listOf(selected), "", 0))
+            valid.requireL1Funding(intent.copy(amount = AssetAmount(ada, 0)), LedgerSnapshot(CardanoNetwork.PREPROD, listOf(selected), "", 0))
         }
     }
 
@@ -248,9 +253,65 @@ class CardanoIntentConformanceTest {
         }
     }
 
+    @Test fun nativeTransferRequiresExactSelectedAssetAndPreservesEveryUnit() {
+        val intent = CardanoIntent.Transfer(
+            source,
+            "addr_test1destination",
+            AssetAmount(usdm, 1_250_000),
+            OPERATION_ID,
+            10,
+            20,
+        )
+        val otherUnit = "22".repeat(28) + "01"
+        val recipient = TransactionOutputSummary(
+            intent.destinationAddress,
+            Lovelace(1_500_000),
+            mapOf(usdm.connectorUnit to intent.amount.baseUnits),
+        )
+        val change = TransactionOutputSummary(
+            source,
+            Lovelace(8_300_000),
+            mapOf(usdm.connectorUnit to 8_750_000, otherUnit to 3),
+        )
+        val valid = TransactionSummary(
+            CardanoNetwork.PREPROD,
+            listOf(recipient, change),
+            Lovelace(200_000),
+            emptySet(),
+            intent.validFrom,
+            intent.validUntil,
+            listOf(TransactionInputReference("22".repeat(32), 0)),
+        )
+        val ledger = LedgerSnapshot(
+            CardanoNetwork.PREPROD,
+            listOf(LedgerUtxo(
+                "22".repeat(32),
+                0,
+                source,
+                Lovelace(10_000_000),
+                mapOf(usdm.connectorUnit to 10_000_000, otherUnit to 3),
+            )),
+            "",
+            0,
+        )
+
+        valid.requireMatches(intent, CardanoNetwork.PREPROD, Lovelace(200_000))
+        valid.requireL1Funding(intent, ledger)
+        listOf(
+            valid.copy(outputs = listOf(recipient.copy(assets = mapOf(usdm.connectorUnit to 1_249_999)), change)),
+            valid.copy(outputs = listOf(recipient, change.copy(assets = mapOf(usdm.connectorUnit to 8_750_000)))),
+            valid.copy(outputs = listOf(recipient, change.copy(lovelace = Lovelace(8_300_001)))),
+        ).forEach { invalid ->
+            assertFailsWith<IllegalArgumentException> {
+                invalid.requireMatches(intent, CardanoNetwork.PREPROD, Lovelace(200_000))
+                invalid.requireL1Funding(intent, ledger)
+            }
+        }
+    }
+
     private fun summary(intent: CardanoIntent): TransactionSummary {
         val output = when (intent) {
-            is CardanoIntent.Transfer -> TransactionOutputSummary(intent.destinationAddress, intent.amount, emptyMap())
+            is CardanoIntent.Transfer -> TransactionOutputSummary(intent.destinationAddress, Lovelace(intent.amount.baseUnits), emptyMap())
             is CardanoIntent.SweepWallet -> TransactionOutputSummary(intent.destinationAddress, intent.amount, emptyMap())
             else -> error("not L1")
         }

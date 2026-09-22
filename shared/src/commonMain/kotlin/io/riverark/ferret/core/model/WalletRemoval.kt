@@ -1,5 +1,5 @@
 package io.riverark.ferret.core.model
-import io.riverark.ferret.core.channel.ChannelCollectionV3
+import io.riverark.ferret.core.channel.ChannelCollectionV4
 
 import io.riverark.ferret.core.security.SecureVault
 import io.riverark.ferret.core.cardano.SweepPreview
@@ -10,7 +10,7 @@ data class RemovalReadiness(
     val spendable: AssetAmount,
     val l1Assets: List<AssetAmount>,
     val unsupportedAssets: Map<String, Long>,
-    val channels: ChannelCollectionV3,
+    val channels: ChannelCollectionV4,
     val pendingL1Operation: Boolean,
     val driveResolved: Boolean,
     val mutationDepths: List<Long>,

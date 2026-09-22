@@ -51,7 +51,14 @@ class TransferViewModelTest {
         override suspend fun history(walletId: WalletId): List<TransactionRecord> = error("not used")
         override suspend fun previewTransfer(walletId: WalletId, destination: TransferDestination, amount: AssetAmount): TransferPreview {
             previewCalls++
-            return TransferPreview(destination, amount, AssetAmount(amount.asset, 1), AssetAmount(amount.asset, 0))
+            return TransferPreview(
+                destination,
+                amount,
+                AssetAmount(amount.asset, 1),
+                null,
+                amount,
+                AssetAmount(amount.asset, 1),
+            )
         }
         override suspend fun submitTransfer(walletId: WalletId, preview: TransferPreview) = error("not used")
         override suspend fun previewSweep(walletId: WalletId, destinationAddress: String) = error("not used")

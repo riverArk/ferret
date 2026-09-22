@@ -71,8 +71,9 @@ import ferret.shared.generated.resources.splash_ferret
 import io.riverark.ferret.core.model.AssetAmount
 import io.riverark.ferret.core.model.AssetCatalog
 import io.riverark.ferret.core.model.CardanoNetwork
-import io.riverark.ferret.core.channel.ChannelCollectionV3
+import io.riverark.ferret.core.channel.ChannelCollectionV4
 import io.riverark.ferret.core.channel.ChannelSnapshot
+import io.riverark.ferret.core.channel.isEligibleForPayment
 import io.riverark.ferret.core.model.ChannelAsset
 import io.riverark.ferret.core.model.ChannelState
 import io.riverark.ferret.core.model.OperationState
@@ -306,10 +307,8 @@ fun HomeScreen(
     val menuState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val entries = channelDisplayOrder(state.channels?.channels?.values.orEmpty())
     val adaBalance = state.balance?.assets?.singleOrNull { it.total.asset == catalog.ada }
-    val canPay = state.channels?.unresolvedLegacy?.isEmpty() == true && entries.any {
-        it.asset == catalog.ada && it.state is ChannelState.Open && it.pending == null &&
-            it.payments.pending == null && it.spendableBalance.baseUnits > 0
-    }
+    val canPay = state.channels?.unresolvedLegacy?.isEmpty() == true &&
+        entries.any { it.isEligibleForPayment(catalog) }
     fun select(action: () -> Unit) {
         showMenu = false
         action()
@@ -410,12 +409,12 @@ fun HomeScreen(
                     adaBalance?.spendable?.baseUnits?.let { it > 0 } == true &&
                     onOpenChannel != null
                 ) {
-                    HomeMenuItem("Open ADA channel", Res.drawable.bolt) { select(onOpenChannel) }
+                    HomeMenuItem("Open channel", Res.drawable.bolt) { select(onOpenChannel) }
                 }
                 if (canPay && onPay != null) HomeMenuItem("Pay invoice", Res.drawable.qr_code_scanner) { select(onPay) }
                 HomeMenuItem("Add ADA", Res.drawable.add_circle) { select(onTopUp) }
                 if (adaBalance?.spendable?.baseUnits?.let { it > 0 } == true && onTransfer != null) {
-                    HomeMenuItem("Transfer ADA", Res.drawable.account_balance_wallet) { select(onTransfer) }
+                    HomeMenuItem("Transfer asset", Res.drawable.account_balance_wallet) { select(onTransfer) }
                 }
                 HorizontalDivider(Modifier.padding(vertical = FerretSpacing.sm))
                 HomeMenuSection("Navigation")
@@ -448,7 +447,7 @@ private fun HomeMenuItem(title: String, icon: DrawableResource, onClick: () -> U
     )
 }
 
-internal fun channelRouteAvailable(collection: ChannelCollectionV3) =
+internal fun channelRouteAvailable(collection: ChannelCollectionV4) =
     collection.channels.isNotEmpty() || collection.unresolvedLegacy.isNotEmpty()
 
 internal fun channelStateLabel(state: ChannelState) = when (state) {
@@ -464,7 +463,7 @@ internal fun channelStateLabel(state: ChannelState) = when (state) {
 @Composable
 fun ChannelScreen(
     profile: WalletProfile,
-    collection: ChannelCollectionV3?,
+    collection: ChannelCollectionV4?,
     catalog: AssetCatalog,
     error: String?,
     cleaning: Boolean,
@@ -561,9 +560,6 @@ private fun AssetHoldingRow(balance: AssetBalance, channelBalance: AssetAmount?,
                 FerretDataBlock("Transfer available", formatAsset(balance.spendable, catalog))
                 channelBalance?.let { FerretDataBlock("In channels", formatAsset(it, catalog)) }
                 if (balance.pending.baseUnits > 0) FerretDataBlock("Pending", formatAsset(balance.pending, catalog))
-                if (asset != catalog.ada) {
-                    Text("Read-only", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
             }
         }
     }
@@ -632,6 +628,18 @@ internal fun formatAsset(amount: AssetAmount, catalog: AssetCatalog): String {
 internal fun assetName(asset: ChannelAsset, catalog: AssetCatalog): String =
     if (catalog.requireAsset(asset) == catalog.ada) "Cardano" else requireNotNull(catalog.presentations[asset.alias]).name
 
+@Composable
+private fun TransactionChange(label: String, change: io.riverark.ferret.core.cardano.TransactionOutputSummary?, catalog: AssetCatalog) {
+    FerretDataBlock("$label · ADA", formatAsset(AssetAmount(catalog.ada, change?.lovelace?.value ?: 0), catalog))
+    change?.assets?.entries?.sortedBy { it.key }?.forEach { (unit, quantity) ->
+        val asset = catalog.assetForConnectorUnit(unit)
+        FerretDataBlock(
+            "$label · ${asset?.let { assetTicker(it, catalog) } ?: unit}",
+            asset?.let { formatAsset(AssetAmount(it, quantity), catalog) } ?: quantity.toString(),
+        )
+    }
+}
+
 private fun assetTicker(asset: ChannelAsset, catalog: AssetCatalog): String =
     if (catalog.requireAsset(asset) == catalog.ada) "ADA" else requireNotNull(catalog.presentations[asset.alias]).ticker
 
@@ -661,12 +669,14 @@ fun TransferScreen(
 ) {
     var recipientAddress by rememberSaveable { mutableStateOf("") }
     var amount by rememberSaveable { mutableStateOf("") }
+    var selectedAlias by rememberSaveable { mutableStateOf(catalog.ada.alias) }
+    val selectedAsset = requireNotNull(catalog.asset(selectedAlias))
     val trimmedAddress = recipientAddress.trim()
     val savedDestination = destinations.firstOrNull { it.address == trimmedAddress }
     val destination = trimmedAddress.takeIf(String::isNotBlank)?.let {
         savedDestination ?: TransferDestination("External address", it)
     }
-    val adaAmount = parseAssetAmount(catalog.ada, amount)
+    val parsedAmount = parseAssetAmount(selectedAsset, amount)
     val editable = state.preview == null && state.sweepPreview == null && !state.busy
     FerretScreen {
         LazyColumn(
@@ -674,13 +684,13 @@ fun TransferScreen(
             verticalArrangement = Arrangement.spacedBy(FerretSpacing.sm),
         ) {
             item {
-                FerretTopBar("Transfer ADA", navigation = {
+                FerretTopBar("Transfer asset", navigation = {
                     io.riverark.ferret.ui.FerretTextButton("Back", onBack)
                 })
             }
             item { FerretStatusChip(profile.network.name) }
             item {
-                Text("Send to any ${profile.network.name.lowercase()} address", style = MaterialTheme.typography.titleMedium)
+                Text("Send a catalog asset to any ${profile.network.name.lowercase()} address", style = MaterialTheme.typography.titleMedium)
             }
             item {
                 OutlinedTextField(
@@ -700,12 +710,25 @@ fun TransferScreen(
                     trailing = { if (savedDestination == wallet) Text("Selected") },
                 )
             }
+            items(catalog.assets, key = ChannelAsset::alias) { asset ->
+                FerretListRow(
+                    assetName(asset, catalog),
+                    assetTicker(asset, catalog),
+                    onClick = {
+                        if (editable) {
+                            selectedAlias = asset.alias
+                            amount = ""
+                        }
+                    },
+                    trailing = { if (selectedAsset == asset) Text("Selected") },
+                )
+            }
             item {
                 OutlinedTextField(
                     amount,
                     { amount = it },
                     Modifier.fillMaxWidth(),
-                    label = { Text("ADA amount") },
+                    label = { Text("${assetTicker(selectedAsset, catalog)} amount") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     singleLine = true,
                     enabled = editable,
@@ -718,8 +741,10 @@ fun TransferScreen(
                         FerretDataBlock("Address", preview.destination.address)
                         FerretDataBlock("Amount", formatAsset(preview.amount, catalog))
                         FerretDataBlock("Fee", formatAsset(preview.feeBound, catalog))
-                        FerretDataBlock("Change", formatAsset(preview.change, catalog))
-                        FerretDataBlock("Network", profile.network.name)
+                        FerretDataBlock("Recipient ADA", formatAsset(preview.recipientAda, catalog))
+                        FerretDataBlock("Ledger minimum ADA", formatAsset(preview.ledgerMinAda, catalog))
+                        TransactionChange("Change", preview.change, catalog)
+                        preview.transactionId?.let { FerretDataBlock("Transaction ID", it) }
                     }
                 }
             }
@@ -741,15 +766,15 @@ fun TransferScreen(
                 item {
                     FerretPrimaryButton(
                         "Preview transfer",
-                        { onPreview(checkNotNull(destination), checkNotNull(adaAmount)) },
-                        enabled = destination != null && adaAmount != null && !state.busy,
+                        { onPreview(checkNotNull(destination), checkNotNull(parsedAmount)) },
+                        enabled = destination != null && parsedAmount != null && !state.busy,
                     )
                 }
                 item {
                     FerretSecondaryButton(
                         "Preview send all",
                         { onPreviewSweep(trimmedAddress) },
-                        enabled = destination != null && !state.busy,
+                        enabled = destination != null && selectedAsset == catalog.ada && !state.busy,
                     )
                 }
             } else {
@@ -774,7 +799,9 @@ fun OpenChannelScreen(
     onBack: () -> Unit,
 ) {
     var amount by remember { mutableStateOf("") }
-    val adaAmount = parseAssetAmount(catalog.ada, amount)
+    var selectedAlias by rememberSaveable { mutableStateOf(catalog.ada.alias) }
+    val selectedAsset = requireNotNull(catalog.asset(selectedAlias))
+    val parsedAmount = parseAssetAmount(selectedAsset, amount)
     FerretScreen {
         LazyColumn(
             Modifier.weight(1f).fillMaxWidth(),
@@ -788,8 +815,22 @@ fun OpenChannelScreen(
             item { FerretStatusChip("${profile.network.name} · ${profile.name}") }
             item {
                 Text(
-                    "The channel deposit includes the protocol reserve. The transaction fee is separate.",
+                    "The channel deposit includes any required ADA output and the protocol reserve. The transaction fee is separate.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            items(catalog.assets, key = ChannelAsset::alias) { asset ->
+                FerretListRow(
+                    assetName(asset, catalog),
+                    assetTicker(asset, catalog),
+                    onClick = {
+                        if (!state.busy && state.preview == null) {
+                            selectedAlias = asset.alias
+                            amount = ""
+                            onAmountChanged()
+                        }
+                    },
+                    trailing = { if (selectedAsset == asset) Text("Selected") },
                 )
             }
             item {
@@ -803,7 +844,7 @@ fun OpenChannelScreen(
                         stateDescription = if (state.busy) "Processing" else "Editable"
                     },
                     enabled = !state.busy,
-                    label = { Text("Channel deposit (ADA)") },
+                    label = { Text("Channel deposit (${assetTicker(selectedAsset, catalog)})") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     singleLine = true,
                 )
@@ -813,31 +854,35 @@ fun OpenChannelScreen(
                     FerretCard(Modifier.fillMaxWidth()) {
                         FerretDataBlock("Deposit", formatAsset(preview.amount, catalog))
                         FerretDataBlock("Transaction fee", formatAsset(preview.actualFee, catalog))
-                        FerretDataBlock("Wallet change", formatAsset(preview.sourceChange, catalog))
+                        FerretDataBlock("Channel output ADA", formatAsset(preview.outputAda, catalog))
                         FerretDataBlock("Ledger minimum ADA", formatAsset(preview.ledgerMinAda, catalog))
                         FerretDataBlock("Protocol reserve", formatAsset(preview.protocolReserve, catalog))
                         FerretDataBlock("Channel capacity", formatAsset(preview.resultingSpendableBalance, catalog))
+                        TransactionChange("Wallet change", preview.sourceChange, catalog)
                     }
                 }
             }
-            if (state.busy) item { FerretLoadingState("Processing channel authorization") }
             state.error?.let { error -> item { FerretErrorState(error) } }
             item {
-                when {
-                    state.operationId != null && state.error != null ->
-                        FerretPrimaryButton("View channel status", onStatus, enabled = !state.busy)
-                    state.preview != null ->
-                        FerretPrimaryButton("Open channel", onSubmit, enabled = !state.busy)
-                    else ->
-                        FerretPrimaryButton(
-                            "Preview channel",
-                            { onPreview(checkNotNull(adaAmount)) },
-                            enabled = adaAmount != null && !state.busy,
-                        )
+                if (state.busy) {
+                    FerretLoadingState(if (state.preview == null) "Preparing channel" else "Opening channel")
+                } else {
+                    when {
+                        state.operationId != null && state.error != null ->
+                            FerretPrimaryButton("View channel status", onStatus)
+                        state.preview != null ->
+                            FerretPrimaryButton("Open channel", onSubmit)
+                        else ->
+                            FerretPrimaryButton(
+                                "Preview channel",
+                                { onPreview(checkNotNull(parsedAmount)) },
+                                enabled = parsedAmount != null,
+                            )
+                    }
                 }
             }
             if (state.error != null && state.operationId == null) {
-                item { FerretSecondaryButton("Verify backup in Settings", onSettings, enabled = !state.busy) }
+                item { FerretSecondaryButton("Verify backup in Settings", onSettings) }
             }
         }
     }

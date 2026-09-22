@@ -63,7 +63,7 @@ class L1WalletRepositoryTest {
             ).ledger(),
             LedgerUtxo("22".repeat(32), 0, source.paymentAddress, Lovelace(20_000_000), datumHex = "d87980"),
             LedgerUtxo("33".repeat(32), 0, source.paymentAddress, Lovelace(20_000_000), scriptRefHashHex = "bb".repeat(28)),
-            LedgerUtxo("44".repeat(32), 0, source.paymentAddress, Lovelace(20_000_000), mapOf("cc".repeat(28) to 0)),
+            LedgerUtxo("44".repeat(32), 0, source.paymentAddress, Lovelace(20_000_000), mapOf("cc".repeat(28) to 1)),
             LedgerUtxo("55".repeat(32), 0, "addr1foreign", Lovelace(20_000_000)),
         )
         var ledger = LedgerSnapshot(CardanoNetwork.MAINNET, listOf(plain) + excluded, "{}", 100)
@@ -112,12 +112,12 @@ class L1WalletRepositoryTest {
         val selected = LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(10_000_000))
         val unselected = LedgerUtxo("11".repeat(32), 0, source.paymentAddress, Lovelace(90_000_000))
         assertEquals(
-            ada(4_800_000),
+            Lovelace(4_800_000),
             previewRepository(vault, FakeEngine(), listOf(selected, unselected))
-                .previewTransfer(source.id, TransferDestination(destination.name, destination.paymentAddress), ada(5_000_000)).change,
+                .previewTransfer(source.id, TransferDestination(destination.name, destination.paymentAddress), ada(5_000_000)).change?.lovelace,
         )
         assertEquals(
-            ada(0),
+            null,
             previewRepository(vault, FakeEngine(), listOf(selected.copy(lovelace = Lovelace(5_200_000))))
                 .previewTransfer(source.id, TransferDestination(destination.name, destination.paymentAddress), ada(5_000_000)).change,
         )
@@ -155,27 +155,85 @@ class L1WalletRepositoryTest {
         assertEquals(ada(12_000_000), balance.assets.first { it.total.asset == catalog.ada }.total)
         assertEquals(ada(10_000_000), balance.assets.first { it.total.asset == catalog.ada }.spendable)
         assertEquals(AssetAmount(catalog.asset("usdm")!!, 1_000_001), balance.assets.first { it.total.asset.alias == "usdm" }.total)
-        assertEquals(AssetAmount(catalog.asset("usdm")!!, 0), balance.assets.first { it.total.asset.alias == "usdm" }.spendable)
+        assertEquals(AssetAmount(catalog.asset("usdm")!!, 1_000_001), balance.assets.first { it.total.asset.alias == "usdm" }.spendable)
         assertEquals(mapOf(unknown to 7L), balance.unsupportedAssets)
     }
 
-    @Test fun nativeTransferRejectsBeforeEngineOrSeedAccess() = runBlocking {
+    @Test fun unknownSelectedAssetRejectsBeforeEngineOrSeedAccess() = runBlocking {
         val source = profile('0')
         val vault = FakeVault(listOf(source))
         val engine = FakeEngine()
         val repository = previewRepository(vault, engine)
+        val forged = catalog.asset("usdm")!!.copy(decimals = 5)
 
         assertFailsWith<IllegalArgumentException> {
             repository.previewTransfer(
                 source.id,
                 TransferDestination("External", "addr_test1external"),
-                AssetAmount(catalog.asset("usdm")!!, 1),
+                AssetAmount(forged, 1),
             )
         }
 
         assertEquals(0, engine.builds)
         assertEquals(0, vault.seedRequests)
     }
+    @Test fun nativePendingReservesTokenAndSeparateAdaThenRecoversByLookup() = runBlocking {
+        val source = profile('0')
+        val destination = profile('1')
+        val vault = FakeVault(listOf(source, destination))
+        val usdm = requireNotNull(catalog.asset("usdm"))
+        val input = LedgerUtxo(
+            "00".repeat(32),
+            0,
+            source.paymentAddress,
+            Lovelace(20_000_000),
+            mapOf(usdm.connectorUnit to 10_000_000),
+        )
+        val engine = FakeEngine().apply { minimumOutputLovelace = 1_500_000 }
+        var submissions = 0
+        fun repository(submit: suspend () -> L1OperationDto, lookup: suspend (String) -> L1OperationDto) =
+            DefaultL1WalletRepository(
+                WalletRepository(),
+                vault,
+                catalog,
+                { LedgerSnapshot(CardanoNetwork.PREPROD, listOf(input), "1500000", 100) },
+                { emptyList() },
+                { _, _ -> submissions++; submit() },
+                { _, operationId -> lookup(operationId) },
+                engine,
+                { OPERATION_ID },
+                { 123L },
+            )
+        val original = repository(
+            { error("lost response") },
+            { error("lookup is only used after restart") },
+        )
+        val preview = original.previewTransfer(
+            source.id,
+            TransferDestination(destination.name, destination.paymentAddress),
+            AssetAmount(usdm, 1_250_000),
+        )
+        assertEquals(ada(1_500_000), preview.recipientAda)
+        assertEquals(mapOf(usdm.connectorUnit to 8_750_000L), preview.change?.assets)
+        assertFailsWith<IllegalStateException> { original.submitTransfer(source.id, preview) }
+        assertEquals(1, submissions)
+
+        val balance = original.balance(source.id)
+        assertEquals(AssetAmount(usdm, 1_250_000), balance.assets.single { it.total.asset == usdm }.pending)
+        assertEquals(ada(1_700_000), balance.assets.single { it.total.asset == catalog.ada }.pending)
+        val local = original.history(source.id).single()
+        assertEquals(listOf(AssetAmount(usdm, 1_250_000), ada(1_500_000)), local.amounts)
+        assertEquals(ada(200_000), local.fee)
+
+        val restarted = repository(
+            { error("must not resubmit") },
+            { operationId -> L1OperationDto(operationId, TRANSACTION_ID, TRANSACTION_ID, "confirmed", 5) },
+        )
+        assertEquals(L1OperationState.CONFIRMED, restarted.reconcilePending(source.id)?.state)
+        assertEquals(1, submissions)
+        assertEquals(listOf(AssetAmount(usdm, 1_250_000), ada(1_500_000)), restarted.history(source.id).single().amounts)
+    }
+
 
     @Test fun previewRejectsUntrustedConsumedInputsBeforeSideEffects() = runBlocking {
         val source = profile('0')
@@ -229,7 +287,7 @@ class L1WalletRepositoryTest {
         for (altered in listOf(
             preview.copy(intent = preview.intent!!.copy(sourceAddress = "addr_test1forged")),
             preview.copy(feeBound = ada(300_000)),
-            preview.copy(change = ada(94_800_000)),
+            preview.copy(change = preview.change!!.copy(lovelace = Lovelace(94_800_000))),
             preview.copy(amount = ada(0)),
             preview.copy(transactionId = null),
             preview.copy(unsigned = preview.unsigned!!.copy(operationId = NEXT_OPERATION_ID)),
@@ -502,7 +560,7 @@ class L1WalletRepositoryTest {
 
         val preview = repository.previewTransfer(source.id, TransferDestination(destination.name, destination.paymentAddress), ada(5_000_000))
         assertEquals(ada(200_000), preview.feeBound)
-        assertEquals(ada(4_800_000), preview.change)
+        assertEquals(Lovelace(4_800_000), preview.change?.lovelace)
         assertEquals(OPERATION_ID, repository.submitTransfer(source.id, preview))
         assertEquals(L1OperationState.PENDING, repository.operation(source.id)?.state)
         assertFailsWith<IllegalArgumentException> { repository.submitTransfer(source.id, preview) }
@@ -892,6 +950,39 @@ class L1WalletRepositoryTest {
         assertEquals(listOf<Byte>(1, 2, 3), envelope.channels.toList())
     }
 
+    @Test fun schemaTwoAdaRecordMigratesRecipientAdaExactly() = runBlocking {
+        val source = profile('0')
+        val vault = FakeVault(listOf(source))
+        val asset = Json.encodeToString(catalog.ada)
+        val v2 = """{"schema":2,"records":[{"operationId":"$OPERATION_ID","amount":{"asset":$asset,"baseUnits":5000000},"fee":{"asset":$asset,"baseUnits":200000},"createdAtEpochMillis":123,"state":"SETTLED"}]}""".encodeToByteArray()
+        vault.install(
+            source.id,
+            WalletEncryptedStateV1(
+                operationJournal = Json.encodeToString(WalletOperationJournalV2(l1 = v2))
+                    .replaceFirst("{", """{"schema":2,""")
+                    .encodeToByteArray(),
+            ),
+        )
+        val repository = DefaultL1WalletRepository(
+            WalletRepository(),
+            vault,
+            catalog,
+            { error("ledger not used") },
+            { emptyList() },
+            { _, _ -> error("submission not used") },
+            { _, _ -> error("lookup not used") },
+            FakeEngine(),
+            { error("operation id not used") },
+            { 0L },
+        )
+
+        val migrated = repository.reconcilePending(source.id)!!
+
+        assertEquals(ada(5_000_000), migrated.amount)
+        assertEquals(ada(5_000_000), migrated.recipientAda)
+        assertEquals(ada(200_000), migrated.fee)
+    }
+
     private enum class SignedWitnessMode { VALID, MISSING, WRONG, DUPLICATE, INVALID }
 
     private class RemoteCalls(private val allow: Boolean = false) {
@@ -982,7 +1073,23 @@ class L1WalletRepositoryTest {
                 is CardanoIntent.SweepWallet -> value.destinationAddress
                 else -> error("unsupported intent")
             }
-            val change = selectedInput.lovelace.value - intent.amount.value - fee
+            val transfer = intent as? CardanoIntent.Transfer
+            val amount = when (val value = intent) {
+                is CardanoIntent.Transfer -> value.amount.baseUnits
+                is CardanoIntent.SweepWallet -> value.amount.value
+                else -> error("unsupported intent")
+            }
+            val recipientAda = if (transfer?.amount?.asset?.policyId == null) amount else minimumOutputLovelace
+            val change = selectedInput.lovelace.value - recipientAda - fee
+            val recipientAssets = transfer?.amount?.asset?.takeIf { it.policyId != null }?.let {
+                mapOf(it.connectorUnit to transfer.amount.baseUnits)
+            }.orEmpty()
+            val changeAssets = selectedInput.assets.toMutableMap().apply {
+                transfer?.amount?.asset?.takeIf { it.policyId != null }?.let {
+                    val remaining = getValue(it.connectorUnit) - transfer.amount.baseUnits
+                    if (remaining == 0L) remove(it.connectorUnit) else put(it.connectorUnit, remaining)
+                }
+            }
             val credential = intent.sourceAddress.substringAfterLast('_').repeat(56)
             val witness = TransactionKeyWitness("", credential, "", true)
             val witnesses = if (signedCbor.size == 1) {
@@ -999,8 +1106,8 @@ class L1WalletRepositoryTest {
             return TransactionSummary(
                 CardanoNetwork.PREPROD,
                 listOfNotNull(
-                    TransactionOutputSummary(destination, intent.amount, emptyMap()),
-                    change.takeIf { it > 0 }?.let { TransactionOutputSummary(intent.sourceAddress, Lovelace(it), emptyMap()) },
+                    TransactionOutputSummary(destination, Lovelace(recipientAda), recipientAssets),
+                    change.takeIf { it > 0 }?.let { TransactionOutputSummary(intent.sourceAddress, Lovelace(it), changeAssets) },
                 ),
                 Lovelace(fee),
                 emptySet(),

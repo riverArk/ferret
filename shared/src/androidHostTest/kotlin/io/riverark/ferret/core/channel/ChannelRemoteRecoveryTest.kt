@@ -42,6 +42,7 @@ class ChannelRemoteRecoveryTest {
     private val otherKeytag = ProtocolKeytag("2".repeat(64) + "01")
     private val digest = "a".repeat(64)
     private val ada = ChannelAsset("ada", null, null, 6, AssetPricing.ADA, digest)
+    private val usdm = ChannelAsset("usdm", "1".repeat(56), "", 6, AssetPricing.USD_PEG, digest)
     private val writer = WriterLease("3".repeat(64), 1, "4".repeat(64), "5".repeat(64), 1_000)
     private val crypto = object : ProtocolCrypto {
         override fun verify(verificationKey: ByteArray, message: ByteArray, signature: ByteArray) = false
@@ -193,12 +194,18 @@ class ChannelRemoteRecoveryTest {
     }
 
     @Test fun submittedPaymentReplaysStableAuthorizationToResolveItsSecret() = runBlocking {
-        val operation = paymentOperation(OperationState.SUBMITTED)
+        val operation = paymentOperation(OperationState.SUBMITTED, usdm)
         var stored = collection(
             paymentSnapshot(operation),
             ChannelSnapshot(otherKeytag, ada, ChannelState.Open("other"), spendableBalance = AssetAmount(ada, 9_000)),
         )
         val untouched = stored.channels.getValue(otherKeytag.value)
+        repository({ stored }, { stored = it }, object : ChannelRemote {
+            override suspend fun reconcile(walletId: WalletId, operation: PreparedChannelOperation, writer: WriterLease) =
+                error("recovery must run only after restart")
+            override suspend fun mutate(walletId: WalletId, operation: PreparedChannelOperation, writer: WriterLease) =
+                error("recovery must run only after restart")
+        }).load(walletId)
         var mutations = 0
         var replayed: PreparedChannelOperation? = null
         val repository = repository(
@@ -243,12 +250,14 @@ class ChannelRemoteRecoveryTest {
 
         assertEquals(1, mutations)
         assertEquals(keytag, replayed?.keytag)
-        assertEquals(ada, replayed?.asset)
+        assertEquals(usdm, replayed?.asset)
         assertContentEquals(
             (operation.payload as ChannelPayload.Payment).authorizationCbor,
             (replayed?.payload as ChannelPayload.Payment).authorizationCbor,
         )
         val entry = stored.channels.getValue(keytag.value)
+        assertEquals(usdm, entry.asset)
+        assertEquals(29_897, entry.spendableBalance.baseUnits)
         assertNull(entry.pending)
         assertEquals(setOf(operation.payload.invoiceHash), stored.paidHashes)
         assertEquals(1, entry.payments.receipts.size)
@@ -265,15 +274,15 @@ class ChannelRemoteRecoveryTest {
         payload = ChannelPayload.Transaction(byteArrayOf(9), transactionId, byteArrayOf(1, 2, 3)),
     )
 
-    private fun paymentOperation(state: OperationState): PreparedChannelOperation {
+    private fun paymentOperation(state: OperationState, asset: ChannelAsset = ada): PreparedChannelOperation {
         val hash = "7".repeat(64)
         val quote = PaymentQuote(
             "quote",
             keytag,
-            AssetAmount(ada, 100),
+            AssetAmount(asset, 100),
             1_000,
-            AssetAmount(ada, 1),
-            AssetAmount(ada, 2),
+            AssetAmount(asset, 1),
+            AssetAmount(asset, 2),
             1_000,
             hash,
             bindingVersion = 2,
@@ -282,7 +291,7 @@ class ChannelRemoteRecoveryTest {
             operationId = operationId,
             intentHash = "6".repeat(64),
             keytag = keytag,
-            asset = ada,
+            asset = asset,
             action = ChannelAction.Pay(quote.id, hash),
             priorChannelIdentity = "channel",
             preparedAtEpochMillis = 1,
@@ -298,6 +307,7 @@ class ChannelRemoteRecoveryTest {
                 ),
                 quote,
             ),
+            resultingSpendableBalance = AssetAmount(asset, 29_897),
             state = state,
         )
     }
@@ -306,9 +316,10 @@ class ChannelRemoteRecoveryTest {
         val payment = operation.payload as ChannelPayload.Payment
         return ChannelSnapshot(
             keytag,
-            ada,
+            operation.asset,
             ChannelState.Open("channel"),
             operation,
+            spendableBalance = AssetAmount(operation.asset, 30_000),
             payments = PaymentJournalV2(
                 pending = PendingPayment(
                     operation.operationId,
@@ -323,26 +334,26 @@ class ChannelRemoteRecoveryTest {
     private fun remote(client: io.ktor.client.HttpClient) =
         AdaptorChannelRemote({ AdaptorClient(client, PREPROD, crypto) }, crypto)
 
-    private fun collection(vararg entries: ChannelSnapshot) = ChannelCollectionV3(
+    private fun collection(vararg entries: ChannelSnapshot) = ChannelCollectionV4(
         walletId = walletId,
         catalogDigest = digest,
         channels = entries.associateBy { it.keytag.value },
     )
 
     private fun repository(
-        load: () -> ChannelCollectionV3,
-        save: (ChannelCollectionV3) -> Unit,
+        load: () -> ChannelCollectionV4,
+        save: (ChannelCollectionV4) -> Unit,
         remote: ChannelRemote,
     ) = ChannelRepository(
         WalletRepository(),
         object : ChannelJournal {
             override suspend fun load(walletId: WalletId) = load()
-            override suspend fun persist(walletId: WalletId, collection: ChannelCollectionV3) = save(collection)
+            override suspend fun persist(walletId: WalletId, collection: ChannelCollectionV4) = save(collection)
         },
         object : ChannelBackupProtocol {
             override suspend fun requireVerifiedWriter(walletId: WalletId) = writer
-            override suspend fun writeAhead(walletId: WalletId, collection: ChannelCollectionV3) = Unit
-            override suspend fun commit(walletId: WalletId, collection: ChannelCollectionV3) = Unit
+            override suspend fun writeAhead(walletId: WalletId, collection: ChannelCollectionV4) = Unit
+            override suspend fun commit(walletId: WalletId, collection: ChannelCollectionV4) = Unit
         },
         remote,
     )

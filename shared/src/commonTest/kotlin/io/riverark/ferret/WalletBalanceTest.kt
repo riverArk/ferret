@@ -1,7 +1,7 @@
 package io.riverark.ferret
 
 import io.riverark.ferret.core.channel.ChannelAction
-import io.riverark.ferret.core.channel.ChannelCollectionV3
+import io.riverark.ferret.core.channel.ChannelCollectionV4
 import io.riverark.ferret.core.channel.ChannelPayload
 import io.riverark.ferret.core.channel.ChannelSnapshot
 import io.riverark.ferret.core.channel.PreparedChannelOperation
@@ -132,7 +132,7 @@ class WalletBalanceTest {
     )
 
     private fun collection(profile: WalletProfile, channels: Map<String, ChannelSnapshot> = emptyMap()) =
-        ChannelCollectionV3(walletId = profile.id, catalogDigest = DIGEST, channels = channels)
+        ChannelCollectionV4(walletId = profile.id, catalogDigest = DIGEST, channels = channels)
 
     private fun entriesForTest() = listOf(
         ChannelState.Opening("opening") to "Opening",

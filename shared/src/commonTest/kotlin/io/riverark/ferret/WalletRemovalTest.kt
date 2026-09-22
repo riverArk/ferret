@@ -1,6 +1,6 @@
 package io.riverark.ferret
 
-import io.riverark.ferret.core.channel.ChannelCollectionV3
+import io.riverark.ferret.core.channel.ChannelCollectionV4
 import io.riverark.ferret.core.channel.ChannelSnapshot
 import io.riverark.ferret.core.channel.PaymentJournalV2
 import io.riverark.ferret.core.channel.PaymentQuote
@@ -106,7 +106,7 @@ class WalletRemovalTest {
             ),
             0,
         )
-        val channels = ChannelCollectionV3(
+        val channels = ChannelCollectionV4(
             walletId = profile.id,
             catalogDigest = DIGEST,
             channels = mapOf(
@@ -142,7 +142,7 @@ class WalletRemovalTest {
     private fun readiness(
         profile: WalletProfile,
         spendable: Long = 0,
-        channels: ChannelCollectionV3 = collection(profile),
+        channels: ChannelCollectionV4 = collection(profile),
         depth: Long = 2_160,
     ) = RemovalReadiness(
         profile = profile,
@@ -155,12 +155,12 @@ class WalletRemovalTest {
         mutationDepths = listOf(depth),
     )
 
-    private fun collection(profile: WalletProfile, state: ChannelState? = null): ChannelCollectionV3 {
+    private fun collection(profile: WalletProfile, state: ChannelState? = null): ChannelCollectionV4 {
         val channels = state?.let {
             val keytag = ProtocolKeytag("00".repeat(33))
             mapOf(keytag.value to ChannelSnapshot(keytag, ADA, it))
         }.orEmpty()
-        return ChannelCollectionV3(walletId = profile.id, catalogDigest = DIGEST, channels = channels)
+        return ChannelCollectionV4(walletId = profile.id, catalogDigest = DIGEST, channels = channels)
     }
 
     private companion object {

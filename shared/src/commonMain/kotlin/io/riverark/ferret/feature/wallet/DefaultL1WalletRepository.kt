@@ -8,6 +8,8 @@ import io.riverark.ferret.core.cardano.requireMatches
 import io.riverark.ferret.core.cardano.SweepPreview
 import io.riverark.ferret.core.cardano.requireL1Funding
 import io.riverark.ferret.core.cardano.requireL1Witnesses
+import io.riverark.ferret.core.cardano.TransactionOutputSummary
+import io.riverark.ferret.core.cardano.TransactionSummary
 import io.riverark.ferret.core.model.AssetAmount
 import io.riverark.ferret.core.model.AssetCatalog
 import io.riverark.ferret.core.model.Lovelace
@@ -22,6 +24,7 @@ import io.riverark.ferret.core.security.WalletOperationJournalV2
 import io.riverark.ferret.core.security.SecureVault
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlin.jvm.JvmInline
@@ -37,20 +40,36 @@ data class L1OperationRecord(
     val destinationAddress: String? = null,
     val amount: AssetAmount,
     val fee: AssetAmount,
+    val recipientAda: AssetAmount,
     val createdAtEpochMillis: Long,
     val state: L1OperationState,
 ) {
     init {
         require(OPERATION_ID.matches(operationId))
         require(expectedTransactionId == null || TRANSACTION_ID.matches(expectedTransactionId))
-        require(amount.asset == fee.asset && amount.asset.policyId == null)
+        require(amount.asset.catalogDigest == fee.asset.catalogDigest)
+        require(fee.asset == recipientAda.asset && fee.asset.policyId == null)
         require(createdAtEpochMillis >= 0)
         require(destinationAddress == null || destinationAddress.isNotBlank())
     }
 }
 
 @Serializable
-private data class L1OperationsV2(val schema: Int = 2, val records: List<L1OperationRecord>)
+private data class L1OperationsV3(val schema: Int = 3, val records: List<L1OperationRecord>)
+@Serializable
+private data class L1OperationRecordV2(
+    val operationId: String,
+    val expectedTransactionId: String? = null,
+    val destinationWalletId: WalletId? = null,
+    val destinationAddress: String? = null,
+    val amount: AssetAmount,
+    val fee: AssetAmount,
+    val createdAtEpochMillis: Long,
+    val state: L1OperationState,
+)
+
+@Serializable
+private data class L1OperationsV2(val schema: Int = 2, val records: List<L1OperationRecordV2>)
 
 @Serializable
 @JvmInline
@@ -128,20 +147,38 @@ class DefaultL1WalletRepository(
             totals.add("lovelace", utxo.lovelace.value)
             utxo.assets.forEach { (unit, quantity) -> totals.add(unit, quantity) }
         }
-        val ledgerSpendable = owned.filter { it.isSpendableBy(profile.paymentAddress) }
+        val eligibleOwned = owned.filter { it.isSpendableBy(profile.paymentAddress, allowNativeAssets = true) }
+        val adaSpendable = owned.filter { it.isSpendableBy(profile.paymentAddress) }
             .fold(0L) { total, utxo -> addUnits(total, utxo.lovelace.value) }
-        val pendingUnits = operations(walletId)
-            .filter { it.state in UNRESOLVED_STATES }
-            .fold(0L) { total, operation ->
-                requireAda(operation.amount)
-                requireAda(operation.fee)
-                addUnits(addUnits(total, operation.amount.baseUnits), operation.fee.baseUnits)
+        val reservations = mutableMapOf<String, Long>()
+        operations(walletId).filter { it.state in UNRESOLVED_STATES }.forEach { operation ->
+            val selected = catalog.requireAsset(operation.amount.asset)
+            requireAda(operation.fee)
+            requireAda(operation.recipientAda)
+            if (selected == catalog.ada) {
+                require(operation.recipientAda == operation.amount)
+                reservations.add(selected.connectorUnit, addUnits(operation.amount.baseUnits, operation.fee.baseUnits))
+            } else {
+                reservations.add(selected.connectorUnit, operation.amount.baseUnits)
+                reservations.add(
+                    catalog.ada.connectorUnit,
+                    addUnits(operation.recipientAda.baseUnits, operation.fee.baseUnits),
+                )
             }
+        }
         val assets = catalog.assets.map { asset ->
             val total = totals.remove(asset.connectorUnit) ?: 0L
-            val pending = if (asset == catalog.ada) pendingUnits else 0L
-            val spendable = if (asset == catalog.ada) (ledgerSpendable - pending).coerceAtLeast(0) else 0L
-            AssetBalance(AssetAmount(asset, total), AssetAmount(asset, spendable), AssetAmount(asset, pending))
+            val reserved = reservations[asset.connectorUnit] ?: 0L
+            val eligible = if (asset == catalog.ada) {
+                adaSpendable
+            } else {
+                eligibleOwned.fold(0L) { sum, utxo -> addUnits(sum, utxo.assets[asset.connectorUnit] ?: 0L) }
+            }
+            AssetBalance(
+                AssetAmount(asset, total),
+                AssetAmount(asset, (eligible - reserved).coerceAtLeast(0)),
+                AssetAmount(asset, reserved),
+            )
         }
         require(totals.size <= MAX_UNSUPPORTED_ASSETS) { "too many unsupported assets" }
         return WalletBalance(assets, totals.filterValues { it > 0 }.entries.sortedBy { it.key }.associate { it.toPair() })
@@ -163,7 +200,8 @@ class DefaultL1WalletRepository(
                 TransactionRecord(
                     operation.expectedTransactionId ?: operation.operationId,
                     operation.createdAtEpochMillis,
-                    listOf(operation.amount),
+                    if (operation.amount.asset == catalog.ada) listOf(operation.amount)
+                    else listOf(operation.amount, operation.recipientAda),
                     operation.fee,
                     io.riverark.ferret.core.model.Realm.L1,
                     when (operation.state) {
@@ -177,17 +215,17 @@ class DefaultL1WalletRepository(
     }
 
     override suspend fun previewTransfer(walletId: WalletId, destination: TransferDestination, amount: AssetAmount): TransferPreview {
-        val transferAmount = requireAda(amount)
+        val selected = catalog.requireAsset(amount.asset)
+        require(selected == amount.asset && amount.baseUnits > 0)
         return wallets.withWalletLock(walletId) {
             val profile = profile(walletId)
             require(profile.network.accepts(destination.address) && destination.address != profile.paymentAddress)
-            require(transferAmount.value > 0)
             val ledger = loadLedger(profile)
             require(ledger.currentSlot <= Long.MAX_VALUE - TRANSFER_VALIDITY_SLOTS)
             val intent = CardanoIntent.Transfer(
                 profile.paymentAddress,
                 destination.address,
-                transferAmount,
+                amount,
                 newOperationId(),
                 ledger.currentSlot,
                 ledger.currentSlot + TRANSFER_VALIDITY_SLOTS,
@@ -199,12 +237,17 @@ class DefaultL1WalletRepository(
             summary.requireL1Witnesses(profile.id.value.substringAfter('-'), signed = false)
             summary.requireL1Funding(intent, ledger)
             engine.requireMinimumAda(unsigned.cbor, ledger.protocolParametersJson)
-            val change = summary.outputs.singleOrNull { it.address == profile.paymentAddress }?.lovelace ?: Lovelace(0)
+            val (recipientIndex, recipient) = transferOutput(summary, intent)
             TransferPreview(
                 destination,
                 amount,
                 AssetAmount(catalog.ada, unsigned.feeBound.value),
-                AssetAmount(catalog.ada, change.value),
+                summary.outputs.singleOrNull { it.address == profile.paymentAddress },
+                AssetAmount(catalog.ada, recipient.lovelace.value),
+                AssetAmount(
+                    catalog.ada,
+                    engine.minimumAdaForOutput(unsigned.cbor, ledger.protocolParametersJson, recipientIndex).value,
+                ),
                 intent,
                 unsigned,
                 engine.transactionId(unsigned.cbor),
@@ -222,15 +265,23 @@ class DefaultL1WalletRepository(
             require(intent.sourceAddress == profile.paymentAddress)
             require(intent.operationId == unsigned.operationId)
             require(intent.destinationAddress == preview.destination.address)
-            require(intent.amount == requireAda(preview.amount) && preview.amount.baseUnits > 0)
+            require(intent.amount == preview.amount && catalog.requireAsset(preview.amount.asset) == preview.amount.asset)
+            require(preview.amount.baseUnits > 0)
             require(requireAda(preview.feeBound) == unsigned.feeBound)
+            val submitLedger = loadLedger(profile)
+            require(submitLedger.network == profile.network)
             val summary = engine.inspect(unsigned.cbor)
             summary.requireMatches(intent, profile.network, requireAda(preview.feeBound))
             summary.requireL1Witnesses(profile.id.value.substringAfter('-'), signed = false)
-            require((summary.outputs.singleOrNull { it.address == profile.paymentAddress }?.lovelace ?: Lovelace(0)) == requireAda(preview.change))
+            summary.requireL1Funding(intent, submitLedger)
+            val (recipientIndex, recipient) = transferOutput(summary, intent)
+            require(preview.change == summary.outputs.singleOrNull { it.address == profile.paymentAddress })
+            require(requireAda(preview.recipientAda) == recipient.lovelace)
+            require(
+                requireAda(preview.ledgerMinAda) ==
+                    engine.minimumAdaForOutput(unsigned.cbor, submitLedger.protocolParametersJson, recipientIndex),
+            )
             require(engine.transactionId(unsigned.cbor) == previewTransactionId)
-            val submitLedger = loadLedger(profile)
-            require(submitLedger.network == profile.network)
             engine.requireAuthorized(unsigned, intent, submitLedger)
             val existing = operations(walletId)
             require(existing.none { it.state in UNRESOLVED_STATES }) { "another wallet operation is unresolved" }
@@ -243,6 +294,7 @@ class DefaultL1WalletRepository(
                 destinationAddress = preview.destination.address,
                 amount = preview.amount,
                 fee = preview.feeBound,
+                recipientAda = preview.recipientAda,
                 createdAtEpochMillis = nowEpochMillis(),
                 state = L1OperationState.PREPARED,
             )
@@ -329,6 +381,7 @@ class DefaultL1WalletRepository(
                 destinationAddress = preview.destinationAddress,
                 amount = preview.amount,
                 fee = preview.fee,
+                recipientAda = preview.amount,
                 createdAtEpochMillis = nowEpochMillis(),
                 state = L1OperationState.PREPARED,
             )
@@ -405,7 +458,7 @@ class DefaultL1WalletRepository(
         try {
             journal = if (current.operationJournal.isEmpty()) WalletOperationJournalV2() else
                 decodeJournal(current.operationJournal, forWrite = true)
-            l1 = json.encodeToString(L1OperationsV2(records = operations)).encodeToByteArray()
+            l1 = json.encodeToString(L1OperationsV3(records = operations)).encodeToByteArray()
             require(l1.size <= MAX_L1_JOURNAL_BYTES) { "L1 operation journal is too large" }
             encoded = json.encodeToString(requireNotNull(journal).copy(l1 = l1)).encodeToByteArray()
             vault.updateWalletState(walletId, current.copy(operationJournal = encoded))
@@ -450,28 +503,52 @@ class DefaultL1WalletRepository(
         require(bytes.size <= MAX_L1_JOURNAL_BYTES) { "L1 operation journal is too large" }
         val encoded = bytes.decodeToString()
         val root = json.parseToJsonElement(encoded).jsonObject
-        val records = if ("schema" in root) {
-            json.decodeFromString<L1OperationsV2>(encoded).also {
-                require(it.schema == 2) { "unsupported L1 operation journal" }
+        val records = when (root["schema"]?.jsonPrimitive?.content?.toIntOrNull()) {
+            3 -> json.decodeFromString<L1OperationsV3>(encoded).also {
+                require(it.schema == 3) { "unsupported L1 operation journal" }
             }.records
-        } else {
-            val legacy = if ("records" in root) {
-                json.decodeFromString<LegacyL1OperationsV1>(encoded).records
-            } else {
-                listOf(json.decodeFromString<LegacyL1OperationRecord>(encoded))
-            }
-            legacy.map {
+            2 -> json.decodeFromString<L1OperationsV2>(encoded).also {
+                require(it.schema == 2) { "unsupported L1 operation journal" }
+            }.records.map {
+                val amount = catalog.requireAsset(it.amount.asset).let { asset ->
+                    require(asset == catalog.ada)
+                    AssetAmount(asset, it.amount.baseUnits)
+                }
+                val fee = AssetAmount(catalog.ada, requireAda(it.fee).value)
                 L1OperationRecord(
                     it.operationId,
                     it.expectedTransactionId,
                     it.destinationWalletId,
                     it.destinationAddress,
-                    AssetAmount(catalog.ada, it.amount.value),
-                    AssetAmount(catalog.ada, it.fee.value),
+                    amount,
+                    fee,
+                    amount,
                     it.createdAtEpochMillis,
                     it.state,
                 )
             }
+            null -> {
+                val legacy = if ("records" in root) {
+                    json.decodeFromString<LegacyL1OperationsV1>(encoded).records
+                } else {
+                    listOf(json.decodeFromString<LegacyL1OperationRecord>(encoded))
+                }
+                legacy.map {
+                    val amount = AssetAmount(catalog.ada, it.amount.value)
+                    L1OperationRecord(
+                        it.operationId,
+                        it.expectedTransactionId,
+                        it.destinationWalletId,
+                        it.destinationAddress,
+                        amount,
+                        AssetAmount(catalog.ada, it.fee.value),
+                        amount,
+                        it.createdAtEpochMillis,
+                        it.state,
+                    )
+                }
+            }
+            else -> error("unsupported L1 operation journal")
         }
         validateOperations(records)
         return records
@@ -480,8 +557,10 @@ class DefaultL1WalletRepository(
     private fun validateOperations(operations: List<L1OperationRecord>) {
         require(operations.size <= MAX_L1_OPERATIONS && operations.map(L1OperationRecord::operationId).distinct().size == operations.size)
         operations.forEach {
-            requireAda(it.amount)
+            catalog.requireAsset(it.amount.asset)
             requireAda(it.fee)
+            requireAda(it.recipientAda)
+            if (it.amount.asset == catalog.ada) require(it.recipientAda == it.amount)
         }
     }
 
@@ -489,6 +568,17 @@ class DefaultL1WalletRepository(
         catalog.requireAsset(amount.asset)
         require(amount.asset == catalog.ada) { "Native asset transfer is unavailable." }
         return Lovelace(amount.baseUnits)
+    }
+    private fun transferOutput(
+        summary: TransactionSummary,
+        intent: CardanoIntent.Transfer,
+    ): IndexedValue<TransactionOutputSummary> = summary.outputs.withIndex().single { (_, output) ->
+        output.address == intent.destinationAddress &&
+            if (intent.amount.asset.policyId == null) {
+                output.lovelace.value == intent.amount.baseUnits && output.assets.isEmpty()
+            } else {
+                output.assets == mapOf(intent.amount.asset.connectorUnit to intent.amount.baseUnits)
+            }
     }
 
     private fun MutableMap<String, Long>.add(unit: String, quantity: Long) {

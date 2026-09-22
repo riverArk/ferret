@@ -2,10 +2,10 @@ package io.riverark.ferret.core.cardano
 
 import io.riverark.ferret.core.model.AssetAmount
 import io.riverark.ferret.core.model.CardanoNetwork
+import io.riverark.ferret.core.model.ChannelAsset
 import io.riverark.ferret.core.model.Lovelace
 import kotlinx.serialization.Serializable
-
-class InsufficientFundsException : IllegalArgumentException("insufficient confirmed ADA")
+class InsufficientFundsException : IllegalArgumentException("Insufficient selected asset or ADA for the output and fee.")
 
 @Serializable data class DerivedWallet(val paymentAddress: String, val stakeAddress: String, val paymentCredentialHex: String)
 @Serializable
@@ -23,8 +23,7 @@ data class LedgerUtxo(
 ) {
     init {
         require(Regex("[0-9a-f]{64}").matches(transactionId))
-        require(index >= 0 && address.isNotBlank())
-        require(assets.all { (unit, quantity) -> unit.length in 56..120 && unit.length % 2 == 0 && unit.all { it in "0123456789abcdef" } && quantity >= 0 })
+        require(assets.all { (unit, quantity) -> unit.length in 56..120 && unit.length % 2 == 0 && unit.all { it in "0123456789abcdef" } && quantity > 0 })
         require(datumHashHex == null || Regex("[0-9a-f]{64}").matches(datumHashHex))
         require(scriptRefHashHex == null || Regex("[0-9a-f]{56}").matches(scriptRefHashHex))
         require(scriptRefVersion == null || scriptRefVersion in 0..3)
@@ -32,9 +31,9 @@ data class LedgerUtxo(
         require(scriptRefHashHex != null || scriptRefVersion == null && scriptRefHex == null)
         require(listOfNotNull(datumHex, scriptRefHex).all { it.length % 2 == 0 && it.all { char -> char in "0123456789abcdef" } })
     }
-
-    fun isSpendableBy(sourceAddress: String) =
-        address == sourceAddress && assets.isEmpty() && datumHashHex == null && datumHex == null && scriptRefHashHex == null
+    fun isSpendableBy(sourceAddress: String, allowNativeAssets: Boolean = false) =
+        address == sourceAddress && (allowNativeAssets || assets.isEmpty()) &&
+            datumHashHex == null && datumHex == null && scriptRefHashHex == null
 }
 @Serializable data class LedgerSnapshot(val network: CardanoNetwork, val utxos: List<LedgerUtxo>, val protocolParametersJson: String, val currentSlot: Long)
 @Serializable data class UnsignedTransaction(val cbor: ByteArray, val operationId: String, val feeBound: Lovelace)
@@ -143,6 +142,7 @@ data class ChannelConstants(
     val addVerificationKeyHex: String,
     val adaptorVerificationKeyHex: String,
     val closePeriodMillis: Long,
+    val asset: ChannelAsset,
 ) {
     init {
         require(Regex("[0-9a-f]{64}").matches(tagHex))
@@ -195,16 +195,15 @@ internal const val KONDUIT_MIN_ADA_BUFFER = 2_000_000L
 @Serializable
 sealed interface CardanoIntent {
     val sourceAddress: String
-    val amount: Lovelace
     val operationId: String
     val validFrom: Long
     val validUntil: Long
 
-    @Serializable data class Transfer(override val sourceAddress: String, val destinationAddress: String, override val amount: Lovelace, override val operationId: String, override val validFrom: Long, override val validUntil: Long) : CardanoIntent
-    @Serializable data class OpenChannel(override val sourceAddress: String, val validatorAddress: String, val referenceInput: LedgerUtxo, val datum: ChannelDatum, override val amount: Lovelace, override val operationId: String, override val validFrom: Long, override val validUntil: Long) : CardanoIntent
-    @Serializable data class AddChannelFunds(override val sourceAddress: String, val channelInput: LedgerUtxo, val referenceInput: LedgerUtxo, val currentDatum: ChannelDatum, val resultingDatum: ChannelDatum, override val amount: Lovelace, override val operationId: String, override val validFrom: Long, override val validUntil: Long) : CardanoIntent
-    @Serializable data class CloseChannel(override val sourceAddress: String, val channelInput: LedgerUtxo, val referenceInput: LedgerUtxo, val currentDatum: ChannelDatum, val step: CloseChannelStep, val resultingDatum: ChannelDatum?, override val amount: Lovelace, override val operationId: String, override val validFrom: Long, override val validUntil: Long) : CardanoIntent
-    @Serializable data class SweepWallet(override val sourceAddress: String, val destinationAddress: String, override val amount: Lovelace, override val operationId: String, override val validFrom: Long, override val validUntil: Long) : CardanoIntent
+    @Serializable data class Transfer(override val sourceAddress: String, val destinationAddress: String, val amount: AssetAmount, override val operationId: String, override val validFrom: Long, override val validUntil: Long) : CardanoIntent
+    @Serializable data class OpenChannel(override val sourceAddress: String, val validatorAddress: String, val referenceInput: LedgerUtxo, val datum: ChannelDatum, val amount: AssetAmount, override val operationId: String, override val validFrom: Long, override val validUntil: Long) : CardanoIntent
+    @Serializable data class AddChannelFunds(override val sourceAddress: String, val channelInput: LedgerUtxo, val referenceInput: LedgerUtxo, val currentDatum: ChannelDatum, val resultingDatum: ChannelDatum, val amount: Lovelace, override val operationId: String, override val validFrom: Long, override val validUntil: Long) : CardanoIntent
+    @Serializable data class CloseChannel(override val sourceAddress: String, val channelInput: LedgerUtxo, val referenceInput: LedgerUtxo, val currentDatum: ChannelDatum, val step: CloseChannelStep, val resultingDatum: ChannelDatum?, val amount: Lovelace, override val operationId: String, override val validFrom: Long, override val validUntil: Long) : CardanoIntent
+    @Serializable data class SweepWallet(override val sourceAddress: String, val destinationAddress: String, val amount: Lovelace, override val operationId: String, override val validFrom: Long, override val validUntil: Long) : CardanoIntent
 }
 
 interface CardanoTransactionEngine {
@@ -250,14 +249,37 @@ fun TransactionSummary.requireMatches(intent: CardanoIntent, network: CardanoNet
         is CardanoIntent.Transfer -> intent.destinationAddress
         is CardanoIntent.SweepWallet -> intent.destinationAddress
     }
-    require(outputs.count { it.address == destination && it.lovelace == intent.amount && it.assets.isEmpty() } == 1)
+    fun designated(output: TransactionOutputSummary) = when (intent) {
+        is CardanoIntent.Transfer -> if (intent.amount.asset.policyId == null) {
+            output.address == destination &&
+                output.lovelace.value == intent.amount.baseUnits &&
+                output.assets.isEmpty()
+        } else {
+            output.address == destination &&
+                output.lovelace.value > 0 &&
+                output.assets == mapOf(intent.amount.asset.connectorUnit to intent.amount.baseUnits)
+        }
+        is CardanoIntent.SweepWallet ->
+            output.address == destination && output.lovelace == intent.amount && output.assets.isEmpty()
+    }
+    require(outputs.count(::designated) == 1)
     require(outputs.size in 1..2)
-    val designated = outputs.indexOfFirst { it.address == destination && it.lovelace == intent.amount && it.assets.isEmpty() }
-    require(outputs.withIndex().all { (index, output) -> index == designated || output.address == intent.sourceAddress })
-    require(intent.amount.value > 0)
+    val designated = outputs.indexOfFirst(::designated)
+    require(outputs.withIndex().all { (index, output) ->
+        index == designated || output.address == intent.sourceAddress
+    })
+    require(
+        when (intent) {
+            is CardanoIntent.Transfer -> intent.amount.baseUnits > 0
+            is CardanoIntent.SweepWallet -> intent.amount.value > 0
+        },
+    )
     require(intent.validFrom < intent.validUntil)
     require(destination != intent.sourceAddress)
-    require(outputs.all { it.assets.isEmpty() && it.datum == TransactionDatum.Absent && it.scriptReference == null })
+    require(outputs.all { it.datum == TransactionDatum.Absent && it.scriptReference == null })
+    if (intent is CardanoIntent.SweepWallet || intent is CardanoIntent.Transfer && intent.amount.asset.policyId == null) {
+        require(outputs.all { it.assets.isEmpty() })
+    }
     require(requiredSigners.isEmpty())
     require(referenceInputs.isEmpty())
     require(collateralInputs.isEmpty())
@@ -281,7 +303,12 @@ fun TransactionSummary.requireL1Witnesses(expectedPaymentCredentialHex: String, 
 
 fun TransactionSummary.requireL1Funding(intent: CardanoIntent, ledger: LedgerSnapshot) {
     require(intent is CardanoIntent.Transfer || intent is CardanoIntent.SweepWallet)
-    require(intent.amount.value > 0)
+    require(
+        when (intent) {
+            is CardanoIntent.Transfer -> intent.amount.baseUnits > 0
+            is CardanoIntent.SweepWallet -> intent.amount.value > 0
+        },
+    )
     require(network == ledger.network)
     require(inputs.isNotEmpty() && inputs.distinct().size == inputs.size)
 
@@ -290,18 +317,35 @@ fun TransactionSummary.requireL1Funding(intent: CardanoIntent, ledger: LedgerSna
         val reference = TransactionInputReference(utxo.transactionId, utxo.index)
         require(available.put(reference, utxo) == null) { "duplicate ledger input" }
     }
-    val inputTotal = inputs.fold(Lovelace(0)) { total, reference ->
-        val utxo = requireNotNull(available[reference]) { "unknown transaction input" }
-        require(utxo.isSpendableBy(intent.sourceAddress))
-        total + utxo.lovelace
+    val allowNative = intent is CardanoIntent.Transfer && intent.amount.asset.policyId != null
+    val consumed = inputs.map { reference ->
+        requireNotNull(available[reference]) { "unknown transaction input" }.also {
+            require(it.isSpendableBy(intent.sourceAddress, allowNative))
+        }
     }
-    val outputTotal = outputs.fold(fee) { total, output ->
-        require(output.assets.isEmpty())
-        total + output.lovelace
-    }
-    require(inputTotal == outputTotal)
+    requireValueConservation(consumed)
 }
 
+internal fun TransactionSummary.requireValueConservation(consumed: List<LedgerUtxo>) {
+    fun add(left: Long, right: Long): Long {
+        require(left >= 0 && right >= 0 && left <= Long.MAX_VALUE - right) { "asset amount overflow" }
+        return left + right
+    }
+    val inputAda = consumed.fold(0L) { total, input -> add(total, input.lovelace.value) }
+    val outputAda = outputs.fold(fee.value) { total, output -> add(total, output.lovelace.value) }
+    require(inputAda == outputAda)
+    fun totals(values: Iterable<Map<String, Long>>): Map<String, Long> {
+        val result = mutableMapOf<String, Long>()
+        values.forEach { value ->
+            value.forEach { (unit, quantity) ->
+                require(quantity > 0)
+                result[unit] = add(result[unit] ?: 0, quantity)
+            }
+        }
+        return result
+    }
+    require(totals(consumed.map(LedgerUtxo::assets)) == totals(outputs.map(TransactionOutputSummary::assets)))
+}
 fun TransactionSummary.requireChannelFunding(intent: CardanoIntent, ledger: LedgerSnapshot) {
     require(intent is CardanoIntent.OpenChannel || intent is CardanoIntent.AddChannelFunds || intent is CardanoIntent.CloseChannel)
     require(network == ledger.network)
@@ -325,15 +369,19 @@ fun TransactionSummary.requireChannelFunding(intent: CardanoIntent, ledger: Ledg
     }
     val channelReference = channelInput?.let { TransactionInputReference(it.transactionId, it.index) }
     require(channelReference == null || inputs.count { it == channelReference } == 1)
-    val inputTotal = inputs.fold(Lovelace(0)) { total, reference ->
+    val consumed = inputs.map { reference ->
         val utxo = requireNotNull(available[reference]) { "unknown transaction input" }
         if (reference == channelReference) {
             require(utxo == channelInput)
         } else {
-            require(utxo.isSpendableBy(intent.sourceAddress))
+            require(
+                utxo.isSpendableBy(
+                    intent.sourceAddress,
+                    allowNativeAssets = intent is CardanoIntent.OpenChannel && intent.amount.asset.policyId != null,
+                ),
+            )
         }
-        total + utxo.lovelace
+        utxo
     }
-    val outputTotal = outputs.fold(fee) { total, output -> total + output.lovelace }
-    require(inputTotal == outputTotal)
+    requireValueConservation(consumed)
 }

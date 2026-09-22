@@ -2,13 +2,13 @@
 
 ## Snapshot
 
-- Date: 2026-09-15
-- Current focus: extend the production-enabled single ADA channel path to verified stablecoin assets and explicit multi-channel payment selection.
+- Date: 2026-09-22
+- Current focus: complete controlled Mainnet device acceptance for reviewed stablecoin-channel Lightning payments.
 - The live repository is a Kotlin Multiplatform project. This file describes current code only.
 
 ## Product and platforms
 
-Ferret is an Android-first Cardano and Lightning wallet. Android has real biometric/device-credential authentication, encrypted persistence, Cardano wallet derivation and transaction authorization, Google Drive channel recovery, one Mainnet ADA channel, QR-only BOLT11 payment from that channel, ADA transfer/sweep, and safe wallet-removal orchestration. Shared Kotlin code supplies domain state, typed navigation, repositories, ViewModels, and Compose UI.
+Ferret is an Android-first Cardano and Lightning wallet. Android has real biometric/device-credential authentication, encrypted persistence, Cardano wallet derivation and transaction authorization, Google Drive channel recovery, keyed Mainnet ADA/native channels, QR-only BOLT11 payment with eligible-channel selection, catalog-asset L1 transfer and channel-opening flows, ADA sweep, and safe wallet-removal orchestration. Shared Kotlin code supplies domain state, typed navigation, repositories, ViewModels, and Compose UI.
 
 iOS compiles the shared Compose root and displays `Wallet setup is not available in this iOS build.` It does not provide wallet operations. `IOS_FOLLOW_UP.md` owns the missing Xcode project, secure vault, authentication, mnemonic, Cardano, Drive, TLS, QR, signing, and physical-device work.
 
@@ -44,14 +44,14 @@ Seed entropy is cleared after derivation and vault callbacks. Mnemonic restore/d
 
 The Refined Ferret theme is light-only: cream canvas, near-white surfaces, charcoal ink, yellow primary, accessible coral secondary, blue tertiary, and dark red errors. Exo 2 headings, Ubuntu Mono body text, rounded outlined surfaces, 48 dp touch targets, edge-to-edge safe drawing insets, bundled ferret art, and bundled Material Symbols are shared across implemented screens.
 
-Home shows wallet/network, reviewed ADA/USDA/USDCx/USDM holding rows, distinct ADA transfer availability, per-asset capacity held in L2 channels, every keyed channel's asset/capacity/state/short ID, latest asset-tagged activity, refresh timestamp, payment address, and wallet/settings navigation. Open channels sort first; failed zero-balance attempts appear separately and can be removed only through guarded encrypted cleanup that preserves the open channel and refuses uncertain records. Pull-to-refresh reconciles L1 and every pending channel before publishing the dashboard; Home repeats that refresh every 20 seconds while a durable record remains pending and the lifecycle is started. QR payment selects an eligible open ADA channel explicitly when more than one exists and resets stale scanner state before camera entry.
+Home shows wallet/network, reviewed ADA/USDA/USDCx/USDM holding rows, distinct ADA transfer availability, per-asset capacity held in L2 channels, every keyed channel's asset/capacity/state/short ID, latest asset-tagged activity, refresh timestamp, payment address, and wallet/settings navigation. Open channels sort first; failed zero-balance attempts appear separately and can be removed only through guarded encrypted cleanup that preserves the open channel and refuses uncertain records. Pull-to-refresh reconciles L1 and every pending channel before publishing the dashboard; Home repeats that refresh every 20 seconds while a durable record remains pending and the lifecycle is started. QR payment offers every eligible exact-catalog open channel, requires explicit selection when more than one exists, and resets stale scanner state before camera entry.
 
 Top-up renders a local address QR with owned sensitive-clipboard expiry. Transfer accepts validated same-network Cardano addresses, including saved Ferret wallets, and supports exact send-all previews. Settings connects a selected Google account, initializes or verifies the encrypted Drive appData backup, detects stale writers, and performs explicit takeover. Settings and Channel read lifecycle and pending-operation status from the encrypted runtime journal. Guarded legacy cleanup writes the cleaned encrypted collection to the verified Drive writer before replacing local state.
 
 
 ## Known platform gaps
 
-- Stablecoin payments are not implemented in Ferret. Runtime now hash-verifies the reviewed catalog and packaged metadata/logos, models exact asset-tagged amounts, exposes read-only native holdings, persists an encrypted keyed channel collection, and binds operations/backups/quotes/receipts/history to an exact asset and keytag. Native transfer/channel funding and USDM/USDCx payment remain P1/P2 work. Connected single-channel migration and cleanup passed on the Pixel; the new multiple-ADA payer path still requires controlled funded Android acceptance before P0 is claimed complete.
+- Reviewed ADA, USDA, USDCx, and USDM channels share the implemented Lightning payment path, exact asset/keytag authorization, encrypted write-ahead, verified receipt, isolated balance/history update, duplicate-invoice guard, and restart reconciliation. Pixel acceptance passed eligibility, multi-channel choice, USDM initialization, quote, and expired-invoice recovery; the operator declined the real payment, so USDM settlement/receipt and ADA/funded USDCx/USDA regressions remain.
 - iOS wallet setup and runtime integrations are unavailable; see `IOS_FOLLOW_UP.md`.
 - Add, close, elapse, end, and squash channel controls are not connected to UI or controlled lifecycle acceptance yet.
 - Funded Mainnet ADA transfer/process-kill/finality acceptance, the two-device Drive takeover matrix, and the close/sweep/removal scenario remain.
@@ -84,6 +84,20 @@ Android installation and manual verification require an API 36 device or emulato
 ## Session log
 
 Entries below are chronological evidence. Older “remaining” or “gated” statements describe their date and are superseded by the Snapshot, Known platform gaps, and newest entry above.
+
+### 2026-09-22 — Reviewed stablecoin-channel Lightning payments
+
+- Home, scan selection, initialization, quote, confirmation, authorization, settlement, receipt, and history now accept every eligible exact-catalog ADA/USDA/USDCx/USDM channel. The selected asset/keytag and current capacity are revalidated through signing; quote expiry is a recoverable error.
+- Removed a nested non-reentrant wallet-lock acquisition by making the Android gateway's selected-channel callback snapshot-only. Existing repository serialization, encrypted Drive write-ahead, verified-writer checks, operation replay, and wallet-wide invoice deduplication remain unchanged.
+- Mixed native-channel isolation, real gateway initialization/signing/unlocked-receipt settlement, catalog/identity/capacity rejection, and fresh-repository USDM recovery checks passed. The focused suite, `androidCheck`, iOS compile gate, and both Konduit authenticated-channel quote tests passed.
+- Installed the debug build without clearing Pixel `3B251JEKB11124`. Controlled discovery reported catalog digest `09ce40fc9bfd7b600506400417b4c09ba0ca2bd5b58703aeb00699c084d298ae`; Home showed open USDM `499b3bf7e98d` at 0.1 USDM and ADA `257410d9617c` at ₳0.463953, and the chooser offered both. USDM zero-squash initialization completed without hanging, an expired invoice returned a recoverable rescan error without pay, and a fresh $0.01 invoice quoted 0.011201 USDM + 0.001733 routing + 0.001414 adaptor = 0.014348 total with 0.085652 post-payment capacity. The operator reviewed and declined Pay, so no live debit, receiver settlement, receipt, or history claim was made.
+
+### 2026-09-15 — Catalog-asset transfer and channel-funding implementation
+
+- L1 transfer and channel Open now carry exact catalog `AssetAmount` identities through construction, authorization, previews, encrypted journals, restart reconciliation, history, and schema migration. Native outputs carry dynamically computed minimum ADA; all selected and unselected native units plus ADA are conserved exactly, with only wallet-owned change accepted.
+- Android exposes ADA, USDA, USDCx, and USDM selectors for transfer and channel funding. Confirmations separately show selected quantity, fee, recipient/channel-output ADA, ledger minimum, protocol reserve, capacity, complete multi-asset change, and transaction ID. Send-all remains ADA-only; add/close/squash and stablecoin/multi-channel payment controls remain unreachable.
+- `:shared:testAndroidHostTest`, `androidCheck`, `:shared:compileKotlinIosSimulatorArm64`, 43 controlled Konduit tests, and the Konduit release build passed. A Pixel 8a verified both catalog selectors and the unchanged P2 boundary. A controlled 2 ADA transfer completed and reconciled as confirmed with its exact previewed fee and transaction ID.
+- Controlled wallets held zero USDM and USDCx, and the operator declined further real transfers, so funded native transfer/Open and Drive recovery acceptance remain outstanding. A cold offline launch correctly reached the availability gate; packaged metadata could not be visually rechecked behind that gate.
 
 ### 2026-09-15 — Verified asset and keyed-channel foundation
 

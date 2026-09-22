@@ -79,6 +79,8 @@ Token presentation data is a build-time input, never a mobile runtime dependency
 - Open or add funds to a channel with the selected catalog asset. A USDM/USDCx channel output must contain the exact token quantity and only the required ADA collateral; transaction validation must reject asset substitution, policy/name mismatch, token loss, unexpected tokens, or change sent outside the wallet.
 - Keep arbitrary native-token transfer out of scope initially. The minimum safe implementation supports assets in the verified Konduit catalog rather than turning Ferret into a generic token wallet.
 
+Implementation status (2026-09-15): catalog-selected transfer and channel Open are wired end to end with exact asset identity, dynamic native-output ADA, complete multi-asset change, schema migration, restart reconciliation, and Android confirmation fields. Host, Android, iOS compile-gate, and Konduit checks pass. Pixel acceptance covered the selectors, P2 boundary, and a confirmed controlled 2 ADA transfer. Funded USDM/USDCx transfer/Open, encrypted Drive recovery on a second installation, and offline visual metadata acceptance remain required; no native funds were available and the operator declined further real transfers. Add-funds remains intentionally unreachable with the other P2 controls.
+
 ### Multiple channels per wallet
 
 - Replace the single wallet-wide `ChannelSnapshot` with a collection keyed by stable channel identity/keytag. Each entry owns its asset definition, state, spendable capacity, pending operation, receipt chain, and immutable history.

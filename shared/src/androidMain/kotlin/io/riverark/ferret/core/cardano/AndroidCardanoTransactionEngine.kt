@@ -52,6 +52,8 @@ import com.bloxbean.cardano.client.util.HexUtil
 import com.bloxbean.cardano.client.transaction.spec.TransactionWitnessSet
 import com.bloxbean.cardano.client.transaction.spec.VkeyWitness
 import com.fasterxml.jackson.databind.ObjectMapper
+import io.riverark.ferret.core.model.AssetCatalog
+import io.riverark.ferret.core.model.ChannelAsset
 import io.riverark.ferret.core.model.CardanoNetwork
 import io.riverark.ferret.core.model.Lovelace
 import io.riverark.ferret.core.network.EvaluationResponse
@@ -66,6 +68,7 @@ import java.util.Optional
 
 class AndroidCardanoTransactionEngine(
     private val transactionProcessor: TransactionProcessor,
+    private val assets: AssetCatalog,
 ) : CardanoTransactionEngine {
     private val objectMapper = ObjectMapper()
 
@@ -150,8 +153,27 @@ class AndroidCardanoTransactionEngine(
             throw error
         }
         if (channelIntent) requireChannelProtocolParameters(params)
+        val selectedAsset = when (intent) {
+            is CardanoIntent.Transfer -> assets.requireAsset(intent.amount.asset)
+            is CardanoIntent.OpenChannel -> assets.requireAsset(intent.amount.asset)
+            else -> null
+        }
+        selectedAsset?.let {
+            require(
+                when (intent) {
+                    is CardanoIntent.Transfer -> intent.amount.baseUnits > 0
+                    is CardanoIntent.OpenChannel ->
+                        intent.amount.baseUnits > 0 && intent.datum.constants.asset == it
+                    else -> true
+                },
+            )
+        }
+        val native = selectedAsset?.policyId != null
         val referenceScript = requireChannelSemantics(intent, ledger)
-        val utxos = ledger.utxos.filter { it.isSpendableBy(intent.sourceAddress) }.map(::toBloxbean)
+        val utxos = ledger.utxos
+            .filter { it.isSpendableBy(intent.sourceAddress, allowNativeAssets = native) }
+            .sortedWith(compareBy({ it.transactionId }, { it.index }))
+            .map(::toBloxbean)
         val supplier = SnapshotUtxoSupplier(utxos)
         val checkedTransactionProcessor = if (!channelIntent) transactionProcessor else object : TransactionProcessor {
             override fun submitTransaction(cborData: ByteArray): Result<String> =
@@ -172,17 +194,70 @@ class AndroidCardanoTransactionEngine(
         }
         val builder = QuickTxBuilder(supplier, ProtocolParamsSupplier { params }, checkedTransactionProcessor)
         val transaction = when (intent) {
-            is CardanoIntent.Transfer -> builder.compose(
-                Tx().payToAddress(intent.destinationAddress, intent.amount.amount()).from(intent.sourceAddress),
-            ).validFrom(intent.validFrom).validTo(intent.validUntil).build()
+            is CardanoIntent.Transfer -> try {
+                val selected = requireNotNull(selectedAsset)
+                if (selected.policyId == null) {
+                    builder.compose(
+                        Tx().payToAddress(intent.destinationAddress, Lovelace(intent.amount.baseUnits).amount())
+                            .from(intent.sourceAddress),
+                    ).validFrom(intent.validFrom).validTo(intent.validUntil).build()
+                } else {
+                    var outputAda = minimumOutputLovelace(
+                        nativeOutput(intent.destinationAddress, selected, intent.amount.baseUnits, null),
+                        coinsPerUtxoByte,
+                        0,
+                    )
+                    var exactTransaction: Transaction? = null
+                    for (attempt in 0 until 8) {
+                        val built = QuickTxBuilder(supplier, ProtocolParamsSupplier { params }, checkedTransactionProcessor)
+                            .compose(
+                                Tx().payToAddress(
+                                    intent.destinationAddress,
+                                    nativeAmounts(selected, intent.amount.baseUnits, outputAda.value),
+                                ).from(intent.sourceAddress),
+                            )
+                            .validFrom(intent.validFrom).validTo(intent.validUntil).build()
+                        val cbor = built.serialize()
+                        val outputIndex = inspect(cbor).outputs.indexOfFirst {
+                            it.address == intent.destinationAddress &&
+                                it.assets == mapOf(selected.connectorUnit to intent.amount.baseUnits)
+                        }.also { require(it >= 0) }
+                        val exactAda = minimumAdaForOutput(cbor, ledger.protocolParametersJson, outputIndex)
+                        if (outputAda == exactAda) {
+                            exactTransaction = built
+                            break
+                        }
+                        outputAda = exactAda
+                    }
+                    requireNotNull(exactTransaction)
+                }
+            } catch (_: com.bloxbean.cardano.client.api.exception.InsufficientBalanceException) {
+                throw InsufficientFundsException()
+            }
             is CardanoIntent.SweepWallet -> builder.compose(
                 Tx().payToAddress(intent.destinationAddress, intent.amount.amount()).from(intent.sourceAddress),
             ).validFrom(intent.validFrom).validTo(intent.validUntil).build()
             is CardanoIntent.OpenChannel -> try {
-                builder.compose(
-                    Tx().payToContract(intent.validatorAddress, intent.amount.amount(), intent.datum.plutus())
-                        .from(intent.sourceAddress),
-                ).additionalSignersCount(1)
+                val selected = requireNotNull(selectedAsset)
+                val tx = if (selected.policyId == null) {
+                    Tx().payToContract(
+                        intent.validatorAddress,
+                        Lovelace(intent.amount.baseUnits).amount(),
+                        intent.datum.plutus(),
+                    )
+                } else {
+                    val outputAda = minimumOutputLovelace(
+                        nativeOutput(intent.validatorAddress, selected, intent.amount.baseUnits, intent.datum.plutus()),
+                        coinsPerUtxoByte,
+                        KONDUIT_MIN_ADA_BUFFER,
+                    )
+                    Tx().payToContract(
+                        intent.validatorAddress,
+                        nativeAmounts(selected, intent.amount.baseUnits, outputAda.value),
+                        intent.datum.plutus(),
+                    )
+                }
+                builder.compose(tx.from(intent.sourceAddress)).additionalSignersCount(1)
                     .validFrom(intent.validFrom).validTo(intent.validUntil).build()
             } catch (_: com.bloxbean.cardano.client.api.exception.InsufficientBalanceException) {
                 throw InsufficientFundsException()
@@ -251,7 +326,7 @@ class AndroidCardanoTransactionEngine(
         return Lovelace(minimumAda(outputs[outputIndex], coinsPerUtxoByte))
     }
 
-    override fun decodeChannelDatum(cborHex: String): ChannelDatum = decodeChannelDatumStrict(cborHex)
+    override fun decodeChannelDatum(cborHex: String): ChannelDatum = decodeChannelDatumStrict(cborHex, assets)
 
     private fun parseProtocolParameters(json: String): Pair<ProtocolParams, Long> {
         val tree = try {
@@ -467,9 +542,11 @@ class AndroidCardanoTransactionEngine(
         if (intent is CardanoIntent.OpenChannel) {
             requireDatum(intent.datum, intent.validatorAddress)
             require(intent.datum.stage == ChannelDatumStage.Opened(0))
-            require(intent.amount.value >= KONDUIT_MIN_ADA_BUFFER)
+            require(intent.amount.baseUnits > if (intent.amount.asset.policyId == null) KONDUIT_MIN_ADA_BUFFER else 0)
         }
         if (current != null) {
+            require(current.constants.asset.policyId == null)
+            require(resulting == null || resulting.constants.asset.policyId == null)
             val channelInput = when (intent) {
                 is CardanoIntent.AddChannelFunds -> intent.channelInput
                 is CardanoIntent.CloseChannel -> intent.channelInput
@@ -558,6 +635,13 @@ class AndroidCardanoTransactionEngine(
             val summary = inspect(cbor)
             summary.requireMatches(intent, ledger.network, feeBound)
             summary.requireL1Funding(intent, ledger)
+            if (intent is CardanoIntent.Transfer && intent.amount.asset.policyId != null) {
+                val index = summary.outputs.indexOfFirst {
+                    it.address == intent.destinationAddress &&
+                        it.assets == mapOf(intent.amount.asset.connectorUnit to intent.amount.baseUnits)
+                }.also { require(it >= 0) }
+                require(summary.outputs[index].lovelace == minimumAdaForOutput(cbor, ledger.protocolParametersJson, index))
+            }
             summary.requireL1Witnesses(Address(intent.sourceAddress).paymentCredentialHash.orElseThrow().let(HexUtil::encodeHexString), signed)
             requireMinimumAda(cbor, ledger.protocolParametersJson)
             return
@@ -600,31 +684,55 @@ class AndroidCardanoTransactionEngine(
             }
 
             val expectedChannelOutput = when (intent) {
-                is CardanoIntent.OpenChannel -> Triple(intent.validatorAddress, intent.amount, intent.datum)
-                is CardanoIntent.AddChannelFunds -> Triple(
-                    intent.channelInput.address,
-                    Lovelace(Math.addExact(intent.channelInput.lovelace.value, intent.amount.value)),
-                    intent.resultingDatum,
-                )
-                is CardanoIntent.CloseChannel -> intent.resultingDatum?.let {
-                    Triple(intent.channelInput.address, intent.channelInput.lovelace, it)
+                is CardanoIntent.OpenChannel -> {
+                    val expectedAssets = intent.amount.asset.policyId?.let {
+                        mapOf(intent.amount.asset.connectorUnit to intent.amount.baseUnits)
+                    }.orEmpty()
+                    val expectedDatum = TransactionDatum.Inline(intent.datum.plutus().serializeToHex())
+                    val output = summary.outputs.single {
+                        it.address == intent.validatorAddress &&
+                            it.assets == expectedAssets &&
+                            it.datum == expectedDatum &&
+                            it.scriptReference == null &&
+                            (intent.amount.asset.policyId != null || it.lovelace.value == intent.amount.baseUnits)
+                    }
+                    if (intent.amount.asset.policyId != null) {
+                        require(output.lovelace.value >= KONDUIT_MIN_ADA_BUFFER)
+                        val index = summary.outputs.indexOf(output)
+                        require(output.lovelace == minimumAdaForOutput(cbor, ledger.protocolParametersJson, index)
+                            .let { Lovelace(maxOf(KONDUIT_MIN_ADA_BUFFER, it.value)) })
+                    }
+                    output
+                }
+                is CardanoIntent.AddChannelFunds -> {
+                    require(intent.currentDatum.constants.asset.policyId == null)
+                    TransactionOutputSummary(
+                        intent.channelInput.address,
+                        Lovelace(Math.addExact(intent.channelInput.lovelace.value, intent.amount.value)),
+                        emptyMap(),
+                        TransactionDatum.Inline(intent.resultingDatum.plutus().serializeToHex()),
+                    )
+                }
+                is CardanoIntent.CloseChannel -> {
+                    require(intent.currentDatum.constants.asset.policyId == null)
+                    intent.resultingDatum?.let {
+                        TransactionOutputSummary(
+                            intent.channelInput.address,
+                            intent.channelInput.lovelace,
+                            emptyMap(),
+                            TransactionDatum.Inline(it.plutus().serializeToHex()),
+                        )
+                    }
                 }
             }
             if (expectedChannelOutput != null) {
-                val (address, amount, datum) = expectedChannelOutput
-                val channelOutput = TransactionOutputSummary(
-                    address,
-                    amount,
-                    emptyMap(),
-                    TransactionDatum.Inline(datum.plutus().serializeToHex()),
-                )
-                require(summary.outputs.count { it == channelOutput } == 1)
+                require(summary.outputs.count { it == expectedChannelOutput } == 1)
                 require(summary.outputs.size in 1..2)
                 require(summary.outputs.all {
-                    it == channelOutput || it.address == intent.sourceAddress &&
-                        it.assets.isEmpty() && it.datum == TransactionDatum.Absent && it.scriptReference == null
+                    it == expectedChannelOutput || it.address == intent.sourceAddress &&
+                        it.datum == TransactionDatum.Absent && it.scriptReference == null
                 })
-                require(amount.value >= KONDUIT_MIN_ADA_BUFFER)
+                require(expectedChannelOutput.lovelace.value >= KONDUIT_MIN_ADA_BUFFER)
             } else {
                 require(summary.outputs.size == 1)
                 require(summary.outputs.single().let {
@@ -632,7 +740,6 @@ class AndroidCardanoTransactionEngine(
                         it.assets.isEmpty() && it.datum == TransactionDatum.Absent && it.scriptReference == null
                 })
             }
-            summary.requireChannelFunding(intent, ledger)
 
             val transaction = Transaction.deserialize(cbor)
             if (spend) {
@@ -867,13 +974,23 @@ class AndroidCardanoTransactionEngine(
     private fun reference(input: com.bloxbean.cardano.client.transaction.spec.TransactionInput) =
         TransactionInputReference(input.transactionId, input.index)
 
-    private fun summarize(output: com.bloxbean.cardano.client.transaction.spec.TransactionOutput) =
-        TransactionOutputSummary(
+    private fun summarize(output: com.bloxbean.cardano.client.transaction.spec.TransactionOutput): TransactionOutputSummary {
+        val summarizedAssets = mutableMapOf<String, Long>()
+        output.value.multiAssets.orEmpty().forEach { multi ->
+            require(Regex("[0-9a-f]{56}").matches(multi.policyId))
+            multi.assets.forEach { asset ->
+                val nameHex = asset.nameAsHex.lowercase().removePrefix("0x")
+                require(nameHex.length <= 64 && nameHex.length % 2 == 0)
+                require(nameHex.all { it in "0123456789abcdef" })
+                val quantity = asset.value.longValueExact()
+                require(quantity > 0)
+                require(summarizedAssets.put(multi.policyId + nameHex, quantity) == null)
+            }
+        }
+        return TransactionOutputSummary(
             address = output.address,
             lovelace = Lovelace(output.value.coin.longValueExact()),
-            assets = output.value.multiAssets.orEmpty().flatMap { multi ->
-                multi.assets.map { asset -> "${multi.policyId}${asset.name}" to asset.value.longValueExact() }
-            }.toMap(),
+            assets = summarizedAssets,
             datum = when {
                 output.inlineDatum != null -> TransactionDatum.Inline(output.inlineDatum.serializeToHex())
                 output.datumHash != null -> TransactionDatum.Hash(HexUtil.encodeHexString(output.datumHash))
@@ -884,6 +1001,7 @@ class AndroidCardanoTransactionEngine(
                 TransactionScriptReference(script.scriptType, HexUtil.encodeHexString(bytes), script.policyId)
             },
         )
+    }
 
     private companion object {
         val COINS_PER_UTXO_SIZE = Regex("[1-9][0-9]*")
@@ -919,6 +1037,39 @@ class AndroidCardanoTransactionEngine(
                 .drop((page ?: 0) * (count ?: 100)).take(count ?: 100)
         override fun getTxOutput(hash: String, index: Int): Optional<Utxo> = Optional.ofNullable(utxos.firstOrNull { it.txHash == hash && it.outputIndex == index })
     }
+    private fun nativeAmounts(asset: ChannelAsset, quantity: Long, lovelace: Long) = listOf(
+        Amount.lovelace(BigInteger.valueOf(lovelace)),
+        Amount.asset(asset.connectorUnit, BigInteger.valueOf(quantity)),
+    )
+
+    private fun nativeOutput(
+        address: String,
+        asset: ChannelAsset,
+        quantity: Long,
+        datum: PlutusData?,
+    ) = TransactionOutput(
+        address,
+        Value.fromCoin(BigInteger.ZERO).add(
+            requireNotNull(asset.policyId),
+            requireNotNull(asset.assetName),
+            BigInteger.valueOf(quantity),
+        ),
+    ).also { it.inlineDatum = datum }
+
+    private fun minimumOutputLovelace(
+        output: TransactionOutput,
+        coinsPerUtxoByte: Long,
+        floor: Long,
+    ): Lovelace {
+        var current = floor
+        repeat(8) {
+            output.value.coin = BigInteger.valueOf(current)
+            val required = maxOf(floor, minimumAda(output.serialize(), coinsPerUtxoByte))
+            if (required == current) return Lovelace(required)
+            current = required
+        }
+        throw IllegalArgumentException("Native output minimum ADA did not converge.")
+    }
 }
 private val POSITIVE_DECIMAL = Regex("[1-9][0-9]*")
 private const val MAX_CHANNEL_EVIDENCE = 10
@@ -937,12 +1088,19 @@ internal fun LedgerUtxo.requireChannelReferenceScript(expectedValidatorHashHex: 
 }
 
 internal fun ChannelDatum.plutus(): PlutusData {
+    val encodedAsset = constants.asset.policyId?.let { policy ->
+        ConstrPlutusData.of(
+            1,
+            BytesPlutusData.of(HexUtil.decodeHexString(policy)),
+            BytesPlutusData.of(HexUtil.decodeHexString(requireNotNull(constants.asset.assetName))),
+        )
+    } ?: ConstrPlutusData.of(0)
     val constants = ListPlutusData.of(
         BytesPlutusData.of(HexUtil.decodeHexString(constants.tagHex)),
         BytesPlutusData.of(HexUtil.decodeHexString(constants.addVerificationKeyHex)),
         BytesPlutusData.of(HexUtil.decodeHexString(constants.adaptorVerificationKeyHex)),
         BigIntPlutusData.of(constants.closePeriodMillis),
-        ConstrPlutusData.of(0),
+        encodedAsset,
     )
     require(stage.evidenceCborHex.size <= MAX_CHANNEL_EVIDENCE) { "invalid channel evidence" }
     val evidence = ListPlutusData.of(*stage.evidenceCborHex.map { requireEvidence(it, stage is ChannelDatumStage.Responded).plutus }.toTypedArray())
@@ -966,7 +1124,7 @@ internal fun ChannelDatum.plutus(): PlutusData {
     )
 }
 
-private fun decodeChannelDatumStrict(cborHex: String): ChannelDatum = try {
+private fun decodeChannelDatumStrict(cborHex: String, assets: AssetCatalog): ChannelDatum = try {
     require(cborHex.isNotEmpty() && cborHex.length % 2 == 0 && cborHex.all { it in "0123456789abcdef" })
     val bytes = HexUtil.decodeHexString(cborHex)
     val decoded = CborDecoder(ByteArrayInputStream(bytes)).decode()
@@ -974,8 +1132,22 @@ private fun decodeChannelDatumStrict(cborHex: String): ChannelDatum = try {
     val root = PlutusData.deserialize(decoded.single()).list(3)
     val validatorHash = root[0].bytes(28)
     val constants = root[1].list(5)
-    val asset = constants[4].constructor(0, 0)
-    require(asset.data.plutusDataList.isEmpty())
+    val encodedAsset = constants[4] as? ConstrPlutusData ?: error("invalid asset")
+    val asset = when (encodedAsset.alternative) {
+        0L -> {
+            require(encodedAsset.data.plutusDataList.isEmpty())
+            assets.ada
+        }
+        1L -> {
+            val identity = encodedAsset.data.plutusDataList
+            require(identity.size == 2)
+            val unit = HexUtil.encodeHexString(identity[0].bytes(28)) +
+                HexUtil.encodeHexString((identity[1] as? BytesPlutusData)?.value?.also { require(it.size <= 32) }
+                    ?: error("invalid asset name"))
+            assets.requireAsset(requireNotNull(assets.assetForConnectorUnit(unit)))
+        }
+        else -> error("invalid asset")
+    }
     val stage = root[2] as? ConstrPlutusData ?: error("invalid stage")
     val fields = stage.data.plutusDataList
     val accountedAmount = fields.getOrNull(0)?.nonNegativeLong() ?: error("invalid stage")
@@ -1007,6 +1179,7 @@ private fun decodeChannelDatumStrict(cborHex: String): ChannelDatum = try {
             HexUtil.encodeHexString(constants[1].bytes(32)),
             HexUtil.encodeHexString(constants[2].bytes(32)),
             constants[3].nonNegativeLong().also { require(it > 0) },
+            asset,
         ),
         decodedStage,
     )
@@ -1078,6 +1251,7 @@ internal fun ChannelRedeemer.plutus(): PlutusData {
 
 
 fun androidCardanoTransactionEngine(
+    assets: AssetCatalog,
     evaluate: suspend (CardanoNetwork, ByteArray) -> EvaluationResponse,
 ): CardanoTransactionEngine =
     AndroidCardanoTransactionEngine(object : TransactionProcessor {
@@ -1099,7 +1273,7 @@ fun androidCardanoTransactionEngine(
             }
             return Result.success("controlled-node evaluation").withValue(results) as Result<List<EvaluationResult>>
         }
-    })
+    }, assets)
 
 private fun String.bloxbeanRedeemerTag() = when (this) {
     "spend" -> RedeemerTag.Spend
