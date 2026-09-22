@@ -56,8 +56,8 @@ import io.riverark.ferret.feature.payment.PaymentReceiptScreen
 import io.riverark.ferret.feature.wallet.CreateWalletScreen
 import io.riverark.ferret.feature.wallet.ChannelScreen
 import io.riverark.ferret.feature.wallet.HomeScreen
-import io.riverark.ferret.feature.wallet.OpenChannelScreen
-import io.riverark.ferret.feature.wallet.OpenChannelViewModel
+import io.riverark.ferret.feature.wallet.ChannelFundingScreen
+import io.riverark.ferret.feature.wallet.ChannelFundingViewModel
 import io.riverark.ferret.feature.wallet.QrCode
 import io.riverark.ferret.feature.wallet.HomeViewModel
 import io.riverark.ferret.feature.wallet.HistoryScreen
@@ -106,7 +106,8 @@ data class FerretDependencies(
     val loadPaymentReceipt: (suspend (WalletId, ProtocolKeytag, String) -> io.riverark.ferret.core.model.Receipt?)? = null,
     val invoiceScanner: (@Composable ((String) -> Unit, () -> Unit) -> Unit)? = null,
     val previewOpenChannel: (suspend (WalletId, AssetAmount) -> ChannelPreview)? = null,
-    val submitOpenChannel: (suspend (WalletId, ChannelPreview) -> String)? = null,
+    val previewAddChannelFunds: (suspend (WalletId, ProtocolKeytag, AssetAmount) -> ChannelPreview)? = null,
+    val submitChannel: (suspend (WalletId, ChannelPreview) -> String)? = null,
     val nowEpochMillis: (() -> Long)? = null,
     val loadSettings: (suspend (WalletProfile) -> WalletSettings)? = null,
     val connectDrive: (suspend () -> String)? = null,
@@ -160,7 +161,8 @@ fun FerretApp(
             dependencies.nowEpochMillis,
             dependencies.loadSettings,
             dependencies.previewOpenChannel,
-            dependencies.submitOpenChannel,
+            dependencies.previewAddChannelFunds,
+            dependencies.submitChannel,
             dependencies.connectDrive,
             dependencies.verifyBackup,
             dependencies.replaceMissingBackup,
@@ -191,7 +193,8 @@ private fun WalletNavigation(
     nowEpochMillis: (() -> Long)?,
     loadSettings: (suspend (WalletProfile) -> WalletSettings)?,
     previewOpenChannel: (suspend (WalletId, AssetAmount) -> ChannelPreview)?,
-    submitOpenChannel: (suspend (WalletId, ChannelPreview) -> String)?,
+    previewAddChannelFunds: (suspend (WalletId, ProtocolKeytag, AssetAmount) -> ChannelPreview)?,
+    submitChannel: (suspend (WalletId, ChannelPreview) -> String)?,
     connectDrive: (suspend () -> String)?,
     verifyBackup: (suspend (WalletId) -> Long)?,
     replaceMissingBackup: (suspend (WalletId) -> Long)?,
@@ -406,7 +409,7 @@ private fun WalletNavigation(
                     { navController.navigate(Route.TopUp(profile.id.value)) },
                     if (
                         profile.network == CardanoNetwork.MAINNET &&
-                        previewOpenChannel != null && submitOpenChannel != null
+                        previewOpenChannel != null && submitChannel != null
                     ) {
                         { navController.navigate(Route.OpenChannel(profile.id.value)) }
                     } else {
@@ -473,31 +476,97 @@ private fun WalletNavigation(
             val profile = (state as? AppState.Ready)?.wallets?.firstOrNull { it.id.value == route.walletId }
             if (
                 profile != null && profile.network == CardanoNetwork.MAINNET &&
-                previewOpenChannel != null && submitOpenChannel != null
+                previewOpenChannel != null && submitChannel != null
             ) {
-                val openViewModel = viewModel(key = "open-${profile.id.value}") {
-                    OpenChannelViewModel(profile.id, previewOpenChannel, submitOpenChannel)
+                val fundingViewModel = viewModel(key = "open-${profile.id.value}") {
+                    ChannelFundingViewModel(profile.id, previewOpenChannel, submitChannel)
                 }
-                val openState by openViewModel.state.collectAsState()
+                val fundingState by fundingViewModel.state.collectAsState()
                 fun showStatus() {
                     navController.popBackStack()
                     navController.navigate(Route.Channel(profile.id.value))
                 }
-                LaunchedEffect(openState.operationId, openState.error) {
-                    if (openState.operationId != null && openState.error == null) showStatus()
+                LaunchedEffect(fundingState.operationId, fundingState.error) {
+                    if (fundingState.operationId != null && fundingState.error == null) showStatus()
                 }
                 SensitiveContent(onSensitiveContentChanged) {
-                    OpenChannelScreen(
+                    ChannelFundingScreen(
                         profile,
                         assetCatalog,
-                        openState,
-                        openViewModel::clearPreview,
-                        openViewModel::previewAsync,
-                        openViewModel::submitAsync,
+                        null,
+                        fundingState,
+                        fundingViewModel::clearPreview,
+                        fundingViewModel::previewAsync,
+                        fundingViewModel::submitAsync,
                         ::showStatus,
                         { navController.navigate(Route.Settings(profile.id.value)) },
                         navController::popBackStack,
                     )
+                }
+            }
+        }
+        composable<Route.AddChannelFunds> { backStackEntry ->
+            val route = backStackEntry.toRoute<Route.AddChannelFunds>()
+            val profile = (state as? AppState.Ready)?.wallets?.firstOrNull { it.id.value == route.walletId }
+            if (
+                profile != null && profile.network == CardanoNetwork.MAINNET &&
+                loadChannels != null && previewAddChannelFunds != null && submitChannel != null
+            ) {
+                var target by remember(route.walletId, route.channelKeytag) { mutableStateOf<io.riverark.ferret.core.channel.ChannelSnapshot?>(null) }
+                var targetError by remember(route.walletId, route.channelKeytag) { mutableStateOf<String?>(null) }
+                LaunchedEffect(route.walletId, route.channelKeytag) {
+                    try {
+                        val collection = loadChannels(profile.id)
+                        val candidate = collection.channels[route.channelKeytag]
+                        val fundingAvailable = collection.unresolvedLegacy.isEmpty() &&
+                            collection.channels.values.none {
+                                it.pending?.payload is io.riverark.ferret.core.channel.ChannelPayload.Transaction
+                            }
+                        target = candidate?.takeIf {
+                            fundingAvailable && it.state is io.riverark.ferret.core.model.ChannelState.Open &&
+                                it.pending == null && it.payments.pending == null
+                        }
+                        if (target == null) targetError = "This channel is no longer available for funding."
+                    } catch (failure: CancellationException) {
+                        throw failure
+                    } catch (_: Exception) {
+                        targetError = "Channel state is unavailable."
+                    }
+                }
+                val current = target
+                if (current == null) {
+                    FerretScreen {
+                        FerretTopBar("Add funds", navigation = {
+                            io.riverark.ferret.ui.FerretTextButton("Back", navController::popBackStack)
+                        })
+                        targetError?.let { FerretErrorState(it) } ?: FerretLoadingState("Loading channel")
+                    }
+                } else {
+                    val fundingViewModel = viewModel(key = "add-${profile.id.value}-${current.keytag.value}") {
+                        ChannelFundingViewModel(
+                            profile.id,
+                            { walletId, amount -> previewAddChannelFunds(walletId, current.keytag, amount) },
+                            submitChannel,
+                        )
+                    }
+                    val fundingState by fundingViewModel.state.collectAsState()
+                    LaunchedEffect(fundingState.operationId, fundingState.error) {
+                        if (fundingState.operationId != null && fundingState.error == null) navController.popBackStack()
+                    }
+                    SensitiveContent(onSensitiveContentChanged) {
+                        ChannelFundingScreen(
+                            profile,
+                            assetCatalog,
+                            current,
+                            fundingState,
+                            fundingViewModel::clearPreview,
+                            fundingViewModel::previewAsync,
+                            fundingViewModel::submitAsync,
+                            navController::popBackStack,
+                            { navController.navigate(Route.Settings(profile.id.value)) },
+                            navController::popBackStack,
+                        )
+                    }
                 }
             }
         }
@@ -545,6 +614,11 @@ private fun WalletNavigation(
                                     }
                                 }
                             }
+                        },
+                        if (previewAddChannelFunds != null && submitChannel != null) {
+                            { keytag -> navController.navigate(Route.AddChannelFunds(profile.id.value, keytag.value)) }
+                        } else {
+                            null
                         },
                         { reload++ },
                         navController::popBackStack,

@@ -59,7 +59,7 @@ import io.riverark.ferret.core.channel.VaultChannelJournal
 import io.riverark.ferret.core.channel.AdaptorChannelRemote
 import io.riverark.ferret.core.channel.ChannelRepository
 import io.riverark.ferret.core.channel.DriveChannelBackupProtocol
-import io.riverark.ferret.core.channel.OpenChannelTransactions
+import io.riverark.ferret.core.channel.ChannelTransactions
 import io.riverark.ferret.core.channel.DefaultPaymentGateway
 import io.riverark.ferret.core.channel.PaymentViewModel
 import io.riverark.ferret.core.channel.ProtocolKeytag
@@ -181,7 +181,7 @@ class MainActivity : FragmentActivity() {
             { walletId -> channelJournal.load(walletId).channels.values.any { it.pending != null } },
         )
         val random = AndroidSecureRandomSource()
-        val openTransactions = OpenChannelTransactions(
+        val channelTransactions = ChannelTransactions(
             vault,
             cardanoEngine,
             assetCatalog,
@@ -198,7 +198,7 @@ class MainActivity : FragmentActivity() {
             verificationKey = { profile ->
                 AndroidProtocolSigner(vault, profile.id, profile.network).verificationKeyHex()
             },
-            availability = ::requireOpenAvailable,
+            availability = ::requireChannelFundingAvailable,
             newTag = { random.bytes(32) },
             nowEpochMillis = System::currentTimeMillis,
         )
@@ -214,7 +214,7 @@ class MainActivity : FragmentActivity() {
                 AndroidProtocolCrypto,
             ),
             { UUID.randomUUID().toString() },
-            openTransactions,
+            channelTransactions,
         )
         walletRemovalManager = WalletRemovalManager(
             DefaultWalletRemovalRepository(
@@ -346,7 +346,13 @@ class MainActivity : FragmentActivity() {
                             channelRepository.previewOpen(walletId, amount)
                         }
                     },
-                    submitOpenChannel = { walletId, preview ->
+                    previewAddChannelFunds = { walletId, keytag, amount ->
+                        val profile = currentProfile(walletId)
+                        coordinators.getValue(profile.network).refresh {
+                            channelRepository.previewAdd(walletId, keytag, amount)
+                        }
+                    },
+                    submitChannel = { walletId, preview ->
                         val profile = currentProfile(walletId)
                         coordinators.getValue(profile.network).refresh {
                             channelRepository.submit(walletId, preview)
@@ -603,7 +609,7 @@ class MainActivity : FragmentActivity() {
         }.claim(checkpoint)
     }
 
-    private suspend fun requireOpenAvailable(walletId: WalletId) {
+    private suspend fun requireChannelFundingAvailable(walletId: WalletId) {
         require(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) { "host is backgrounded" }
         require(hasValidatedNetwork()) { "validated network unavailable" }
         val ready = wallets.state.value as? AppState.Ready ?: error("wallet session unavailable")

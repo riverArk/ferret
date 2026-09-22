@@ -7,6 +7,7 @@ import io.riverark.ferret.core.channel.ChannelPreview
 import io.riverark.ferret.core.cardano.CardanoIntent
 import io.riverark.ferret.core.cardano.UnsignedTransaction
 import io.riverark.ferret.core.cardano.InsufficientFundsException
+import io.riverark.ferret.core.cardano.InsufficientCollateralException
 import io.riverark.ferret.core.cardano.TransactionOutputSummary
 import io.riverark.ferret.core.model.AssetAmount
 import io.riverark.ferret.core.model.CardanoNetwork
@@ -313,37 +314,41 @@ class TransferViewModel(private val walletId: WalletId, private val network: Car
     suspend fun submit(preview: TransferPreview) = l1.submitTransfer(walletId, preview)
 }
 
-data class OpenChannelUiState(
+data class ChannelFundingUiState(
     val preview: ChannelPreview? = null,
     val busy: Boolean = false,
     val operationId: String? = null,
     val error: String? = null,
 )
 
-class OpenChannelViewModel(
+class ChannelFundingViewModel(
     private val walletId: WalletId,
     private val previewer: suspend (WalletId, AssetAmount) -> ChannelPreview,
     private val submitter: suspend (WalletId, ChannelPreview) -> String,
 ) : ViewModel() {
-    private val mutableState = MutableStateFlow(OpenChannelUiState())
+    private val mutableState = MutableStateFlow(ChannelFundingUiState())
     val state = mutableState.asStateFlow()
 
     fun previewAsync(amount: AssetAmount) {
         if (mutableState.value.busy) return
-        mutableState.value = OpenChannelUiState(busy = true)
+        mutableState.value = ChannelFundingUiState(busy = true)
         viewModelScope.launch {
             try {
-                mutableState.value = OpenChannelUiState(preview = previewer(walletId, amount))
+                mutableState.value = ChannelFundingUiState(preview = previewer(walletId, amount))
             } catch (cancelled: CancellationException) {
-                mutableState.value = OpenChannelUiState()
+                mutableState.value = ChannelFundingUiState()
                 throw cancelled
+            } catch (_: InsufficientCollateralException) {
+                mutableState.value = ChannelFundingUiState(
+                    error = "Insufficient ADA-only wallet funds for collateral. Keep at least 5 ADA in separate plain wallet outputs; only the displayed collateral is at risk.",
+                )
             } catch (_: InsufficientFundsException) {
-                mutableState.value = OpenChannelUiState(
+                mutableState.value = ChannelFundingUiState(
                     error = "Insufficient selected asset or ADA for the channel output and transaction fee.",
                 )
             } catch (_: Exception) {
-                mutableState.value = OpenChannelUiState(
-                    error = "Unable to preview channel. Check the amount, connection, and backup.",
+                mutableState.value = ChannelFundingUiState(
+                    error = "Unable to preview channel funding. Check the amount, connection, and backup.",
                 )
             }
         }
@@ -352,15 +357,15 @@ class OpenChannelViewModel(
     fun submitAsync() {
         if (mutableState.value.busy) return
         val preview = mutableState.value.preview ?: return
-        mutableState.value = OpenChannelUiState(busy = true)
+        mutableState.value = ChannelFundingUiState(busy = true)
         viewModelScope.launch {
             try {
-                mutableState.value = OpenChannelUiState(operationId = submitter(walletId, preview))
+                mutableState.value = ChannelFundingUiState(operationId = submitter(walletId, preview))
             } catch (cancelled: CancellationException) {
-                mutableState.value = OpenChannelUiState(operationId = preview.operation.operationId)
+                mutableState.value = ChannelFundingUiState(operationId = preview.operation.operationId)
                 throw cancelled
             } catch (_: Exception) {
-                mutableState.value = OpenChannelUiState(
+                mutableState.value = ChannelFundingUiState(
                     operationId = preview.operation.operationId,
                     error = "Channel status is unavailable. Check the channel before trying again.",
                 )
@@ -369,6 +374,6 @@ class OpenChannelViewModel(
     }
 
     fun clearPreview() {
-        if (!mutableState.value.busy) mutableState.value = OpenChannelUiState()
+        if (!mutableState.value.busy) mutableState.value = ChannelFundingUiState()
     }
 }

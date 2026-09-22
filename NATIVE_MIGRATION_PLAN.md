@@ -2,178 +2,220 @@
 
 ## Scope and deployment decisions
 
-Ferret is an Android-first Kotlin Multiplatform Cardano and Lightning wallet with shared Compose UI. The native cutover is complete: no PWA, Svelte, WASM, browser storage, raw-key import, plaintext backup, arbitrary endpoint, fiat, manual invoice entry, LNURL, or offline mutation path remains.
+Ferret is an Android-first Kotlin Multiplatform Cardano and Lightning wallet with shared Compose UI. The native cutover is complete: no PWA, Svelte, WASM, browser storage, raw-key import, plaintext backup, arbitrary endpoint, fiat-accounting, manual invoice entry, LNURL, or offline mutation path remains.
 
 Production development and acceptance use low-value Mainnet wallets against the controlled connector and adaptor services under `crustypants.com`. Preprod remains in persisted domain models but is unsupported for deployment evidence. `ferret.channel` is not a dependency or test target.
 
-Android is the implemented product. iOS remains a compile-only platform gate until `IOS_FOLLOW_UP.md` is complete.
+Android is the implemented product. iOS remains compile-only until `IOS_FOLLOW_UP.md` is complete.
 
-## Current status — 2026-09-15
+## Current status — 2026-09-22
 
 | Area | Status | Current evidence and boundary |
 |---|---|---|
 | Native build and shared UI | Complete | Kotlin Multiplatform, shared Compose Material 3 UI, Android host, typed `Route`, Java 17, SDK 28/36, dependency locks, `androidCheck`, release checks, and the iOS compile gate are present. |
-| Android custody and onboarding | Complete | Biometric/device-credential unlock, encrypted atomic profiles and seed files, 24-word create/restore, resumable recovery confirmation, duplicate-credential rejection, and the five-minute background lock are implemented. |
-| Deployment and transport | Complete for controlled Mainnet | HTTPS-only pinned connector/adaptor clients, bounded strict DTOs, validated deployment identity, foreground cancellation, session leases, and operation lookup/reconciliation are wired. Other deployments are unsupported. |
-| L1 dashboard and top-up | Asset holdings implemented; connected surface verified | Home derives exact reviewed ADA/USDA/USDCx/USDM holdings from owned UTxOs, keeps ADA holdings separate from transfer availability and L2 channel capacity, bounds unknown assets, and exposes native rows as read-only. The packaged rows and logos were verified on the connected Pixel wallet. |
-| L1 transfer and sweep | Implemented for ADA; live acceptance pending | Public previews are asset-tagged and reject non-ADA before Cardano build/signing. Native transfer and channel funding remain unavailable. A funded ADA device transfer/process-kill/finality run also remains. |
-| Encrypted Drive recovery | Complete-collection implementation; multi-device acceptance pending | One encrypted deterministic channel collection now includes payment state, paid hashes, and unresolved migration evidence. Restore/takeover validates and atomically installs collection plus checkpoint; the complete device-A/device-B matrix remains. |
-| Channel lifecycle | Keyed collection implemented; controlled multi-channel acceptance pending | Multiple entries use the full protocol keytag, operations/results target one entry, and a new ADA channel rejects only its exact duplicate keytag. Native funding and Add/Close/Elapse/End/Squash product controls remain unfinished. |
-| Stablecoin and multi-channel support | P0 implementation complete; funded multi-channel acceptance pending | Runtime verifies the reviewed catalog/digest and packaged presentation metadata, uses exact asset-tagged amounts, persists multiple channels, and exposes native holdings/channel identity. The Pixel migrated its existing open ADA channel and safely cleaned failed zero-balance attempts; native funding/payment remains gated for P1/P2 and the controlled two-ADA-channel scenario remains. |
-| Lightning payment | Existing ADA path migrated; multiple-payer acceptance pending | Quotes, authorizations, results, receipts, recovery, and routes bind an exact keytag and asset. More than one compatible ADA channel requires explicit selection; initialization squash is journaled. The controlled two-channel payment/interruption scenario remains. |
-| Activity and history | Asset/source identity implemented; funded device activity acceptance pending | L1 transactions retain per-asset deltas with one ADA fee; L2 records retain their channel asset and keytag. Deterministic tests pass and terminal legacy history is preserved during guarded cleanup; funded new multi-channel activity remains to be exercised. |
-| Wallet removal | Collection-wide gating implemented; full device acceptance pending | Removal checks every channel, pending channel/payment operation, asset/unknown inventory, unresolved migration, Drive state, and all relevant finality evidence. The funded close/sweep/finality/delete/restore scenario remains. |
-| Android release | Partial | Financial actions are enabled in debug and release builds. Local `androidReleaseCheck` passes with a non-production OAuth placeholder. Production OAuth/signing material and the release-device MASVS matrix remain operator prerequisites. |
+| Android custody and onboarding | Complete | Biometric/device-credential unlock, encrypted atomic profiles and seed files, 24-word create/restore, resumable recovery confirmation, duplicate-credential rejection, protected sensitive routes, and the five-minute background lock are implemented. |
+| Deployment and transport | Complete for controlled Mainnet | HTTPS-only pinned connector/adaptor clients, bounded strict DTOs, validated deployment identity, foreground cancellation, session leases, and durable operation lookup/reconciliation are wired. Other deployments are unsupported. |
+| Reviewed asset catalog | Complete | Ferret hash-verifies the release-bundled ADA/USDA/USDCx/USDM catalog, presentation manifest, and logos. Exact policy/name/decimals/pricing/digest identity is required; runtime Koios and remote-logo requests are forbidden. |
+| L1 dashboard and top-up | Implemented and device-verified | Home derives exact reviewed holdings from owned UTxOs, separates L1 holdings, transfer availability, and L2 capacity, bounds unknown assets, and renders packaged metadata. Top-up remains ADA-address based. |
+| L1 transfer and sweep | Catalog-asset transfer implemented; funded native acceptance pending | Transfer selection, previews, input conservation, dynamic minimum ADA, multi-asset change, authorization, persistence, reconciliation, and history carry exact assets. Send-all and wallet sweep remain ADA-only. A controlled 2 ADA transfer passed; funded USDA/USDCx/USDM transfer and interruption runs remain. |
+| Encrypted Drive recovery | Complete-collection implementation; restore matrix pending | One encrypted deterministic `ChannelCollectionV4` contains every keyed channel, payment journal, paid hash, and unresolved migration record. Write-ahead, writer verification, commit, restore, and takeover operate on the complete collection. The operator skipped restore/takeover testing for the stablecoin-payment pass; the broader two-device matrix remains. |
+| Channel lifecycle | Catalog-asset Open and Add implemented; later controls hidden | Open and per-channel Add accept reviewed assets and validate exact token quantity, channel-output ADA, ledger minimum, protocol reserve, complete change, signed transaction identity, and ADA-only collateral for script-spending Add transactions. Add revalidates the selected open channel, asset, keytag, current capacity, and durable operation identity through submission and restart reconciliation. Close, Elapse, End, and user-initiated Squash remain unreachable until their complete asset-bound flows receive controlled acceptance. Internal zero-squash payment initialization is implemented. |
+| Multi-channel storage | Complete | Channels are keyed by full protocol keytag. Each entry owns its asset, state, spendable capacity, operation, receipt chain, payment journal, and history. Mutations and reconciliation target one exact entry under the existing wallet lock. |
+| Lightning payment | Implemented for reviewed catalog assets; live settlement acceptance incomplete | ADA, USDA, USDCx, and USDM share one asset-aware selection, initialization, quote, confirmation, authorization, submission, reconciliation, receipt, and history path. Deterministic native settlement and restart recovery pass. Pixel acceptance reached a valid USDM confirmation; the operator declined Pay, so live USDM settlement and the new ADA/USDCx/USDA regressions remain. |
+| Activity and history | Implemented | L1 records retain per-asset deltas with one ADA fee. L2 records retain exact amount, fee, selected asset, and channel keytag. Completion mutates only the chosen channel and wallet-wide paid-invoice set. |
+| Wallet removal | Collection-wide gating implemented; full acceptance pending | Removal checks every channel, pending channel/payment operation, reviewed and unknown L1 inventory, unresolved migration evidence, Drive state, and finality. The funded close/sweep/finality/delete/restore scenario remains. |
+| Android release | Partial | Financial routes are enabled in debug and release builds. Local release checks pass with a non-production OAuth placeholder. Production OAuth, signing material, and the release-device security matrix remain operator prerequisites. |
 | iOS | Deferred | Shared contracts compile for `iosSimulatorArm64`; no Xcode project or iOS custody, Cardano, Drive, TLS, QR, lifecycle, or signing adapters exist. |
 
-## Controlled Mainnet evidence
+## Implemented native-asset architecture
 
-The current Android/Konduit integration has completed these device scenarios:
+### Exact asset identity and amounts
 
-1. Created and restored encrypted Mainnet wallet state.
-2. Connected and verified the Google Drive appData writer.
-3. Built, signed, submitted, and reconciled a funded Mainnet channel opening.
-4. Scanned a fresh BOLT11 invoice and obtained an invoice-aware LND route estimate.
-5. Persisted the payment authorization before the Lightning side effect.
-6. Completed the Lightning payment, persisted the returned preimage into the server receipt, reconciled the durable client record, reduced L2 spendable balance, and changed activity from pending to settled.
-7. Re-entered QR payment from Home without retaining a prior payment error screen.
+`ChannelAsset` carries the canonical alias, policy ID and asset name (or ADA), decimal count, pricing definition, and catalog digest. `AssetAmount` carries nonnegative integer base units plus the complete asset identity; checked addition and subtraction reject mismatch, overflow, and negative results. Decimal conversion is presentation-only.
 
-The payment investigation also established two compatibility requirements now implemented by the controlled Konduit service:
+The reviewed build currently contains ADA, USDA, USDCx, and USDM. Catalog membership is exact equality, not alias matching. Discovery must return the packaged catalog digest before a financial action proceeds. Unknown, changed, or tampered assets fail closed rather than becoming ADA or inheriting another asset's decimals or pricing.
 
-- `EstimateRouteFee` must use the actual BOLT11 invoice. Graph-only `QueryRoutes` can report a path that `SendPaymentV2` cannot use.
-- LND variants may return `time_lock_delay` as either a relative delay or an absolute block height. Konduit normalizes both before adding the invoice final CLTV delta.
-
-Konduit atomically stores a successful payment preimage with its reserved authorization. Replaying the same submitted authorization is idempotent and recovers an already-paid preimage instead of issuing a second payment.
-
-## Required stablecoin and multi-channel expansion
-
-Stablecoin payment is required scope. Konduit's generic contracts and asset catalog now support ADA, USDM, USDCx, USDA, and configured assets, but Ferret still assumes one ADA-denominated channel per wallet. Ferret must not claim stablecoin support until every requirement and acceptance scenario in this section is complete.
-
-### Asset identity and amounts
-
-- Add one shared channel-asset value containing the canonical alias, Cardano policy ID plus asset name (or ADA), decimal count, pricing definition, and verified catalog digest.
-- Accept only assets from the controlled Konduit catalog whose digest matches adaptor discovery. Persist the complete asset identity with every channel, operation, quote, receipt, backup, and history record; never trust a ticker or alias alone.
-- Ship the built-in definitions with Ferret. A later configured asset requires an authenticated, bounded catalog payload from the controlled deployment or a release-bundled definition; in either case its canonical digest must equal `asset_catalog_digest` before the asset or its channels become actionable.
-- Represent all balances, transfers, channel capacities, quotes, and fees as integer base units tagged with their asset identity. Decimal formatting is presentation only; binary floating point must not authorize value.
-- Built-in support must include ADA, USDM, and USDCx. USDA and later configured assets may use the same path only when the controlled deployment advertises and pins their definitions. An unknown or changed definition is unavailable, not guessed or silently treated as ADA.
+Asset identity is persisted through channel definitions, prepared operations, quotes, authorizations, encrypted backups, receipts, balances, and history. Existing ADA-only legacy migrations remain ADA-only.
 
 ### Embedded token presentation metadata
 
-Status: complete. The release-bundled catalog, explicit maintainer updater, deterministic shared manifest/logos, strict bounded validation, focused tamper regressions, and offline Android check integration are implemented. Runtime catalog enforcement and all financial/multi-channel work below remain pending.
+Token metadata is a reviewed build-time input:
 
-Token presentation data is a build-time input, never a mobile runtime dependency:
+- `updateEmbeddedAssetMetadata` explicitly reads the pinned Konduit catalog and performs one bounded Mainnet Koios bulk request.
+- The updater accepts only bounded presentation fields, verifies identity and decimals, validates PNG structure/CRC/dimensions, and writes deterministic shared resources.
+- The checked-in manifest and logos are hash-verified offline by normal Android checks.
+- Compilation, tests, startup, balance refresh, and payments do not contact Koios or remote image URLs.
+- A release can use the last reviewed metadata when Koios is unavailable. Adding or changing an asset requires an explicit updater run and reviewed resource diff.
 
-- Add an explicit maintainer task, `updateEmbeddedAssetMetadata`, that reads the approved native-asset identities from Ferret's pinned Konduit catalog and bulk-posts them to Mainnet Koios `POST https://api.koios.rest/api/v1/asset_info` as `_asset_list` policy-ID/asset-name pairs. ADA branding remains a local Ferret resource because ADA is not a native asset.
-- Extract only bounded presentation fields needed by Ferret: CIP-14 fingerprint and Cardano Token Registry `name`, `ticker`, `description`, `url`, and base64 PNG `logo`. Do not embed volatile supply, mint-count, creation-time, or transaction metadata.
-- Treat the Konduit definition as authoritative for policy ID, asset name, decimals, and pricing. Koios metadata is presentation-only. The updater must fail on missing/duplicate responses, identity mismatch, or a Koios registry decimal count that differs from the pinned Konduit definition.
-- Decode each logo during generation, require a valid PNG, bound decoded bytes and dimensions, and write deterministic filenames. Sanitize and bound every text field before generating files.
-- Commit a deterministic manifest and its PNGs under shared Compose resources so Android and future iOS code load identical packaged metadata without HTTP. Sort by canonical asset identity and store source/API version plus content hashes so reviews show intentional metadata changes.
-- The refresh task may use the network only when a maintainer invokes it explicitly. Normal compilation, tests, CI verification, application startup, balance refresh, and payment flows must never contact Koios or any logo URL.
-- Add an offline `verifyEmbeddedAssetMetadata` task and make `androidCheck`/`androidReleaseCheck` depend on it. It validates schema, hashes, PNG bounds, unique identities/tickers, catalog membership, and required embedded entries for USDM and USDCx without regenerating or making network calls.
-- A release may continue using the last reviewed embedded metadata when Koios is unavailable. Adding or changing a supported asset requires rerunning the updater and reviewing the checked-in manifest and image diff.
+### L1 transfer and channel funding
 
-### L1 asset transfer and L2 funding
+Transfer and channel Open allow selection from the reviewed catalog. Per-channel Add fixes the asset to the selected open channel and accepts only an eligible exact-keytag channel with no pending channel or payment operation. The transaction boundary preserves every input asset and separately displays:
 
-- Show L1 balances per asset and allow a user to select an asset before transfer or channel funding.
-- Extend input selection, previews, transaction building, signing inspection, and reconciliation to preserve every native asset exactly. The selected stablecoin quantity, minimum ADA carried by native-token outputs, fees paid in ADA, and all multi-asset change must be shown separately.
-- Open or add funds to a channel with the selected catalog asset. A USDM/USDCx channel output must contain the exact token quantity and only the required ADA collateral; transaction validation must reject asset substitution, policy/name mismatch, token loss, unexpected tokens, or change sent outside the wallet.
-- Keep arbitrary native-token transfer out of scope initially. The minimum safe implementation supports assets in the verified Konduit catalog rather than turning Ferret into a generic token wallet.
+- selected asset quantity;
+- ADA transaction fee;
+- recipient or channel-output ADA;
+- ledger minimum ADA;
+- protocol reserve;
+- resulting channel capacity;
+- Add collateral; and
+- complete ADA/native change.
 
-Implementation status (2026-09-15): catalog-selected transfer and channel Open are wired end to end with exact asset identity, dynamic native-output ADA, complete multi-asset change, schema migration, restart reconciliation, and Android confirmation fields. Host, Android, iOS compile-gate, and Konduit checks pass. Pixel acceptance covered the selectors, P2 boundary, and a confirmed controlled 2 ADA transfer. Funded USDM/USDCx transfer/Open, encrypted Drive recovery on a second installation, and offline visual metadata acceptance remain required; no native funds were available and the operator declined further real transfers. Add-funds remains intentionally unreachable with the other P2 controls.
+Native output validation rejects policy/name substitution, token loss, unexpected tokens, insufficient ADA, foreign change, changed transaction bodies, signed-witness contamination, and non-ADA collateral. Add consumes the exact current channel output, conserves its prior capacity plus the requested amount, and preserves one durable operation identity through encrypted local/Drive write-ahead, connector submission, replay, and restart reconciliation.
 
-### Multiple channels per wallet
+Implementation is complete for transfer, Open, and Add. Remaining work is controlled funded-device evidence for USDA/USDCx/USDM transfer and Open, plus approved low-value ADA/native Add preview, submission, interruption, and Drive-recovery scenarios.
 
-- Replace the single wallet-wide `ChannelSnapshot` with a collection keyed by stable channel identity/keytag. Each entry owns its asset definition, state, spendable capacity, pending operation, receipt chain, and immutable history.
-- Migrate the current encrypted single-channel journal and Drive recovery payload into the collection without losing the existing ADA channel. Backup, restore, stale-writer takeover, and reconciliation must cover the collection atomically under the existing wallet writer lease.
-- Allow multiple open channels with different assets and multiple channels of the same asset. Display asset, spendable balance, lifecycle state, and a short stable channel identifier so same-asset channels remain distinguishable.
-- Mutations and reconciliation address one explicit channel. The existing wallet lock may serialize operations initially, but a pending operation on one channel must not be mistaken for another channel's state.
+### Keyed channel collection
 
-### Payment channel selection
+`ChannelCollectionV4` replaces the singular wallet-wide channel record. It stores channels by full keytag plus a wallet-wide paid-invoice set and unresolved legacy evidence. Each `ChannelSnapshot` owns its exact asset, lifecycle state, pending operation, protocol receipt, spendable capacity, payment journal, and history.
 
-- After decoding the BOLT11 invoice, show compatible open channels before requesting the final quote. If more than one channel can pay, selection is mandatory; Ferret must not silently prefer ADA, a stablecoin, the largest balance, or the last-used channel.
-- If exactly one compatible channel exists it may be preselected, but confirmation must still name its asset, short channel identifier, spendable balance, payment amount, routing fee, adaptor fee, and post-payment balance in that asset.
-- Quote and submit with the selected channel keytag. Persist the channel identity and complete asset definition in the durable payment authorization before the side effect, then verify the receipt against both on reconciliation.
-- Insufficient capacity is evaluated against the selected channel only. The first implementation does not split a payment across channels and does not retry against another channel after submission; either behavior would create a second authorization path.
-- Home and History show balances and activity per asset and source channel. An ADA, USDM, or USDCx payment must update only the selected channel while leaving every other open channel unchanged.
+The encrypted journal and Drive backup persist the complete collection atomically. Guarded cleanup removes only terminal failed zero-balance attempts, preserves records that bind unambiguously to a recovered channel, writes the verified Drive backup before local replacement, and rejects pending, funded, successful-unbound, or uncertain records.
 
-### Stablecoin acceptance
+### Reviewed-asset Lightning payments
 
-Using controlled low-value Mainnet assets:
+Payment capability is the exact packaged catalog, not an ADA gate or a USDM special case. A channel is eligible only when:
 
-1. Detect and display L1 ADA, USDM, and USDCx balances with exact decimal/base-unit conversion.
-2. Fund a new USDM channel from the L1 wallet, including minimum ADA and exact native-token change, then restore it from encrypted Drive state.
-3. Keep ADA, USDM, and USDCx channels open simultaneously and select each explicitly for separate Lightning invoices.
-4. Confirm each quote, fee, durable authorization, receipt, L2 balance, and history item retains the selected channel and asset identity.
-5. Kill the app before and after payment submission and prove reconciliation cannot charge a different channel, repeat the payment, or change an unrelated channel.
-6. Reject catalog-digest changes, alias/identity substitution, decimal mismatch, insufficient selected-channel capacity, unknown assets, and malformed multi-asset transaction bodies.
-7. Close or sweep each asset channel and prove wallet removal remains blocked until all channels, native assets, pending operations, and finality requirements are resolved.
-8. Build, launch, browse balances/channels, and complete a payment with Koios unreachable; verify packaged USDM/USDCx names, tickers, and logos render with no Koios or remote-image request.
+- its complete asset equals the catalog entry for its alias;
+- its spendable amount carries the same asset;
+- it is open;
+- neither channel nor payment work is pending; and
+- spendable capacity is positive.
+
+Home, channel selection, and gateway authorization use the same predicate. Wallet-wide unresolved legacy evidence blocks payment. One eligible channel auto-selects; multiple eligible channels require explicit user choice sorted by keytag. Ferret never chooses the cheapest currency, largest balance, last-used channel, or an ADA fallback.
+
+The chosen keytag and asset remain bound through zero-squash initialization, quote, confirmation, cheque signing, submission, reconciliation, receipt, and history. Before confirmation Ferret re-reads the current selected snapshot and verifies quote keytag, complete asset, invoice hash, invoice millisatoshis, expiry, and checked total against current capacity. Before signing the gateway repeats authoritative catalog, expiry, and capacity checks under the repository wallet lock.
+
+Payment completion requires matching verified unlocked-cheque evidence. A pay response alone is not success. Transport uncertainty leaves the durable operation pending and reconciliation replays the same authorization; it does not create a second invoice payment. Completion debits only the selected channel and records its receipt/hash. Terminal failure preserves capacity and records failed history.
+
+The Android selected-channel callback is snapshot-only. This avoids recursively acquiring the non-reentrant wallet mutex while `initializePayment` or `submitPayment` already owns it; repository serialization, writer verification, and write-ahead remain unchanged.
+
+Early confirmation taps are ignored. Quote expiry and invoice expiry return recoverable rescan errors without payment or an automatic replacement quote.
+
+## Verification and controlled evidence
+
+### Automated evidence
+
+The stablecoin-focused host checks cover:
+
+- sequential USDM then USDCx completion with isolated balances, receipts, fees, keytags, history, and paid hashes;
+- duplicate invoices across ADA/native channels;
+- an ADA quote addressed to a USDM channel;
+- real `DefaultPaymentGateway` USDM initialization, quote, Ed25519 authorization, pay, unlocked receipt, completion, and sibling-channel isolation;
+- catalog, asset, keytag, and capacity rejection before pay;
+- USDA/native eligibility boundaries; and
+- restart reconciliation of one submitted USDM authorization into exactly one debit and receipt.
+
+The following passed on 2026-09-22:
+
+```sh
+./gradlew :shared:testAndroidHostTest \
+  --tests io.riverark.ferret.core.cardano.AndroidCardanoTransactionEngineTest
+./gradlew :shared:testAndroidHostTest \
+  --tests io.riverark.ferret.core.channel.OpenChannelTransactionsTest \
+  --tests io.riverark.ferret.ChannelRepositoryTest \
+  --tests io.riverark.ferret.core.channel.ChannelRemoteRecoveryTest \
+  --tests io.riverark.ferret.DurableChannelStorageTest
+./gradlew :shared:testAndroidHostTest \
+  --tests io.riverark.ferret.core.channel.StablecoinPaymentTest \
+  --tests io.riverark.ferret.ChannelRepositoryTest \
+  --tests io.riverark.ferret.core.channel.ChannelRemoteRecoveryTest
+./gradlew androidCheck
+./gradlew :shared:compileKotlinIosSimulatorArm64
+
+cd ../konduit
+cargo test -p konduit-server channel_operation_reservation_is_idempotent_and_fenced
+cargo test -p konduit-server quote_handler_uses_authenticated_channel_definition
+cargo test -p konduit-server quote_amount_uses_persisted_definition_pricing
+```
+
+These tests establish deterministic reviewed-asset Add construction, ADA-only collateral, authorization, durable admission, idempotent reservation, isolation, restart recovery, and the existing cross-asset payment guarantees. They are not claims of live channel funding or payment.
+
+### Existing controlled Mainnet evidence
+
+Earlier controlled ADA acceptance completed channel opening and one QR-only Lightning payment, including encrypted write-ahead, route-aware quote, signed authorization, returned preimage, verified receipt, reconciliation, spendable-balance reduction, and settled activity.
+
+A controlled 2 ADA L1 transfer also completed and reconciled with its exact previewed fee and transaction ID.
+
+### 2026-09-22 Pixel stablecoin evidence
+
+Debug was installed without clearing Pixel `3B251JEKB11124`. Controlled discovery returned packaged digest `09ce40fc9bfd7b600506400417b4c09ba0ca2bd5b58703aeb00699c084d298ae` and USD-base FX data.
+
+Home showed:
+
+- open USDM channel `499b3bf7e98d` with `0.1 USDM` spendable capacity; and
+- open ADA channel `257410d9617c` with `₳0.463953` spendable capacity.
+
+The chooser offered both channels with distinct labels and correct assets/capacities. USDM zero-squash initialization completed without hanging. An expired invoice produced a recoverable rescan error and no pay request.
+
+A fresh controlled `$0.01` invoice reached USDM confirmation with:
+
+- payment amount: `0.011201 USDM`;
+- routing fee: `0.001733 USDM`;
+- adaptor fee: `0.001414 USDM`;
+- total: `0.014348 USDM`; and
+- projected capacity: `0.085652 USDM`.
+
+The operator reviewed and declined Pay. No live debit, recipient settlement, receipt, paid hash, or history update is claimed. The declined confirmation was cleared by process relaunch without clearing application data.
+
+## Remaining Android work
+
+### P0 — Complete live payment acceptance
+
+Implementation is complete. Remaining evidence requires explicit operator approval:
+
+1. Pay a fresh low-value invoice from USDM and verify receiver settlement.
+2. Verify the signed receipt, invoice hash, operation ID, amount, fees, keytag, and exact `0.014348 USDM`-or-current-quote debit.
+3. Verify ADA, USDCx, USDA, L1 holdings, and unrelated channel history remain unchanged.
+4. Reject the same invoice wallet-wide after completion.
+5. Repeat a fresh low-value ADA payment through the new chooser as a regression.
+6. When funded channels exist and payment is explicitly approved, repeat channel-isolation acceptance for USDCx and USDA.
+
+Do not create or fund channels automatically. A new live payment always requires operator review and confirmation.
+
+### P1 — Complete funded native L1/Open acceptance
+
+Use operator-approved low-value Mainnet funds to exercise USDA/USDCx/USDM transfer and channel Open. Verify exact token conservation, ADA fee/minimum/reserve, multi-asset change, signed transaction identity, connector reconciliation, activity, and interruption before and after submission.
+
+The earlier ADA transfer passed, but its process-kill/finality/rollback matrix remains incomplete.
+
+### P2 — Complete Add acceptance and expose later controls
+
+Per-channel Add is wired through the existing Channel screen, repository, wallet lock, and encrypted collection. On 2026-09-22 the debug build on unlocked Pixel `3B251JEKB11124` exposed Add only for open USDM `499b3bf7e98d` and ADA `257410d9617c`, bound each form to the correct fixed asset, full selected channel, and current capacity, accepted decimal edits, and cleared failed preview state after an edit. Encrypted Drive backup sequence 89 verified successfully. Non-mutating attempts for `0.001 USDM` and `0.1 ADA` were rejected before preview with the recoverable funding-prerequisite error, so fee, minimum ADA, collateral, projected-capacity rendering, and live Add acceptance remain pending. No confirmation or financial submission was attempted.
+
+Wire Close, Elapse, End, and user-initiated Squash only after their asset-bound previews, authorization, encrypted Drive write-ahead, connector/adaptor mutation, reconciliation, interruption recovery, and UI confirmations are complete. Reuse `ChannelRepository`, `WalletRepository` locking, and the existing Channel screen; do not add another coordinator or state store.
+
+### P3 — Complete Drive restore/takeover acceptance
+
+The operator skipped encrypted Drive restore testing for the stablecoin-payment pass. Ordinary write-ahead, writer verification, and commit safety remain mandatory and implemented. Broader release acceptance still needs two Android installations with production OAuth to verify:
+
+- latest-only encrypted read-back;
+- mnemonic restoration of all channel assets, identities, operations, receipts, and paid hashes;
+- stale-writer detection and explicit takeover;
+- old-writer rejection after takeover;
+- tamper, missing-object, broken-chain, same-generation divergence, and catalog-mismatch rejection; and
+- restoration of terminal native-channel and payment records.
+
+### P4 — Complete removal and release acceptance
+
+Exercise closure of every asset channel, same-network ADA/native sweep, finality, verified Drive deletion, local vault deletion, and mnemonic restoration. Then run the signed release with production OAuth/signing material through sensitive-screen, log, file, clipboard, backup, and network checks.
+
+### P5 — Implement iOS
+
+Execute `IOS_FOLLOW_UP.md` only after the Android contracts are stable. Reuse shared asset/channel state, navigation, repositories, and Compose UI; do not create a duplicate SwiftUI product tree.
 
 ## Security and recovery invariants
 
-These remain release requirements, not optional feature gates:
+These remain release requirements:
 
 - `SecureVault` is the only persistence boundary for wallet profiles, seed entropy, and operation journals.
 - Mnemonics and seed entropy are never logged, copied, or exposed outside protected flows.
 - Sensitive Android routes retain `FLAG_SECURE` and clear it when leaving composition.
-- Channel and payment mutations require a validated foreground session, selected Mainnet wallet, current encrypted Drive checkpoint, and matching signed writer lease.
-- Every financial mutation writes durable local and Drive state before its external side effect. Backup must not move after payment or transaction submission.
+- Financial mutations require a validated foreground session, selected Mainnet wallet, current encrypted Drive checkpoint, and matching signed writer lease.
+- Every mutation writes durable local and Drive state before its external side effect.
 - Reconciliation reuses the original operation identity and exact signed payload; it never invents a replacement operation.
-- Payment receipt signatures, cheque identity, amount, index, lock/preimage, and channel keytag are verified before settlement.
-- Transaction inspection rejects unknown inputs, value imbalance, unexpected scripts/datums/redeemers, invalid witnesses, stale protocol parameters, and changed transaction bodies.
+- Receipt signatures, cheque identity, amount, index, timeout, lock/preimage, asset, and channel keytag are verified before settlement.
+- Transaction inspection rejects unknown inputs, value imbalance, unexpected assets/scripts/datums/redeemers, invalid witnesses, stale protocol parameters, and changed transaction bodies.
 - Offline or mismatched deployment state exposes no cached financial actions.
-- Koios and token logo URLs are forbidden at runtime. Only reviewed, bounded, hash-verified metadata and images packaged in the application may be rendered.
-
-## Remaining Android work
-
-### P0 — Asset and multi-channel foundation (implementation and single-channel migration complete)
-
-The clean model/storage cutover is implemented and covered by deterministic tests. The connected Pixel verified packaged asset presentation, L1/L2 balance separation, keyed channel display, migration of its existing open ADA channel, and guarded cleanup of failed zero-balance attempts while preserving the open channel. Do not claim full P0 acceptance until the controlled two-ADA-channel payer/interruption scenario completes:
-
-- introduce verified asset identity and integer asset amounts;
-- migrate one `ChannelSnapshot` into a keyed channel collection;
-- bind operations, writer backups, quotes, receipts, balances, and history to one channel and asset;
-- expose ADA, USDM, and USDCx balances and channel identities without adding a second wallet or navigation store;
-- add the explicit Koios refresh task and offline embedded-metadata verifier before asset presentation UI ships.
-
-Migration restores existing encrypted ADA data only when durable keytag evidence is unambiguous. Guarded cleanup removes only terminal failed, zero-balance attempts, preserves terminal records that bind unambiguously to the recovered open channel, updates the verified encrypted Drive backup before local state, and refuses pending, funded, successful-unbound, or uncertain records.
-
-### P1 — L1 transfer acceptance and asset-channel funding
-
-First run the outstanding low-value Mainnet ADA transfer and verify:
-
-- exact preview amount, fee, change, recipient, and transaction ID;
-- one stable operation ID through submission;
-- process kill after upstream acceptance without duplicate submission;
-- confirmed, rollback, reconfirmed, and depth-2160 settlement transitions;
-- refreshed connector balance and immutable activity.
-
-Then extend the same transaction boundary to catalog assets and complete the USDM funding scenario. Stablecoin funding must prove token conservation, separate ADA fees/minimum output value, safe multi-asset change, submission reconciliation, and Drive recovery before USDM or USDCx payment is enabled.
-
-### P2 — Multi-channel payment and lifecycle controls
-
-Make channel selection part of the payment flow and prove ADA, USDM, and USDCx payments debit only the chosen channel. Then wire Add funds, Close, Elapse, End, and Squash through the keyed `ChannelRepository`, transaction authorizer, Drive write-ahead, connector operation identity, and adaptor reconciliation. Do not add another coordinator or state store.
-
-For each asset and control, run controlled Mainnet evaluation plus interruption checks before and after the external side effect. Reuse the existing Channel screen for the channel list and lifecycle controls.
-
-### P3 — Drive takeover matrix
-
-With two Android installations and the production OAuth configuration, verify:
-
-- initial backup creation and latest-only read-back;
-- mnemonic restore of all channel assets, identities, operations, and receipts from the latest encrypted checkpoint;
-- stale-writer detection and explicit takeover;
-- device A rejection after device B takes over;
-- tamper, missing-object, broken-chain, same-generation divergence, and asset-catalog mismatch rejection;
-- successful restoration of terminal channel and payment records.
-
-### P4 — Removal and release acceptance
-
-Exercise closure of every asset channel, same-network ADA/native-asset sweep, finality, verified Drive deletion, local vault deletion, and mnemonic restoration. Then run the signed release with production OAuth credentials through the sensitive-screen, log, file, clipboard, backup, and network checks.
-
-### P5 — iOS implementation
-
-Execute `IOS_FOLLOW_UP.md` only after the Android contracts above are stable. Reuse shared asset/channel state, navigation, repositories, and Compose UI; do not create a duplicate SwiftUI product tree.
+- Koios and token-logo URLs are forbidden at runtime.
 
 ## Verification commands
 
@@ -186,10 +228,10 @@ Primary Ferret checks:
 FERRET_GOOGLE_SERVER_CLIENT_ID='<client-id>' ./gradlew androidReleaseCheck
 ```
 
-Install the production-enabled debug behavior without feature properties:
+Install production-enabled debug behavior without clearing data:
 
 ```sh
-./gradlew :androidApp:installDebug
+ANDROID_SERIAL='<serial>' ./gradlew :androidApp:installDebug
 ```
 
 Relevant controlled Konduit checks after payment or channel protocol changes:
@@ -200,4 +242,4 @@ cargo test -p bln-client -p konduit-server
 cargo build --release -p konduit-server
 ```
 
-Device evidence must use the controlled Mainnet services. Passing builds alone do not replace the required ADA/USDM/USDCx multi-channel scenarios, funded transfer, multi-device Drive, channel-control, removal, or signed-release scenarios.
+Device evidence must use controlled Mainnet services. Passing builds do not replace live ADA/USDM/USDCx/USDA payment, funded native transfer/Open/Add, Drive takeover, later channel-control, removal, or signed-release acceptance.

@@ -8,7 +8,7 @@
 
 ## Product and platforms
 
-Ferret is an Android-first Cardano and Lightning wallet. Android has real biometric/device-credential authentication, encrypted persistence, Cardano wallet derivation and transaction authorization, Google Drive channel recovery, keyed Mainnet ADA/native channels, QR-only BOLT11 payment with eligible-channel selection, catalog-asset L1 transfer and channel-opening flows, ADA sweep, and safe wallet-removal orchestration. Shared Kotlin code supplies domain state, typed navigation, repositories, ViewModels, and Compose UI.
+Ferret is an Android-first Cardano and Lightning wallet. Android has real biometric/device-credential authentication, encrypted persistence, Cardano wallet derivation and transaction authorization, Google Drive channel recovery, keyed Mainnet ADA/native channels, QR-only BOLT11 payment with eligible-channel selection, catalog-asset L1 transfer, channel Open/Add flows, ADA sweep, and safe wallet-removal orchestration. Shared Kotlin code supplies domain state, typed navigation, repositories, ViewModels, and Compose UI.
 
 iOS compiles the shared Compose root and displays `Wallet setup is not available in this iOS build.` It does not provide wallet operations. `IOS_FOLLOW_UP.md` owns the missing Xcode project, secure vault, authentication, mnemonic, Cardano, Drive, TLS, QR, signing, and physical-device work.
 
@@ -40,7 +40,7 @@ Seed entropy is cleared after derivation and vault callbacks. Mnemonic restore/d
 
 ## Navigation and UI
 
-`Route` is the single typed navigation model. Repository states map to Unlock, connectivity progress, Offline, WalletPicker, RecoveryPhrase, RestoreBackup, or Home. Root navigation uses single-top replacement so repository emissions do not stack destinations. Unconfirmed wallets cannot navigate around recovery confirmation. A mnemonic-restored wallet offers Google Drive channel recovery before Home; skipping remains explicit. Mainnet Home exposes top-up, transfer, channel opening/status, QR payment, history, settings, and removal when their existing runtime invariants permit them. Add/close/squash channel controls remain unavailable.
+`Route` is the single typed navigation model. Repository states map to Unlock, connectivity progress, Offline, WalletPicker, RecoveryPhrase, RestoreBackup, or Home. Root navigation uses single-top replacement so repository emissions do not stack destinations. Unconfirmed wallets cannot navigate around recovery confirmation. A mnemonic-restored wallet offers Google Drive channel recovery before Home; skipping remains explicit. Mainnet Home exposes top-up, transfer, channel Open/Add/status, QR payment, history, settings, and removal when their runtime invariants permit them. Close/elapse/end/squash channel controls remain unavailable.
 
 The Refined Ferret theme is light-only: cream canvas, near-white surfaces, charcoal ink, yellow primary, accessible coral secondary, blue tertiary, and dark red errors. Exo 2 headings, Ubuntu Mono body text, rounded outlined surfaces, 48 dp touch targets, edge-to-edge safe drawing insets, bundled ferret art, and bundled Material Symbols are shared across implemented screens.
 
@@ -53,7 +53,7 @@ Top-up renders a local address QR with owned sensitive-clipboard expiry. Transfe
 
 - Reviewed ADA, USDA, USDCx, and USDM channels share the implemented Lightning payment path, exact asset/keytag authorization, encrypted write-ahead, verified receipt, isolated balance/history update, duplicate-invoice guard, and restart reconciliation. Pixel acceptance passed eligibility, multi-channel choice, USDM initialization, quote, and expired-invoice recovery; the operator declined the real payment, so USDM settlement/receipt and ADA/funded USDCx/USDA regressions remain.
 - iOS wallet setup and runtime integrations are unavailable; see `IOS_FOLLOW_UP.md`.
-- Add, close, elapse, end, and squash channel controls are not connected to UI or controlled lifecycle acceptance yet.
+- Per-channel Add is implemented for reviewed ADA/native assets with exact current-output authorization, ADA-only collateral, encrypted write-ahead, idempotent submission, restart recovery, and eligible-channel UI. The controlled Pixel verified eligible ADA/USDM actions, fixed asset/keytag/current-capacity forms, decimal editing, backup verification, and rejection before confirmation when runtime funding prerequisites were unavailable. A successful non-mutating preview, approved submission, interruption, and Drive acceptance remain. Close, elapse, end, and squash controls are not connected.
 - Funded Mainnet ADA transfer/process-kill/finality acceptance, the two-device Drive takeover matrix, and the close/sweep/removal scenario remain.
 - Production release verification still requires the real Google OAuth client ID, signing material, and device security review.
 - Only Mainnet services under `crustypants.com` are supported. Preprod and `ferret.channel` do not count as deployment or release evidence.
@@ -84,6 +84,12 @@ Android installation and manual verification require an API 36 device or emulato
 ## Session log
 
 Entries below are chronological evidence. Older “remaining” or “gated” statements describe their date and are superseded by the Snapshot, Known platform gaps, and newest entry above.
+
+### 2026-09-22 — Reviewed-asset channel Add
+
+- Per-channel Add now fixes the selected channel's reviewed asset and full keytag through preview, signing, encrypted local/Drive write-ahead, connector reservation/submission, reconciliation, and restart replay. Native Add conserves exact token quantity and existing capacity, computes channel minimum ADA, preserves complete change, and uses explicit ADA-only collateral.
+- Channel status exposes Add only for an open channel with no channel/payment operation and no unresolved collection transaction. Confirmation shows amount, fee, output/minimum/reserve/extra ADA, projected capacity, change, and collateral; invalid or changed deep links fail closed.
+- Focused engine, transaction authorization, repository, durable storage, and recovery checks passed, as did `androidCheck`, the iOS compile gate, and Konduit's idempotent/fenced reservation check. On unlocked Pixel `3B251JEKB11124`, Channels exposed Add for open USDM `499b3bf7e98d` at `0.085652 USDM` and ADA `257410d9617c` at `₳0.463953`; each form retained its fixed asset, selected channel ID, and current capacity. Decimal edits cleared prior errors, and encrypted backup sequence 89 verified. Attempts to preview `0.001 USDM` and `0.1 ADA` stopped at the recoverable funding-prerequisite error before any confirmation, so the detailed preview surface and live submission are not claimed.
 
 ### 2026-09-22 — Reviewed stablecoin-channel Lightning payments
 

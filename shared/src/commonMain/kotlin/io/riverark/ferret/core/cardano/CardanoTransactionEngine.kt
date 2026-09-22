@@ -6,6 +6,7 @@ import io.riverark.ferret.core.model.ChannelAsset
 import io.riverark.ferret.core.model.Lovelace
 import kotlinx.serialization.Serializable
 class InsufficientFundsException : IllegalArgumentException("Insufficient selected asset or ADA for the output and fee.")
+class InsufficientCollateralException : IllegalArgumentException("Insufficient ADA-only wallet funds for collateral.")
 
 @Serializable data class DerivedWallet(val paymentAddress: String, val stakeAddress: String, val paymentCredentialHex: String)
 @Serializable
@@ -201,7 +202,7 @@ sealed interface CardanoIntent {
 
     @Serializable data class Transfer(override val sourceAddress: String, val destinationAddress: String, val amount: AssetAmount, override val operationId: String, override val validFrom: Long, override val validUntil: Long) : CardanoIntent
     @Serializable data class OpenChannel(override val sourceAddress: String, val validatorAddress: String, val referenceInput: LedgerUtxo, val datum: ChannelDatum, val amount: AssetAmount, override val operationId: String, override val validFrom: Long, override val validUntil: Long) : CardanoIntent
-    @Serializable data class AddChannelFunds(override val sourceAddress: String, val channelInput: LedgerUtxo, val referenceInput: LedgerUtxo, val currentDatum: ChannelDatum, val resultingDatum: ChannelDatum, val amount: Lovelace, override val operationId: String, override val validFrom: Long, override val validUntil: Long) : CardanoIntent
+    @Serializable data class AddChannelFunds(override val sourceAddress: String, val channelInput: LedgerUtxo, val referenceInput: LedgerUtxo, val currentDatum: ChannelDatum, val resultingDatum: ChannelDatum, val amount: AssetAmount, override val operationId: String, override val validFrom: Long, override val validUntil: Long) : CardanoIntent
     @Serializable data class CloseChannel(override val sourceAddress: String, val channelInput: LedgerUtxo, val referenceInput: LedgerUtxo, val currentDatum: ChannelDatum, val step: CloseChannelStep, val resultingDatum: ChannelDatum?, val amount: Lovelace, override val operationId: String, override val validFrom: Long, override val validUntil: Long) : CardanoIntent
     @Serializable data class SweepWallet(override val sourceAddress: String, val destinationAddress: String, val amount: Lovelace, override val operationId: String, override val validFrom: Long, override val validUntil: Long) : CardanoIntent
 }
@@ -377,7 +378,11 @@ fun TransactionSummary.requireChannelFunding(intent: CardanoIntent, ledger: Ledg
             require(
                 utxo.isSpendableBy(
                     intent.sourceAddress,
-                    allowNativeAssets = intent is CardanoIntent.OpenChannel && intent.amount.asset.policyId != null,
+                    allowNativeAssets = when (intent) {
+                        is CardanoIntent.OpenChannel -> intent.amount.asset.policyId != null
+                        is CardanoIntent.AddChannelFunds -> intent.amount.asset.policyId != null
+                        is CardanoIntent.CloseChannel -> false
+                    },
                 ),
             )
         }

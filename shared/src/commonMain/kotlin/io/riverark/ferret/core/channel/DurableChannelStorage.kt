@@ -580,18 +580,38 @@ class VaultChannelJournal(
             require(it.quote.keytag == entry.keytag && it.quote.amount.asset == entry.asset)
             require(it.invoiceHash == it.quote.invoiceHash)
         }
-        (operation.payload as? ChannelPayload.Transaction)?.intent?.let { intent ->
-            if (intent is io.riverark.ferret.core.cardano.CardanoIntent.OpenChannel) {
-                val action = operation.action as? ChannelAction.Open ?: error("invalid open transaction")
-                require(intent.amount == action.amount)
-                require(intent.amount.asset == operation.asset && operation.asset == entry.asset)
-                require(intent.datum.constants.asset == entry.asset)
-                require(operation.keytag == ProtocolKeytag.from(
-                    intent.datum.constants.addVerificationKeyHex,
-                    ProtocolTag(intent.datum.constants.tagHex),
-                    32,
-                ))
-                require(operation.resultingSpendableBalance?.asset == entry.asset)
+        (operation.payload as? ChannelPayload.Transaction)?.let { payload ->
+            when (val intent = payload.intent) {
+                is io.riverark.ferret.core.cardano.CardanoIntent.OpenChannel -> {
+                    val action = operation.action as? ChannelAction.Open ?: error("invalid open transaction")
+                    require(intent.amount == action.amount)
+                    require(intent.amount.asset == operation.asset && operation.asset == entry.asset)
+                    require(intent.datum.constants.asset == entry.asset)
+                    require(operation.keytag == ProtocolKeytag.from(
+                        intent.datum.constants.addVerificationKeyHex,
+                        ProtocolTag(intent.datum.constants.tagHex),
+                        32,
+                    ))
+                    require(operation.resultingSpendableBalance?.asset == entry.asset)
+                }
+                is io.riverark.ferret.core.cardano.CardanoIntent.AddChannelFunds -> {
+                    val action = operation.action as? ChannelAction.Add ?: error("invalid add transaction")
+                    require(intent.amount == action.amount && intent.amount.baseUnits > 0)
+                    require(intent.amount.asset == operation.asset && operation.asset == entry.asset)
+                    require(intent.currentDatum == intent.resultingDatum)
+                    require(intent.currentDatum.constants.asset == entry.asset)
+                    require(intent.currentDatum.stage is io.riverark.ferret.core.cardano.ChannelDatumStage.Opened)
+                    require(intent.channelInput.datumHex != null)
+                    require(intent.channelInput.datumHashHex == null && intent.channelInput.scriptRefHex == null)
+                    require(operation.keytag == ProtocolKeytag.from(
+                        intent.currentDatum.constants.addVerificationKeyHex,
+                        ProtocolTag(intent.currentDatum.constants.tagHex),
+                        32,
+                    ))
+                    require(operation.priorChannelIdentity == (entry.state as? io.riverark.ferret.core.model.ChannelState.Open)?.channelId)
+                    require(operation.resultingSpendableBalance == entry.spendableBalance + action.amount)
+                }
+                else -> error("unsupported channel transaction intent")
             }
         }
     }

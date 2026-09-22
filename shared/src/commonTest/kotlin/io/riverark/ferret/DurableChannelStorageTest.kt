@@ -182,6 +182,83 @@ class DurableChannelStorageTest {
         assertEquals(ADA, migratedIntent.datum.constants.asset)
     }
 
+    @Test fun nativeAddRoundTripsAndRejectsMismatchedProjectedCapacity() {
+        val journal = VaultChannelJournal(FakeVault(), CATALOG)
+        val usdm = requireNotNull(CATALOG.asset("usdm"))
+        val tag = "01".repeat(32)
+        val verificationKey = "02".repeat(32)
+        val keytag = ProtocolKeytag.from(verificationKey, ProtocolTag(tag), 32)
+        val datum = ChannelDatum(
+            "03".repeat(28),
+            ChannelConstants(tag, verificationKey, "04".repeat(32), 1_800_000, usdm),
+            ChannelDatumStage.Opened(0),
+        )
+        val amount = AssetAmount(usdm, 25_000)
+        val intent = CardanoIntent.AddChannelFunds(
+            "addr1source",
+            LedgerUtxo(
+                "11".repeat(32),
+                0,
+                "addr1validator",
+                Lovelace(3_000_000),
+                mapOf(usdm.connectorUnit to 100_000),
+                datumHex = "d87980",
+            ),
+            LedgerUtxo("22".repeat(32), 0, "addr1reference", Lovelace(2_000_000)),
+            datum,
+            datum,
+            amount,
+            "00000000-0000-4000-8000-000000000001",
+            10,
+            20,
+        )
+        val operation = PreparedChannelOperation(
+            intent.operationId,
+            "33".repeat(32),
+            keytag,
+            usdm,
+            ChannelAction.Add(amount),
+            priorChannelIdentity = "opening-transaction",
+            preparedAtEpochMillis = 123,
+            payload = ChannelPayload.Transaction(
+                byteArrayOf(1),
+                "44".repeat(32),
+                intent = intent,
+                feeBound = Lovelace(200_000),
+            ),
+            resultingSpendableBalance = AssetAmount(usdm, 105_000),
+        )
+        val entry = ChannelSnapshot(
+            keytag,
+            usdm,
+            ChannelState.Open("opening-transaction"),
+            pending = operation,
+            spendableBalance = AssetAmount(usdm, 80_000),
+        )
+        val collection = ChannelCollectionV4(
+            walletId = WALLET,
+            catalogDigest = DIGEST,
+            channels = mapOf(keytag.value to entry),
+        )
+
+        val encoded = journal.encodeBackup(collection)
+        val decoded = journal.decodeBackup(WALLET, encoded).channels.getValue(keytag.value)
+        assertEquals(entry.copy(pending = null), decoded.copy(pending = null))
+        assertEquals(operation, decoded.pending!!.copy(payload = operation.payload))
+        assertContentEquals(
+            (operation.payload as ChannelPayload.Transaction).unsignedBody,
+            (decoded.pending.payload as ChannelPayload.Transaction).unsignedBody,
+        )
+        assertFails {
+            journal.encodeBackup(collection.copy(channels = mapOf(
+                keytag.value to entry.copy(pending = operation.copy(
+                    resultingSpendableBalance = AssetAmount(usdm, 105_001),
+                )),
+            )))
+        }
+        encoded.fill(0)
+    }
+
     @Test fun guardedCleanupRemovesOnlyFailedEmptyAttemptsAndPreservesOpenChannel() {
         val journal = VaultChannelJournal(FakeVault(), CATALOG)
         val openKey = "04".repeat(66)

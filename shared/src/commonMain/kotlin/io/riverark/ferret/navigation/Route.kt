@@ -17,6 +17,7 @@ import kotlinx.serialization.Serializable
     @Serializable data class Transfer(val walletId: String) : Route
     @Serializable data class History(val walletId: String) : Route
     @Serializable data class OpenChannel(val walletId: String) : Route
+    @Serializable data class AddChannelFunds(val walletId: String, val channelKeytag: String) : Route
     @Serializable data class Channel(val walletId: String) : Route
     @Serializable data class ScanInvoice(val walletId: String) : Route
     @Serializable data class ConfirmPayment(val walletId: String) : Route

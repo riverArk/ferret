@@ -238,7 +238,7 @@ class AndroidCardanoTransactionEngineTest {
             reference,
             current,
             current,
-            Lovelace(1_000_000),
+            AssetAmount(assetCatalog.ada, 1_000_000),
             "00000000-0000-4000-8000-000000000018",
             4_492_800,
             4_492_900,
@@ -247,6 +247,7 @@ class AndroidCardanoTransactionEngineTest {
             CardanoNetwork.MAINNET,
             listOf(
                 LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000)),
+                LedgerUtxo("33".repeat(32), 0, source.paymentAddress, Lovelace(5_000_000)),
                 reference,
                 channelInput,
             ),
@@ -307,6 +308,84 @@ class AndroidCardanoTransactionEngineTest {
         reject { Result.error("node failure") as Result<List<EvaluationResult>> }
         reject { error("node failure") }
     }
+
+    @Test fun nativeAddBuildsSignsAndConservesEveryWalletAsset() = runBlocking<Unit> {
+        val entropy = ByteArray(32) { it.toByte() }
+        val engine = AndroidCardanoTransactionEngine(processor { cbor ->
+            @Suppress("UNCHECKED_CAST")
+            Result.success("fixture").withValue(exactEvaluation(cbor)) as Result<List<EvaluationResult>>
+        }, assetCatalog)
+        try {
+            val source = engine.deriveWallet(entropy, CardanoNetwork.MAINNET)
+            val usdm = requireNotNull(assetCatalog.asset("usdm"))
+            val usdcx = requireNotNull(assetCatalog.asset("usdcx"))
+            val datum = channelDatum(ChannelDatumStage.Opened(0), walletAddKey(entropy)).let {
+                it.copy(constants = it.constants.copy(asset = usdm))
+            }
+            val channel = LedgerUtxo(
+                "22".repeat(32),
+                0,
+                MAINNET.validatorAddress,
+                Lovelace(3_000_000),
+                mapOf(usdm.connectorUnit to 100_000),
+                datumHex = datum.plutus().serializeToHex(),
+            )
+            val reference = fixtureReference()
+            val ledger = LedgerSnapshot(
+                CardanoNetwork.MAINNET,
+                listOf(
+                    LedgerUtxo(
+                        "00".repeat(32),
+                        0,
+                        source.paymentAddress,
+                        Lovelace(10_000_000),
+                        mapOf(usdm.connectorUnit to 30_000, usdcx.connectorUnit to 7),
+                    ),
+                    LedgerUtxo("33".repeat(32), 0, source.paymentAddress, Lovelace(10_000_000)),
+                    LedgerUtxo("44".repeat(32), 0, source.paymentAddress, Lovelace(5_000_000)),
+                    reference,
+                    channel,
+                ),
+                channelProtocolParameters,
+                4_492_800,
+            )
+            val intent = CardanoIntent.AddChannelFunds(
+                source.paymentAddress,
+                channel,
+                reference,
+                datum,
+                datum,
+                AssetAmount(usdm, 25_000),
+                "00000000-0000-4000-8000-000000000029",
+                4_492_800,
+                4_492_900,
+            )
+
+            val unsigned = engine.build(intent, ledger)
+            val summary = engine.inspect(unsigned.cbor)
+            val output = summary.outputs.single { it.address == MAINNET.validatorAddress }
+            assertEquals(mapOf(usdm.connectorUnit to 125_000L), output.assets)
+            assertEquals(channel.lovelace, output.lovelace)
+            assertTrue(summary.collateralInputs.isNotEmpty())
+            summary.requireChannelFunding(intent, ledger)
+            val change = summary.outputs.single { it.address == source.paymentAddress }
+            assertEquals(7L, change.assets[usdcx.connectorUnit])
+            val signed = engine.sign(unsigned, entropy, intent, ledger)
+            try {
+                val signedSummary = engine.inspect(signed.cbor)
+                signedSummary.requireL1Witnesses(source.paymentCredentialHex, signed = true)
+                assertEquals(engine.transactionId(unsigned.cbor), engine.transactionId(signed.cbor))
+            } finally {
+                signed.cbor.fill(0)
+            }
+            assertFailsWith<ArithmeticException> {
+                engine.build(intent.copy(amount = AssetAmount(usdm, Long.MAX_VALUE)), ledger)
+            }
+        } finally {
+            entropy.fill(0)
+        }
+    }
+
     @Test fun channelSemanticsBindWalletLedgerStagesAndSlotTimes() = runBlocking {
         val entropy = ByteArray(32) { it.toByte() }
         val engine = AndroidCardanoTransactionEngine(processor { cbor ->
@@ -325,7 +404,8 @@ class AndroidCardanoTransactionEngineTest {
             datumHex = datum(stage).plutus().serializeToHex(),
         )
         val fuel = LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000))
-        fun ledger(channel: LedgerUtxo, utxos: List<LedgerUtxo> = listOf(fuel, reference, channel), slot: Long = 4_492_800) =
+        val collateral = LedgerUtxo("33".repeat(32), 0, source.paymentAddress, Lovelace(5_000_000))
+        fun ledger(channel: LedgerUtxo, utxos: List<LedgerUtxo> = listOf(fuel, collateral, reference, channel), slot: Long = 4_492_800) =
             LedgerSnapshot(CardanoNetwork.MAINNET, utxos, channelProtocolParameters, slot)
         suspend fun buildAndSign(intent: CardanoIntent, snapshot: LedgerSnapshot): UnsignedTransaction {
             val unsigned = engine.build(intent, snapshot)
@@ -343,7 +423,7 @@ class AndroidCardanoTransactionEngineTest {
         val opened = ChannelDatumStage.Opened(0)
         val input = channelInput(opened)
         val add = CardanoIntent.AddChannelFunds(
-            source.paymentAddress, input, reference, datum(opened), datum(opened), Lovelace(1_000_000),
+            source.paymentAddress, input, reference, datum(opened), datum(opened), AssetAmount(assetCatalog.ada, 1_000_000),
             "00000000-0000-4000-8000-000000000030", 4_492_800, 4_492_900,
         )
         buildAndSign(add, ledger(input))
@@ -433,20 +513,24 @@ class AndroidCardanoTransactionEngineTest {
                 datumHex = datum.plutus().serializeToHex(),
             )
             val fuel = LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000))
+            val collateral = LedgerUtxo("33".repeat(32), 0, source.paymentAddress, Lovelace(5_000_000))
             val ledger = LedgerSnapshot(
                 CardanoNetwork.MAINNET,
-                listOf(fuel, reference, channel),
+                listOf(fuel, collateral, reference, channel),
                 channelProtocolParameters,
                 4_492_800,
             )
             val intent = CardanoIntent.AddChannelFunds(
-                source.paymentAddress, channel, reference, datum, datum, Lovelace(1_000_000),
+                source.paymentAddress, channel, reference, datum, datum, AssetAmount(assetCatalog.ada, 1_000_000),
                 "00000000-0000-4000-8000-000000000034", 4_492_800, 4_492_900,
             )
             val unsigned = engine.build(intent, ledger)
             engine.requireAuthorized(unsigned, intent, ledger)
             val unsignedSummary = engine.inspect(unsigned.cbor)
-            assertEquals(1L, unsignedSummary.redeemers.single().index)
+            assertEquals(
+                unsignedSummary.inputs.indexOf(TransactionInputReference(channel.transactionId, channel.index)).toLong(),
+                unsignedSummary.redeemers.single().index,
+            )
             assertEquals(setOf(source.paymentCredentialHex), unsignedSummary.requiredSigners)
             assertTrue(unsignedSummary.keyWitnesses.isEmpty())
             unsignedSummary.requireChannelFunding(intent, ledger)
@@ -472,12 +556,12 @@ class AndroidCardanoTransactionEngineTest {
                     engine.requireAuthorized(UnsignedTransaction(bytes, unsigned.operationId, unsigned.feeBound), changedIntent, changedLedger)
                 }
             }
-            reject(unsigned.cbor, intent.copy(amount = Lovelace(2_000_000)))
+            reject(unsigned.cbor, intent.copy(amount = AssetAmount(assetCatalog.ada, 2_000_000)))
             reject(Transaction.deserialize(unsigned.cbor).also {
                 it.body.requiredSigners = listOf(ByteArray(28))
             }.serialize())
             reject(Transaction.deserialize(unsigned.cbor).also {
-                it.witnessSet.redeemers.single().setIndex(0)
+                it.witnessSet.redeemers.single().setIndex(unsignedSummary.redeemers.single().index.toInt() + 1)
             }.serialize())
             reject(Transaction.deserialize(unsigned.cbor).also {
                 it.witnessSet.redeemers.single().data = ChannelRedeemer.CLOSE.plutus()
@@ -535,7 +619,7 @@ class AndroidCardanoTransactionEngineTest {
             reference,
             current,
             current,
-            Lovelace(1_000_000),
+            AssetAmount(assetCatalog.ada, 1_000_000),
             "00000000-0000-4000-8000-000000000019",
             100,
             200,
@@ -584,7 +668,7 @@ class AndroidCardanoTransactionEngineTest {
             reference,
             opened,
             opened,
-            Lovelace(1_000_000),
+            AssetAmount(assetCatalog.ada, 1_000_000),
             "00000000-0000-4000-8000-000000000021",
             100,
             200,

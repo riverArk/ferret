@@ -8,6 +8,8 @@ import com.bloxbean.cardano.client.api.model.Utxo
 import com.bloxbean.cardano.client.common.model.Networks
 import com.bloxbean.cardano.client.crypto.bip39.MnemonicCode
 import com.bloxbean.cardano.client.util.HexUtil
+import com.bloxbean.cardano.client.plutus.spec.ExUnits
+import com.bloxbean.cardano.client.transaction.spec.Transaction
 import io.riverark.ferret.core.cardano.AndroidCardanoTransactionEngine
 import io.riverark.ferret.core.cardano.CardanoIntent
 import io.riverark.ferret.core.cardano.ChannelConstants
@@ -41,6 +43,7 @@ import io.riverark.ferret.core.network.MAINNET
 import io.riverark.ferret.core.security.SecureVault
 import io.riverark.ferret.core.security.WalletEncryptedStateV1
 import io.riverark.ferret.core.security.WalletSecretV1
+import java.math.BigInteger
 import java.util.Collections
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
@@ -74,7 +77,15 @@ class OpenChannelTransactionsTest {
         override fun submitTransaction(cborData: ByteArray): Result<String> = error("submission not used")
         @Suppress("UNCHECKED_CAST")
         override fun evaluateTx(cbor: ByteArray, inputUtxos: Set<Utxo>): Result<List<EvaluationResult>> =
-            Result.success("fixture").withValue(Collections.emptyList<EvaluationResult>()) as Result<List<EvaluationResult>>
+            Result.success("fixture").withValue(
+                Transaction.deserialize(cbor).witnessSet?.redeemers.orEmpty().map {
+                    EvaluationResult.builder()
+                        .redeemerTag(it.tag)
+                        .index(it.index.intValueExact())
+                        .exUnits(ExUnits.builder().mem(BigInteger.valueOf(10_000)).steps(BigInteger.valueOf(10_000_000)).build())
+                        .build()
+                },
+            ) as Result<List<EvaluationResult>>
     }, catalog)
     private val derived = runBlocking { engine.deriveWallet(entropy, CardanoNetwork.MAINNET) }
     private val profile = WalletProfile(
@@ -114,11 +125,187 @@ class OpenChannelTransactionsTest {
         digest,
     )
 
+    @Test fun addPreviewUsesExistingIdentityWithoutSeedAndSignsExactBytes() = runBlocking {
+        val trace = mutableListOf<String>()
+        val vault = TestVault(profile, entropy, trace)
+        val datum = ChannelDatum(
+            MAINNET.validatorHashHex,
+            ChannelConstants(
+                "01".repeat(32),
+                walletVerificationKey,
+                MAINNET.adaptorIdentityHex,
+                1_800_000,
+                ada,
+            ),
+            ChannelDatumStage.Opened(0),
+        )
+        val channelInput = LedgerUtxo(
+            "22".repeat(32),
+            0,
+            MAINNET.validatorAddress,
+            Lovelace(5_000_000),
+            datumHex = datum.plutus().serializeToHex(),
+        )
+        val currentLedger = ledger.copy(
+            utxos = listOf(
+                LedgerUtxo("00".repeat(32), 0, profile.paymentAddress, Lovelace(100_000_000)),
+                LedgerUtxo("33".repeat(32), 0, profile.paymentAddress, Lovelace(5_000_000)),
+                reference,
+                channelInput,
+            ),
+        )
+        val snapshot = ChannelSnapshot(
+            keytag("01"),
+            ada,
+            ChannelState.Open("opening-transaction"),
+            spendableBalance = AssetAmount(ada, 3_000_000),
+        )
+        val transactions = transactions(vault, currentLedger)
+
+        val preview = transactions.previewAdd(
+            profile.id,
+            snapshot,
+            AssetAmount(ada, 1_000_000),
+            "00000000-0000-4000-8000-000000000017",
+        )
+
+        assertEquals(0, vault.seedRequests)
+        assertEquals(snapshot.keytag, preview.operation.keytag)
+        assertEquals("opening-transaction", preview.operation.priorChannelIdentity)
+        assertEquals(AssetAmount(ada, 4_000_000), preview.resultingSpendableBalance)
+        assertEquals(Lovelace(6_000_000), engine.inspect(
+            (preview.operation.payload as ChannelPayload.Transaction).unsignedBody,
+        ).outputs.single { it.address == MAINNET.validatorAddress }.lovelace)
+        assertTrue(requireNotNull(preview.collateral).baseUnits > 0)
+
+        val signed = transactions.sign(profile.id, preview.operation)
+        assertEquals(1, vault.seedRequests)
+        transactions.validateReplay(profile.id, signed)
+        assertContentEquals(
+            (signed.payload as ChannelPayload.Transaction).unsignedBody,
+            preview.operation.payload.unsignedBody,
+        )
+    }
+
+    @Test fun durableAddCreditsCapacityOnceAndKeepsSiblingState() = runBlocking {
+        val vault = TestVault(profile, entropy, mutableListOf())
+        val datum = ChannelDatum(
+            MAINNET.validatorHashHex,
+            ChannelConstants("01".repeat(32), walletVerificationKey, MAINNET.adaptorIdentityHex, 1_800_000, ada),
+            ChannelDatumStage.Opened(0),
+        )
+        val channelInput = LedgerUtxo(
+            "22".repeat(32), 0, MAINNET.validatorAddress, Lovelace(5_000_000),
+            datumHex = datum.plutus().serializeToHex(),
+        )
+        val currentLedger = ledger.copy(utxos = listOf(
+            LedgerUtxo("00".repeat(32), 0, profile.paymentAddress, Lovelace(100_000_000)),
+            LedgerUtxo("33".repeat(32), 0, profile.paymentAddress, Lovelace(5_000_000)),
+            reference,
+            channelInput,
+        ))
+        val selected = ChannelSnapshot(
+            keytag("01"), ada, ChannelState.Open("opening-transaction"),
+            spendableBalance = AssetAmount(ada, 3_000_000),
+        )
+        val sibling = ChannelSnapshot(
+            keytag("02"), ada, ChannelState.Open("sibling-opening"),
+            spendableBalance = AssetAmount(ada, 7_000_000),
+        )
+        var stored = collection(selected, sibling).copy(paidHashes = setOf("9".repeat(64)))
+        val transactions = transactions(vault, currentLedger)
+        val preview = transactions.previewAdd(
+            profile.id,
+            selected,
+            AssetAmount(ada, 1_000_000),
+            "00000000-0000-4000-8000-000000000016",
+        )
+        val repository = recoveryRepository(
+            transactions,
+            { stored },
+            { stored = it },
+            { _, _, _ -> error("reconcile not expected") },
+            { _, operation, _ ->
+                assertEquals(AssetAmount(ada, 3_000_000), stored.channels.getValue(selected.keytag.value).spendableBalance)
+                ChannelRemoteResult(
+                    operation.operationId,
+                    operation.intentHash,
+                    operation.keytag,
+                    operation.asset,
+                    transactionId = (operation.payload as ChannelPayload.Transaction).expectedTransactionId,
+                    state = ChannelState.Open("opening-transaction"),
+                    status = OperationState.COMPLETED,
+                )
+            },
+        )
+        repository.load(profile.id)
+
+        repository.submit(profile.id, preview)
+        repository.reconcile(profile.id, selected.keytag)
+
+        assertEquals(AssetAmount(ada, 4_000_000), stored.channels.getValue(selected.keytag.value).spendableBalance)
+        assertEquals(sibling, stored.channels.getValue(sibling.keytag.value))
+        assertEquals(setOf("9".repeat(64)), stored.paidHashes)
+        assertEquals(1, stored.channels.getValue(selected.keytag.value).history.size)
+    }
+
+    @Test fun unsignedAddRestartReturnsToPriorOpenChannelWithoutSigningOrNetworkMutation() = runBlocking {
+        val vault = TestVault(profile, entropy, mutableListOf())
+        val datum = ChannelDatum(
+            MAINNET.validatorHashHex,
+            ChannelConstants("01".repeat(32), walletVerificationKey, MAINNET.adaptorIdentityHex, 1_800_000, ada),
+            ChannelDatumStage.Opened(0),
+        )
+        val channelInput = LedgerUtxo(
+            "22".repeat(32), 0, MAINNET.validatorAddress, Lovelace(5_000_000),
+            datumHex = datum.plutus().serializeToHex(),
+        )
+        val currentLedger = ledger.copy(utxos = listOf(
+            LedgerUtxo("00".repeat(32), 0, profile.paymentAddress, Lovelace(100_000_000)),
+            LedgerUtxo("33".repeat(32), 0, profile.paymentAddress, Lovelace(5_000_000)),
+            reference,
+            channelInput,
+        ))
+        val selected = ChannelSnapshot(
+            keytag("01"), ada, ChannelState.Open("opening-transaction"),
+            spendableBalance = AssetAmount(ada, 3_000_000),
+        )
+        val transactions = transactions(vault, currentLedger)
+        val preview = transactions.previewAdd(
+            profile.id,
+            selected,
+            AssetAmount(ada, 1_000_000),
+            "00000000-0000-4000-8000-000000000015",
+        )
+        var stored = collection(selected.copy(pending = preview.operation))
+        var networkCalls = 0
+        val repository = recoveryRepository(
+            transactions,
+            { stored },
+            { stored = it },
+            { _, _, _ -> networkCalls++; null },
+            { _, operation, _ ->
+                networkCalls++
+                error("mutation not expected for ${operation.operationId}")
+            },
+        )
+        repository.load(profile.id)
+
+        repository.reconcile(profile.id, selected.keytag)
+
+        val recovered = stored.channels.getValue(selected.keytag.value)
+        assertEquals(ChannelState.Open("opening-transaction"), recovered.state)
+        assertEquals(AssetAmount(ada, 3_000_000), recovered.spendableBalance)
+        assertEquals(OperationState.FAILED, recovered.history.single().status)
+        assertEquals(0, vault.seedRequests)
+        assertEquals(0, networkCalls)
+    }
+
     @Test fun previewUsesRealOpenBytesAndConfirmationOrdersDurableEffects() = runBlocking {
         val trace = mutableListOf<String>()
         val vault = TestVault(profile, entropy, trace)
         val transactions = transactions(vault)
-        val preview = transactions.preview(
+        val preview = transactions.previewOpen(
             profile.id,
             AssetAmount(ada, 5_000_000),
             "00000000-0000-4000-8000-000000000018",
@@ -203,7 +390,7 @@ class OpenChannelTransactionsTest {
         val trace = mutableListOf<String>()
         val vault = TestVault(profile, entropy, trace)
         val transactions = transactions(vault)
-        val preview = transactions.preview(
+        val preview = transactions.previewOpen(
             profile.id,
             AssetAmount(ada, 5_000_000),
             "00000000-0000-4000-8000-000000000018",
@@ -244,7 +431,7 @@ class OpenChannelTransactionsTest {
             reference,
         ))
         val transactions = transactions(vault, nativeLedger)
-        val preview = transactions.preview(
+        val preview = transactions.previewOpen(
             profile.id,
             AssetAmount(usdm, 1_250_000),
             "00000000-0000-4000-8000-000000000018",
@@ -307,7 +494,7 @@ class OpenChannelTransactionsTest {
             TestVault(profile, entropy, mutableListOf()),
             ledger.copy(utxos = ledger.utxos + existingUtxo),
         )
-        val preview = transactions.preview(
+        val preview = transactions.previewOpen(
             profile.id,
             AssetAmount(ada, 5_000_000),
             "00000000-0000-4000-8000-000000000018",
@@ -336,7 +523,7 @@ class OpenChannelTransactionsTest {
     @Test fun duplicateKeytagRejectsBeforeSigningOrRemoteMutation() = runBlocking {
         val vault = TestVault(profile, entropy, mutableListOf())
         val transactions = transactions(vault)
-        val preview = transactions.preview(
+        val preview = transactions.previewOpen(
             profile.id,
             AssetAmount(ada, 5_000_000),
             "00000000-0000-4000-8000-000000000018",
@@ -375,7 +562,7 @@ class OpenChannelTransactionsTest {
             )),
             reference,
         ))
-        val preview = transactions(vault, nativeLedger).preview(
+        val preview = transactions(vault, nativeLedger).previewOpen(
             profile.id,
             AssetAmount(usdm, 1_250_000),
             "00000000-0000-4000-8000-000000000018",
@@ -399,7 +586,7 @@ class OpenChannelTransactionsTest {
         )
 
         assertFailsWith<InsufficientFundsException> {
-            transactions(vault, lowLedger).preview(
+            transactions(vault, lowLedger).previewOpen(
                 profile.id,
                 AssetAmount(ada, 5_000_000),
                 "00000000-0000-4000-8000-000000000018",
@@ -412,7 +599,7 @@ class OpenChannelTransactionsTest {
         val trace = mutableListOf<String>()
         val vault = TestVault(profile, entropy, trace)
         val transactions = transactions(vault)
-        val preview = transactions.preview(
+        val preview = transactions.previewOpen(
             profile.id,
             AssetAmount(ada, 5_000_000),
             "00000000-0000-4000-8000-000000000018",
@@ -438,7 +625,7 @@ class OpenChannelTransactionsTest {
     }
 
     private fun recoveryRepository(
-        transactions: OpenChannelTransactions,
+        transactions: ChannelTransactions,
         loadCollection: () -> ChannelCollectionV4,
         saveCollection: (ChannelCollectionV4) -> Unit,
         reconcileCall: suspend (WalletId, PreparedChannelOperation, WriterLease) -> ChannelRemoteResult?,
@@ -467,20 +654,18 @@ class OpenChannelTransactionsTest {
         vault: TestVault,
         currentLedger: LedgerSnapshot = ledger,
         beforeLedger: () -> Unit = {},
-    ) = OpenChannelTransactions(
-        vault,
-        engine,
-        catalog,
-        loadLedger = { beforeLedger(); currentLedger },
-        loadInfo = { info },
-        verificationKey = {
-            vault.notePublicDerivation()
-            walletVerificationKey
-        },
-        availability = {},
-        newTag = { ByteArray(32) { 1 } },
-        nowEpochMillis = { 123 },
-    )
+    ) = ChannelTransactions(vault,
+    engine,
+    catalog,
+    loadLedger = { beforeLedger(); currentLedger },
+    loadInfo = { info },
+    verificationKey = {
+        vault.notePublicDerivation()
+        walletVerificationKey
+    },
+    availability = {},
+    newTag = { ByteArray(32) { 1 } },
+    nowEpochMillis = { 123 },)
 
     private fun emptyCollection() = ChannelCollectionV4(walletId = profile.id, catalogDigest = digest)
 

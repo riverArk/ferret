@@ -16,6 +16,8 @@ import com.bloxbean.cardano.client.api.model.EvaluationResult
 import com.bloxbean.cardano.client.api.model.Result
 import com.bloxbean.cardano.client.api.UtxoSupplier
 import com.bloxbean.cardano.client.api.helper.impl.FeeCalculationServiceImpl
+import com.bloxbean.cardano.client.coinselection.impl.DefaultUtxoSelectionStrategyImpl
+import com.bloxbean.cardano.client.coinselection.impl.LargestFirstUtxoSelectionStrategy
 import com.bloxbean.cardano.client.api.common.OrderEnum
 import com.bloxbean.cardano.client.api.model.Amount
 import com.bloxbean.cardano.client.api.model.ProtocolParams
@@ -156,6 +158,7 @@ class AndroidCardanoTransactionEngine(
         val selectedAsset = when (intent) {
             is CardanoIntent.Transfer -> assets.requireAsset(intent.amount.asset)
             is CardanoIntent.OpenChannel -> assets.requireAsset(intent.amount.asset)
+            is CardanoIntent.AddChannelFunds -> assets.requireAsset(intent.amount.asset)
             else -> null
         }
         selectedAsset?.let {
@@ -164,6 +167,10 @@ class AndroidCardanoTransactionEngine(
                     is CardanoIntent.Transfer -> intent.amount.baseUnits > 0
                     is CardanoIntent.OpenChannel ->
                         intent.amount.baseUnits > 0 && intent.datum.constants.asset == it
+                    is CardanoIntent.AddChannelFunds ->
+                        intent.amount.baseUnits > 0 &&
+                            intent.currentDatum.constants.asset == it &&
+                            intent.resultingDatum.constants.asset == it
                     else -> true
                 },
             )
@@ -262,19 +269,70 @@ class AndroidCardanoTransactionEngine(
             } catch (_: com.bloxbean.cardano.client.api.exception.InsufficientBalanceException) {
                 throw InsufficientFundsException()
             }
-            is CardanoIntent.AddChannelFunds -> builder.compose(
-                ScriptTx()
-                    .readFrom(toBloxbean(intent.referenceInput))
-                    .collectFrom(toBloxbean(intent.channelInput), ChannelRedeemer.ADD.plutus())
-                    .payToContract(intent.channelInput.address, Amount.lovelace(BigInteger.valueOf(Math.addExact(intent.channelInput.lovelace.value, intent.amount.value))), intent.resultingDatum.plutus())
-                    .withChangeAddress(intent.sourceAddress),
-            ).feePayer(intent.sourceAddress).collateralPayer(intent.sourceAddress)
-                .withReferenceScripts(requireNotNull(referenceScript))
-                .withRequiredSigners(Address(intent.sourceAddress))
-                .additionalSignersCount(1)
-                .ignoreScriptCostEvaluationError(false)
-                .postBalanceTx { _, tx -> canonicalizeChannelRedeemer(tx, intent.channelInput, params) }
-                .validFrom(intent.validFrom).validTo(intent.validUntil).build()
+            is CardanoIntent.AddChannelFunds -> try {
+                val selected = requireNotNull(selectedAsset)
+                val collateral = selectCollateralInputs(intent, ledger, params)
+                val nativeFunding = if (selected.policyId == null) emptyList() else
+                    selectNativeFundingInputs(intent, ledger, collateral)
+                fun buildAdd(amounts: List<Amount>) = QuickTxBuilder(
+                    supplier,
+                    ProtocolParamsSupplier { params },
+                    checkedTransactionProcessor,
+                ).compose(
+                    ScriptTx()
+                        .readFrom(toBloxbean(intent.referenceInput))
+                        .collectFrom(toBloxbean(intent.channelInput), ChannelRedeemer.ADD.plutus())
+                        .also { if (nativeFunding.isNotEmpty()) it.collectFrom(nativeFunding) }
+                        .payToContract(intent.channelInput.address, amounts, intent.resultingDatum.plutus())
+                        .withChangeAddress(intent.sourceAddress),
+                ).feePayer(intent.sourceAddress).collateralPayer(intent.sourceAddress)
+                    .withCollateralInputs(*collateral.toTypedArray())
+                    .withReferenceScripts(requireNotNull(referenceScript))
+                    .withRequiredSigners(Address(intent.sourceAddress))
+                    .additionalSignersCount(1)
+                    .ignoreScriptCostEvaluationError(false)
+                    .postBalanceTx { _, tx -> canonicalizeChannelRedeemer(tx, intent.channelInput, params) }
+                    .validFrom(intent.validFrom).validTo(intent.validUntil).build()
+
+                if (selected.policyId == null) {
+                    buildAdd(listOf(Amount.lovelace(BigInteger.valueOf(
+                        Math.addExact(intent.channelInput.lovelace.value, intent.amount.baseUnits),
+                    ))))
+                } else {
+                    val quantity = Math.addExact(
+                        requireNotNull(intent.channelInput.assets[selected.connectorUnit]),
+                        intent.amount.baseUnits,
+                    )
+                    val floor = maxOf(intent.channelInput.lovelace.value, KONDUIT_MIN_ADA_BUFFER)
+                    var outputAda = minimumOutputLovelace(
+                        nativeOutput(intent.channelInput.address, selected, quantity, intent.resultingDatum.plutus()),
+                        coinsPerUtxoByte,
+                        floor,
+                    )
+                    var exactTransaction: Transaction? = null
+                    for (attempt in 0 until 8) {
+                        val built = buildAdd(nativeAmounts(selected, quantity, outputAda.value))
+                        val outputIndex = built.body.outputs.indexOfFirst {
+                            it.address == intent.channelInput.address && it.inlineDatum?.serializeToHex() ==
+                                intent.resultingDatum.plutus().serializeToHex()
+                        }.also { require(it >= 0) }
+                        val exactAda = Lovelace(maxOf(
+                            floor,
+                            minimumAdaForOutput(built.serialize(), ledger.protocolParametersJson, outputIndex).value,
+                        ))
+                        if (outputAda == exactAda) {
+                            exactTransaction = built
+                            break
+                        }
+                        outputAda = exactAda
+                    }
+                    requireNotNull(exactTransaction) { "Native output minimum ADA did not converge." }
+                }
+            } catch (error: InsufficientCollateralException) {
+                throw error
+            } catch (_: com.bloxbean.cardano.client.api.exception.InsufficientBalanceException) {
+                throw InsufficientFundsException()
+            }
             is CardanoIntent.CloseChannel -> {
                 val script = ScriptTx()
                     .readFrom(toBloxbean(intent.referenceInput))
@@ -545,8 +603,6 @@ class AndroidCardanoTransactionEngine(
             require(intent.amount.baseUnits > if (intent.amount.asset.policyId == null) KONDUIT_MIN_ADA_BUFFER else 0)
         }
         if (current != null) {
-            require(current.constants.asset.policyId == null)
-            require(resulting == null || resulting.constants.asset.policyId == null)
             val channelInput = when (intent) {
                 is CardanoIntent.AddChannelFunds -> intent.channelInput
                 is CardanoIntent.CloseChannel -> intent.channelInput
@@ -555,20 +611,39 @@ class AndroidCardanoTransactionEngine(
             requireLedgerUtxo(channelInput)
             require(channelInput.transactionId != referenceInput.transactionId || channelInput.index != referenceInput.index)
             requireDatum(current, channelInput.address)
-            require(channelInput.assets.isEmpty())
             require(channelInput.lovelace.value >= KONDUIT_MIN_ADA_BUFFER)
             require(channelInput.datumHex == current.plutus().serializeToHex())
-            require(channelInput.datumHashHex == null && channelInput.scriptRefHex == null)
+            require(channelInput.datumHashHex == null && channelInput.scriptRefHex == null && channelInput.scriptRefHashHex == null)
             require(resulting == null || resulting.constants == current.constants && resulting.validatorHashHex == current.validatorHashHex)
+            if (intent is CardanoIntent.AddChannelFunds) {
+                val selected = assets.requireAsset(intent.amount.asset)
+                require(selected == current.constants.asset && selected == intent.resultingDatum.constants.asset)
+                if (selected.policyId == null) {
+                    require(channelInput.assets.isEmpty())
+                } else {
+                    require(channelInput.assets == mapOf(selected.connectorUnit to requireNotNull(channelInput.assets[selected.connectorUnit])))
+                }
+            } else {
+                require(current.constants.asset.policyId == null)
+                require(resulting == null || resulting.constants.asset.policyId == null)
+                require(channelInput.assets.isEmpty())
+            }
         }
         val lowerMillis = slotEpochMillis(ledger.network, intent.validFrom)
         val upperMillis = slotEpochMillis(ledger.network, intent.validUntil)
         when (intent) {
             is CardanoIntent.AddChannelFunds -> {
-                require(intent.amount.value > 0)
+                require(intent.amount.baseUnits > 0)
                 require(intent.currentDatum.stage is ChannelDatumStage.Opened)
                 require(intent.resultingDatum == intent.currentDatum)
-                require(Math.addExact(intent.channelInput.lovelace.value, intent.amount.value) >= KONDUIT_MIN_ADA_BUFFER)
+                if (intent.amount.asset.policyId == null) {
+                    require(Math.addExact(intent.channelInput.lovelace.value, intent.amount.baseUnits) >= KONDUIT_MIN_ADA_BUFFER)
+                } else {
+                    Math.addExact(
+                        requireNotNull(intent.channelInput.assets[intent.amount.asset.connectorUnit]),
+                        intent.amount.baseUnits,
+                    )
+                }
             }
             is CardanoIntent.CloseChannel -> {
                 require(intent.amount == intent.channelInput.lovelace)
@@ -705,11 +780,37 @@ class AndroidCardanoTransactionEngine(
                     output
                 }
                 is CardanoIntent.AddChannelFunds -> {
-                    require(intent.currentDatum.constants.asset.policyId == null)
+                    val selected = assets.requireAsset(intent.amount.asset)
+                    val expectedAssets = if (selected.policyId == null) {
+                        emptyMap()
+                    } else {
+                        mapOf(
+                            selected.connectorUnit to Math.addExact(
+                                requireNotNull(intent.channelInput.assets[selected.connectorUnit]),
+                                intent.amount.baseUnits,
+                            ),
+                        )
+                    }
+                    val expectedAda = if (selected.policyId == null) {
+                        Lovelace(Math.addExact(intent.channelInput.lovelace.value, intent.amount.baseUnits))
+                    } else {
+                        val output = summary.outputs.single {
+                            it.address == intent.channelInput.address &&
+                                it.assets == expectedAssets &&
+                                it.datum == TransactionDatum.Inline(intent.resultingDatum.plutus().serializeToHex()) &&
+                                it.scriptReference == null
+                        }
+                        val index = summary.outputs.indexOf(output)
+                        Lovelace(maxOf(
+                            intent.channelInput.lovelace.value,
+                            KONDUIT_MIN_ADA_BUFFER,
+                            minimumAdaForOutput(cbor, ledger.protocolParametersJson, index).value,
+                        ))
+                    }
                     TransactionOutputSummary(
                         intent.channelInput.address,
-                        Lovelace(Math.addExact(intent.channelInput.lovelace.value, intent.amount.value)),
-                        emptyMap(),
+                        expectedAda,
+                        expectedAssets,
                         TransactionDatum.Inline(intent.resultingDatum.plutus().serializeToHex()),
                     )
                 }
@@ -776,8 +877,8 @@ class AndroidCardanoTransactionEngine(
             requireChannelFee(cbor, summary, ledger, params, if (spend) script.scriptRefBytes().size.toLong() else 0, signed)
         } catch (error: CancellationException) {
             throw error
-        } catch (_: Exception) {
-            throw IllegalArgumentException("invalid channel transaction")
+        } catch (error: Exception) {
+            throw IllegalArgumentException("invalid channel transaction", error)
         }
     }
 
@@ -983,7 +1084,7 @@ class AndroidCardanoTransactionEngine(
                 require(nameHex.length <= 64 && nameHex.length % 2 == 0)
                 require(nameHex.all { it in "0123456789abcdef" })
                 val quantity = asset.value.longValueExact()
-                require(quantity > 0)
+                require(quantity > 0) { "non-positive output asset ${multi.policyId + nameHex}: $quantity" }
                 require(summarizedAssets.put(multi.policyId + nameHex, quantity) == null)
             }
         }
@@ -1037,6 +1138,57 @@ class AndroidCardanoTransactionEngine(
                 .drop((page ?: 0) * (count ?: 100)).take(count ?: 100)
         override fun getTxOutput(hash: String, index: Int): Optional<Utxo> = Optional.ofNullable(utxos.firstOrNull { it.txHash == hash && it.outputIndex == index })
     }
+    private fun selectCollateralInputs(
+        intent: CardanoIntent.AddChannelFunds,
+        ledger: LedgerSnapshot,
+        params: ProtocolParams,
+    ): List<TransactionInput> {
+        val candidates = ledger.utxos.filter {
+            it.isSpendableBy(intent.sourceAddress) &&
+                it != intent.channelInput && it != intent.referenceInput
+        }.map(::toBloxbean)
+        if (candidates.isEmpty()) throw InsufficientCollateralException()
+        val supplier = SnapshotUtxoSupplier(candidates)
+        val target = Amount.lovelace(BigInteger.valueOf(5_000_000))
+        val maxInputs = requireNotNull(params.maxCollateralInputs).also { require(it > 0) }
+        val selected = try {
+            DefaultUtxoSelectionStrategyImpl(supplier).select(intent.sourceAddress, target, null)
+        } catch (_: com.bloxbean.cardano.client.api.exception.InsufficientBalanceException) {
+            throw InsufficientCollateralException()
+        }
+        val bounded = if (selected.size <= maxInputs) selected else try {
+            LargestFirstUtxoSelectionStrategy(supplier).select(intent.sourceAddress, target, null)
+        } catch (_: com.bloxbean.cardano.client.api.exception.InsufficientBalanceException) {
+            throw InsufficientCollateralException()
+        }
+        if (bounded.isEmpty() || bounded.size > maxInputs) throw InsufficientCollateralException()
+        return bounded.sortedWith(compareBy({ it.txHash }, { it.outputIndex }))
+            .map { TransactionInput(it.txHash, it.outputIndex) }
+    }
+
+    private fun selectNativeFundingInputs(
+        intent: CardanoIntent.AddChannelFunds,
+        ledger: LedgerSnapshot,
+        collateral: List<TransactionInput>,
+    ): List<Utxo> {
+        val excluded = collateral.map { it.transactionId to it.index }.toSet()
+        val candidates = ledger.utxos.filter {
+            it.isSpendableBy(intent.sourceAddress, allowNativeAssets = true) &&
+                (it.transactionId to it.index) !in excluded
+        }.map(::toBloxbean)
+        return try {
+            DefaultUtxoSelectionStrategyImpl(SnapshotUtxoSupplier(candidates))
+                .select(
+                    intent.sourceAddress,
+                    Amount.asset(intent.amount.asset.connectorUnit, BigInteger.valueOf(intent.amount.baseUnits)),
+                    null,
+                )
+                .sortedWith(compareBy({ it.txHash }, { it.outputIndex }))
+        } catch (_: com.bloxbean.cardano.client.api.exception.InsufficientBalanceException) {
+            throw InsufficientFundsException()
+        }
+    }
+
     private fun nativeAmounts(asset: ChannelAsset, quantity: Long, lovelace: Long) = listOf(
         Amount.lovelace(BigInteger.valueOf(lovelace)),
         Amount.asset(asset.connectorUnit, BigInteger.valueOf(quantity)),
