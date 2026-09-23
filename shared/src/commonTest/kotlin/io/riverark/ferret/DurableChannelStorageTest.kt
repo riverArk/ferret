@@ -203,6 +203,7 @@ class DurableChannelStorageTest {
                 Lovelace(3_000_000),
                 mapOf(usdm.connectorUnit to 100_000),
                 datumHex = "d87980",
+                datumHashHex = "55".repeat(32),
             ),
             LedgerUtxo("22".repeat(32), 0, "addr1reference", Lovelace(2_000_000)),
             datum,

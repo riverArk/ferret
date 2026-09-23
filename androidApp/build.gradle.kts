@@ -15,6 +15,9 @@ val googleServerClientId = providers.environmentVariable("FERRET_GOOGLE_SERVER_C
 val buildCommit = providers.environmentVariable("FERRET_BUILD_COMMIT").getOrElse("development").also {
     require(it == "development" || Regex("[0-9a-f]{7,40}").matches(it)) { "FERRET_BUILD_COMMIT must be a lowercase git commit" }
 }
+val debugBiometricBypass = providers.gradleProperty("ferret.debugBiometricBypass")
+    .map(String::toBooleanStrict)
+    .getOrElse(false)
 if (gradle.startParameter.taskNames.any { it.contains("release", ignoreCase = true) }) {
     require(googleServerClientId.getOrElse("").isNotBlank()) { "FERRET_GOOGLE_SERVER_CLIENT_ID is required for release builds" }
 }
@@ -41,12 +44,14 @@ android {
     buildTypes {
         debug {
             isMinifyEnabled = false
+            buildConfigField("boolean", "DEBUG_BIOMETRIC_BYPASS", debugBiometricBypass.toString())
         }
         release {
             isDebuggable = false
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            buildConfigField("boolean", "DEBUG_BIOMETRIC_BYPASS", "false")
         }
     }
     buildFeatures { compose = true; buildConfig = true }

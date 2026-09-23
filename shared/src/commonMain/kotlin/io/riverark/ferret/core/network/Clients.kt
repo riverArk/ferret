@@ -123,7 +123,7 @@ data class EvaluationRedeemerDto(
     val steps: Long,
 ) {
     init {
-        require(purpose in setOf("spend", "mint", "cert", "reward", "voting", "proposing"))
+        require(purpose in setOf("spend", "mint", "cert", "reward", "voting", "proposing", "unspecified"))
         require(index >= 0 && memory >= 0 && steps >= 0)
     }
 }

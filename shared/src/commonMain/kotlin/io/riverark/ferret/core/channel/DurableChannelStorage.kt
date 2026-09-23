@@ -602,7 +602,7 @@ class VaultChannelJournal(
                     require(intent.currentDatum.constants.asset == entry.asset)
                     require(intent.currentDatum.stage is io.riverark.ferret.core.cardano.ChannelDatumStage.Opened)
                     require(intent.channelInput.datumHex != null)
-                    require(intent.channelInput.datumHashHex == null && intent.channelInput.scriptRefHex == null)
+                    require(intent.channelInput.scriptRefHex == null && intent.channelInput.scriptRefHashHex == null)
                     require(operation.keytag == ProtocolKeytag.from(
                         intent.currentDatum.constants.addVerificationKeyHex,
                         ProtocolTag(intent.currentDatum.constants.tagHex),

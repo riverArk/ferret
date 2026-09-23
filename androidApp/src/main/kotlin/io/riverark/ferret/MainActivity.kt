@@ -139,7 +139,7 @@ class MainActivity : FragmentActivity() {
             RefreshCoordinator(deployment(it), assetCatalog, connectors.getValue(it), adaptors.getValue(it))
         }
         vault = AndroidSecureVault(this, assetCatalog)
-        authenticator = AndroidUserAuthenticator(this)
+        authenticator = AndroidUserAuthenticator(this, BuildConfig.DEBUG_BIOMETRIC_BYPASS)
         val walletSelection = getSharedPreferences("wallet-selection", Context.MODE_PRIVATE)
         walletManager = WalletManager(
             vault,
