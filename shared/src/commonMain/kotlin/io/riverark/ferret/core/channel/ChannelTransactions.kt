@@ -153,7 +153,7 @@ class ChannelTransactions(
             context.ledger.currentSlot,
             context.ledger.currentSlot + VALIDITY_SLOTS,
         )
-        val unsigned = engine.build(intent, context.ledger)
+        val unsigned = vault.withWalletSeed(walletId) { engine.build(intent, context.ledger, it) }
         engine.requireAuthorized(unsigned, intent, context.ledger)
         val summary = engine.inspect(unsigned.cbor)
         val channelIndex = addOutputIndex(summary.outputs, intent)

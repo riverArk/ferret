@@ -1015,7 +1015,7 @@ class L1WalletRepositoryTest {
         var fee = 200_000L
         var rejectSignedMinimum = false
         override suspend fun deriveWallet(entropy: ByteArray, network: CardanoNetwork): DerivedWallet = error("not used")
-        override suspend fun build(intent: CardanoIntent, ledger: LedgerSnapshot): UnsignedTransaction {
+        override suspend fun build(intent: CardanoIntent, ledger: LedgerSnapshot, evaluationSeed: ByteArray?): UnsignedTransaction {
             builds++
             this.intent = intent
             selectedInput = ledger.utxos.first()

@@ -135,7 +135,11 @@ class AndroidCardanoTransactionEngine(
     }
 
 
-    override suspend fun build(intent: CardanoIntent, ledger: LedgerSnapshot): UnsignedTransaction {
+    override suspend fun build(
+        intent: CardanoIntent,
+        ledger: LedgerSnapshot,
+        evaluationSeed: ByteArray?,
+    ): UnsignedTransaction {
         require(ledger.network.addressMatches(intent.sourceAddress))
         when (intent) {
             is CardanoIntent.Transfer -> require(ledger.network.addressMatches(intent.destinationAddress))
@@ -177,6 +181,15 @@ class AndroidCardanoTransactionEngine(
         }
         val native = selectedAsset?.policyId != null
         val referenceScript = requireChannelSemantics(intent, ledger)
+        val evaluationAccount = evaluationSeed?.let { seed ->
+            require(intent is CardanoIntent.AddChannelFunds && seed.size == 32)
+            Account.createFromMnemonic(
+                ledger.network.bloxbean(),
+                MnemonicCode.INSTANCE.toMnemonic(seed).joinToString(" "),
+            ).also { account ->
+                require(HexUtil.encodeHexString(account.publicKeyBytes()) == intent.currentDatum.constants.addVerificationKeyHex)
+            }
+        }
         val utxos = ledger.utxos
             .filter { it.isSpendableBy(intent.sourceAddress, allowNativeAssets = native) }
             .sortedWith(compareBy({ it.transactionId }, { it.index }))
@@ -188,14 +201,26 @@ class AndroidCardanoTransactionEngine(
 
             @Suppress("UNCHECKED_CAST")
             override fun evaluateTx(cbor: ByteArray, inputUtxos: Set<Utxo>): Result<List<EvaluationResult>> {
+                val evaluationCbor = if (intent is CardanoIntent.AddChannelFunds) {
+                    normalizeEvaluationCollateral(
+                        cbor,
+                        ledger,
+                        params,
+                        intent.sourceAddress,
+                        referenceScript?.scriptRefBytes()?.size?.toLong() ?: 0,
+                        evaluationAccount,
+                    )
+                } else {
+                    cbor
+                }
                 val result = try {
-                    transactionProcessor.evaluateTx(cbor, inputUtxos)
+                    transactionProcessor.evaluateTx(evaluationCbor, inputUtxos)
                 } catch (error: CancellationException) {
                     throw error
-                } catch (_: Exception) {
-                    throw IllegalArgumentException("invalid channel evaluation")
+                } catch (error: Exception) {
+                    throw IllegalArgumentException("invalid channel evaluation", error)
                 }
-                val checked = requireEvaluationResult(cbor, result, params)
+                val checked = requireEvaluationResult(evaluationCbor, result, params)
                 return Result.success("validated channel evaluation").withValue(checked) as Result<List<EvaluationResult>>
             }
         }
@@ -353,7 +378,13 @@ class AndroidCardanoTransactionEngine(
             }
         }
         val fee = Lovelace(transaction.body.fee.longValueExact())
-        val cbor = transaction.serialize()
+        val cbor = transaction.serialize().let { serialized ->
+            if (intent is CardanoIntent.AddChannelFunds || intent is CardanoIntent.CloseChannel) {
+                withLedgerScriptDataHash(serialized, params)
+            } else {
+                serialized
+            }
+        }
         requireMinimumAda(cbor, coinsPerUtxoByte)
         if (intent is CardanoIntent.Transfer || intent is CardanoIntent.SweepWallet) {
             val summary = inspect(cbor)
@@ -613,7 +644,7 @@ class AndroidCardanoTransactionEngine(
             requireDatum(current, channelInput.address)
             require(channelInput.lovelace.value >= KONDUIT_MIN_ADA_BUFFER)
             require(channelInput.datumHex == current.plutus().serializeToHex())
-            require(channelInput.datumHashHex == null && channelInput.scriptRefHex == null && channelInput.scriptRefHashHex == null)
+            require(channelInput.scriptRefHex == null && channelInput.scriptRefHashHex == null)
             require(resulting == null || resulting.constants == current.constants && resulting.validatorHashHex == current.validatorHashHex)
             if (intent is CardanoIntent.AddChannelFunds) {
                 val selected = assets.requireAsset(intent.amount.asset)
@@ -859,16 +890,7 @@ class AndroidCardanoTransactionEngine(
                 require(redeemer.purpose == "SPEND")
                 require(redeemer.index == inputIndex.toLong())
                 require(redeemer.dataCborHex == expectedRedeemer.plutus().serializeToHex())
-                val costModels = CostMdls().also {
-                    it.add(CostModelUtil.getCostModelFromProtocolParams(params, Language.PLUTUS_V3).orElseThrow())
-                }
-                val expectedScriptDataHash = ScriptDataHashGenerator.generate(
-                    Era.Conway,
-                    transaction.witnessSet.redeemers,
-                    emptyList(),
-                    costModels,
-                )
-                require(transaction.body.scriptDataHash.contentEquals(expectedScriptDataHash))
+                require(transaction.body.scriptDataHash.contentEquals(ledgerScriptDataHash(cbor, params)))
                 requireCollateral(summary, intent, ledger, params)
             } else {
                 require(summary.redeemers.isEmpty() && summary.scriptDataHashHex == null)
@@ -1122,12 +1144,81 @@ class AndroidCardanoTransactionEngine(
 
     private fun Lovelace.amount() = Amount.lovelace(BigInteger.valueOf(value))
 
+    private fun withLedgerScriptDataHash(cbor: ByteArray, params: ProtocolParams): ByteArray {
+        val transaction = Transaction.deserialize(cbor)
+        transaction.body.scriptDataHash = ledgerScriptDataHash(cbor, params)
+        return transaction.serialize()
+    }
+
+    private fun ledgerScriptDataHash(cbor: ByteArray, params: ProtocolParams): ByteArray {
+        val witnesses = rawTransactionMaps(cbor).second
+        val redeemers = requireNotNull(witnesses[UnsignedInteger(5)] as? CborMap)
+        val costModels = CostMdls().also {
+            it.add(CostModelUtil.getCostModelFromProtocolParams(params, Language.PLUTUS_V3).orElseThrow())
+        }
+        val parts = listOfNotNull(
+            CborSerializationUtil.serialize(redeemers),
+            witnesses[UnsignedInteger(4)]?.let(CborSerializationUtil::serialize),
+            costModels.languageViewEncoding,
+        )
+        val preimage = ByteArray(parts.sumOf(ByteArray::size))
+        var offset = 0
+        parts.forEach { part ->
+            part.copyInto(preimage, offset)
+            offset += part.size
+        }
+        return Blake2bUtil.blake2bHash256(preimage)
+    }
+
+    private fun normalizeEvaluationCollateral(
+        cbor: ByteArray,
+        ledger: LedgerSnapshot,
+        params: ProtocolParams,
+        changeAddress: String,
+        referenceScriptBytes: Long,
+        evaluationAccount: Account?,
+    ): ByteArray {
+        val transaction = Transaction.deserialize(cbor)
+        transaction.body.scriptDataHash = ledgerScriptDataHash(cbor, params)
+        val body = transaction.body
+        body.collateralReturn?.let { collateralReturn ->
+            if (body.fee.signum() == 0) {
+                val calculator = FeeCalculationServiceImpl(
+                    SnapshotUtxoSupplier(emptyList()),
+                    ProtocolParamsSupplier { params },
+                )
+                val pricedCbor = evaluationAccount?.sign(transaction)?.serialize() ?: transaction.serialize()
+                val provisionalFee = calculator.calculateFee(pricedCbor, params)
+                    .add(calculator.calculateScriptFee(transaction.witnessSet?.redeemers.orEmpty().map { it.exUnits }, params))
+                    .add(calculator.tierRefScriptFee(referenceScriptBytes))
+                    .add(BigInteger.valueOf(1_000))
+                val change = body.outputs.single { it.address == changeAddress }
+                require(change.value.coin > provisionalFee)
+                change.value = change.value.toBuilder().coin(change.value.coin.subtract(provisionalFee)).build()
+                body.fee = provisionalFee
+            }
+            val percentage = requireNotNull(params.collateralPercent)
+            val totalCollateral = BigDecimal(body.fee).multiply(percentage)
+                .divide(BigDecimal.valueOf(100)).setScale(0, RoundingMode.CEILING).toBigIntegerExact()
+            val available = ledger.utxos.associateBy { TransactionInputReference(it.transactionId, it.index) }
+            val collateralTotal = body.collateral.fold(BigInteger.ZERO) { total, input ->
+                val utxo = requireNotNull(available[reference(input)])
+                require(utxo.assets.isEmpty())
+                total.add(BigInteger.valueOf(utxo.lovelace.value))
+            }
+            val returnAmount = collateralTotal.subtract(totalCollateral)
+            require(returnAmount.signum() >= 0)
+            collateralReturn.value = collateralReturn.value.toBuilder().coin(returnAmount).build()
+            body.totalCollateral = totalCollateral
+        }
+        return evaluationAccount?.sign(transaction)?.serialize() ?: transaction.serialize()
+    }
     private fun toBloxbean(utxo: LedgerUtxo) = Utxo.builder()
         .txHash(utxo.transactionId)
         .outputIndex(utxo.index)
         .address(utxo.address)
         .amount(listOf(utxo.lovelace.amount()) + utxo.assets.map { Amount.asset(it.key, BigInteger.valueOf(it.value)) })
-        .dataHash(utxo.datumHashHex)
+        .dataHash(utxo.datumHashHex.takeIf { utxo.datumHex == null })
         .inlineDatum(utxo.datumHex)
         .referenceScriptHash(utxo.scriptRefHashHex)
         .build()

@@ -16,10 +16,12 @@ import com.bloxbean.cardano.client.api.ProtocolParamsSupplier
 import com.bloxbean.cardano.client.api.UtxoSupplier
 import com.bloxbean.cardano.client.api.helper.impl.FeeCalculationServiceImpl
 import com.bloxbean.cardano.client.api.model.ProtocolParams
+import com.bloxbean.cardano.client.api.util.CostModelUtil
 import com.bloxbean.cardano.client.api.TransactionProcessor
 import com.bloxbean.cardano.client.api.model.EvaluationResult
 import com.bloxbean.cardano.client.api.model.Result
 import com.bloxbean.cardano.client.common.model.Networks
+import com.bloxbean.cardano.client.crypto.Blake2bUtil
 import com.bloxbean.cardano.client.crypto.bip39.MnemonicCode
 import com.bloxbean.cardano.client.api.model.Utxo
 import com.bloxbean.cardano.client.transaction.spec.Transaction
@@ -30,6 +32,8 @@ import com.bloxbean.cardano.client.plutus.spec.ExUnits
 import com.bloxbean.cardano.client.plutus.spec.BigIntPlutusData
 import com.bloxbean.cardano.client.plutus.spec.BytesPlutusData
 import com.bloxbean.cardano.client.plutus.spec.ListPlutusData
+import com.bloxbean.cardano.client.plutus.spec.CostMdls
+import com.bloxbean.cardano.client.plutus.spec.Language
 import com.bloxbean.cardano.client.plutus.spec.RedeemerTag
 import com.bloxbean.cardano.client.api.common.OrderEnum
 import com.bloxbean.cardano.client.util.HexUtil
@@ -216,8 +220,36 @@ class AndroidCardanoTransactionEngineTest {
 
     @Test fun channelEvaluationRequiresExactCoverageAndChecksFinalBytes() = runBlocking {
         val requests = mutableListOf<ByteArray>()
-        val engine = AndroidCardanoTransactionEngine(processor { cbor ->
+        lateinit var engine: AndroidCardanoTransactionEngine
+        engine = AndroidCardanoTransactionEngine(processor { cbor ->
             requests += cbor.copyOf()
+            val body = Transaction.deserialize(cbor).body
+            body.collateralReturn?.let { collateralReturn ->
+                assertTrue(body.fee.signum() > 0)
+                assertTrue(
+                    collateralReturn.value.coin.add(requireNotNull(body.totalCollateral)) in setOf(
+                        BigInteger.valueOf(5_000_000),
+                        BigInteger.valueOf(100_000_000),
+                    ),
+                )
+            }
+            assertTrue(engine.inspect(cbor).keyWitnesses.single().signatureValid)
+            assertTrue(Transaction.deserialize(cbor).witnessSet.plutusDataList.orEmpty().isEmpty())
+            val envelope = CborDecoder(ByteArrayInputStream(cbor)).decode().single() as CborArray
+            val rawRedeemers = CborSerializationUtil.serialize(
+                requireNotNull((envelope.dataItems[1] as CborMap)[UnsignedInteger(5)] as? CborMap),
+            )
+            val costModels = CostMdls().also {
+                it.add(CostModelUtil.getCostModelFromProtocolParams(
+                    protocolParams(channelProtocolParameters),
+                    Language.PLUTUS_V3,
+                ).orElseThrow())
+            }
+            val preimage = ByteArrayOutputStream().apply {
+                write(rawRedeemers)
+                write(costModels.languageViewEncoding)
+            }.toByteArray()
+            assertContentEquals(Blake2bUtil.blake2bHash256(preimage), body.scriptDataHash)
             @Suppress("UNCHECKED_CAST")
             (Result.success("fixture").withValue(exactEvaluation(cbor)) as Result<List<EvaluationResult>>)
         }, assetCatalog)
@@ -231,6 +263,7 @@ class AndroidCardanoTransactionEngineTest {
             MAINNET.validatorAddress,
             Lovelace(5_000_000),
             datumHex = current.plutus().serializeToHex(),
+            datumHashHex = "44".repeat(32),
         )
         val intent = CardanoIntent.AddChannelFunds(
             source.paymentAddress,
@@ -255,9 +288,10 @@ class AndroidCardanoTransactionEngineTest {
             4_492_800,
         )
 
-        val unsigned = engine.build(intent, ledger)
+        val unsigned = engine.build(intent, ledger, entropy)
         assertTrue(requests.size >= 2)
-        assertContentEquals(unsigned.cbor, requests.last())
+        assertEquals(engine.transactionId(unsigned.cbor), engine.transactionId(requests.last()))
+        assertTrue(engine.inspect(unsigned.cbor).keyWitnesses.isEmpty())
         var changingCalls = 0
         assertEquals(
             "channel evaluation budget changed",

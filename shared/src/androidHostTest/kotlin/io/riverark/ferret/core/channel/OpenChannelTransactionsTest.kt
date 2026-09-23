@@ -125,7 +125,7 @@ class OpenChannelTransactionsTest {
         digest,
     )
 
-    @Test fun addPreviewUsesExistingIdentityWithoutSeedAndSignsExactBytes() = runBlocking {
+    @Test fun addPreviewSignsEvaluationBytesAndSignsExactTransactionBytes() = runBlocking {
         val trace = mutableListOf<String>()
         val vault = TestVault(profile, entropy, trace)
         val datum = ChannelDatum(
@@ -169,7 +169,7 @@ class OpenChannelTransactionsTest {
             "00000000-0000-4000-8000-000000000017",
         )
 
-        assertEquals(0, vault.seedRequests)
+        assertEquals(1, vault.seedRequests)
         assertEquals(snapshot.keytag, preview.operation.keytag)
         assertEquals("opening-transaction", preview.operation.priorChannelIdentity)
         assertEquals(AssetAmount(ada, 4_000_000), preview.resultingSpendableBalance)
@@ -179,7 +179,7 @@ class OpenChannelTransactionsTest {
         assertTrue(requireNotNull(preview.collateral).baseUnits > 0)
 
         val signed = transactions.sign(profile.id, preview.operation)
-        assertEquals(1, vault.seedRequests)
+        assertEquals(2, vault.seedRequests)
         transactions.validateReplay(profile.id, signed)
         assertContentEquals(
             (signed.payload as ChannelPayload.Transaction).unsignedBody,
@@ -277,6 +277,7 @@ class OpenChannelTransactionsTest {
             AssetAmount(ada, 1_000_000),
             "00000000-0000-4000-8000-000000000015",
         )
+        val seedRequests = vault.seedRequests
         var stored = collection(selected.copy(pending = preview.operation))
         var networkCalls = 0
         val repository = recoveryRepository(
@@ -297,7 +298,7 @@ class OpenChannelTransactionsTest {
         assertEquals(ChannelState.Open("opening-transaction"), recovered.state)
         assertEquals(AssetAmount(ada, 3_000_000), recovered.spendableBalance)
         assertEquals(OperationState.FAILED, recovered.history.single().status)
-        assertEquals(0, vault.seedRequests)
+        assertEquals(seedRequests, vault.seedRequests)
         assertEquals(0, networkCalls)
     }
 
