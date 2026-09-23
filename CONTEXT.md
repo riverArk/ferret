@@ -2,8 +2,8 @@
 
 ## Snapshot
 
-- Date: 2026-09-22
-- Current focus: complete controlled Mainnet device acceptance for reviewed stablecoin-channel Lightning payments.
+- Date: 2026-09-23
+- Current focus: complete controlled Mainnet device acceptance for reviewed channel Add and stablecoin-channel Lightning payments.
 - The live repository is a Kotlin Multiplatform project. This file describes current code only.
 
 ## Product and platforms
@@ -53,7 +53,7 @@ Top-up renders a local address QR with owned sensitive-clipboard expiry. Transfe
 
 - Reviewed ADA, USDA, USDCx, and USDM channels share the implemented Lightning payment path, exact asset/keytag authorization, encrypted write-ahead, verified receipt, isolated balance/history update, duplicate-invoice guard, and restart reconciliation. Pixel acceptance passed eligibility, multi-channel choice, USDM initialization, quote, and expired-invoice recovery; the operator declined the real payment, so USDM settlement/receipt and ADA/funded USDCx/USDA regressions remain.
 - iOS wallet setup and runtime integrations are unavailable; see `IOS_FOLLOW_UP.md`.
-- Per-channel Add is implemented for reviewed ADA/native assets with exact current-output authorization, ADA-only collateral, encrypted write-ahead, idempotent submission, restart recovery, and eligible-channel UI. The controlled Pixel verified eligible ADA/USDM actions, fixed asset/keytag/current-capacity forms, decimal editing, backup verification, and rejection before confirmation when runtime funding prerequisites were unavailable. A successful non-mutating preview, approved submission, interruption, and Drive acceptance remain. Close, elapse, end, and squash controls are not connected.
+- Per-channel Add is implemented for reviewed ADA/native assets with exact current-output authorization, ADA-only collateral, encrypted write-ahead, idempotent submission, restart recovery, and eligible-channel UI. An operator-approved `0.9 USDM` Add reached submission but was rejected upstream; the reference ledger reproduced a script-integrity mismatch between the connector/Dolos protocol-10 cost model and its upstream node's protocol-11 parameters. After backend redeployment, the mismatch remained and Pixel channel refresh retained `0.085652 USDM` plus sibling `₳0.463953`. Do not request another Add approval until live parameters agree; confirmed capacity increase, interruption, and Drive acceptance remain. `NATIVE_MIGRATION_PLAN.md` records the evidence. Close, elapse, end, and squash controls are not connected.
 - Funded Mainnet ADA transfer/process-kill/finality acceptance, the two-device Drive takeover matrix, and the close/sweep/removal scenario remain.
 - Production release verification still requires the real Google OAuth client ID, signing material, and device security review.
 - Only Mainnet services under `crustypants.com` are supported. Preprod and `ferret.channel` do not count as deployment or release evidence.

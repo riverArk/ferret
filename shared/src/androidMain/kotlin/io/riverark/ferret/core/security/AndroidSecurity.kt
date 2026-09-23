@@ -255,8 +255,35 @@ class AndroidSecureVault(
     }
 }
 
-class AndroidUserAuthenticator(private val activity: FragmentActivity) : UserAuthenticator {
+class AndroidUserAuthenticator(
+    private val activity: FragmentActivity,
+    private val bypassAuthentication: Boolean = false,
+) : UserAuthenticator {
     override suspend fun authenticate(reason: String): ByteArray {
+        if (!bypassAuthentication) return authenticateProtected(reason)
+        val keyFile = AtomicFile(activity.filesDir.resolve(DEBUG_VAULT_KEY_FILE))
+        if (keyFile.baseFile.exists()) {
+            val wrappedVaultKey = keyFile.readFully()
+            require(wrappedVaultKey.size > 12)
+            return debugUnwrapCipher(wrappedVaultKey.copyOfRange(0, 12))
+                .doFinal(wrappedVaultKey, 12, wrappedVaultKey.size - 12)
+        }
+        return authenticateProtected(reason).also { vaultKey ->
+            val cipher = debugWrapCipher()
+            val output = keyFile.startWrite()
+            try {
+                output.write(cipher.iv + cipher.doFinal(vaultKey))
+                output.fd.sync()
+                keyFile.finishWrite(output)
+            } catch (error: Throwable) {
+                keyFile.failWrite(output)
+                vaultKey.fill(0)
+                throw error
+            }
+        }
+    }
+
+    private suspend fun authenticateProtected(reason: String): ByteArray {
         val keyFile = AtomicFile(activity.filesDir.resolve(VAULT_KEY_FILE))
         val wrappedVaultKey = if (keyFile.baseFile.exists()) keyFile.readFully() else null
         if (wrappedVaultKey != null) {
@@ -314,6 +341,31 @@ class AndroidUserAuthenticator(private val activity: FragmentActivity) : UserAut
     private fun unwrapCipher(iv: ByteArray): Cipher = Cipher.getInstance("AES/GCM/NoPadding").apply {
         init(Cipher.DECRYPT_MODE, keystoreKey(), GCMParameterSpec(128, iv))
     }
+    private fun debugWrapCipher(): Cipher = Cipher.getInstance("AES/GCM/NoPadding").apply {
+        init(Cipher.ENCRYPT_MODE, debugKeystoreKey())
+    }
+
+    private fun debugUnwrapCipher(iv: ByteArray): Cipher = Cipher.getInstance("AES/GCM/NoPadding").apply {
+        init(Cipher.DECRYPT_MODE, debugKeystoreKey(), GCMParameterSpec(128, iv))
+    }
+
+    private fun debugKeystoreKey(): SecretKey {
+        val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        return (store.getKey(DEBUG_KEY_ALIAS, null) as? SecretKey) ?: KeyGenerator
+            .getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
+            .apply {
+                init(
+                    KeyGenParameterSpec.Builder(
+                        DEBUG_KEY_ALIAS,
+                        KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
+                    )
+                        .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                        .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                        .build(),
+                )
+            }
+            .generateKey()
+    }
 
     private fun keystoreKey(): SecretKey {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
@@ -340,5 +392,7 @@ class AndroidUserAuthenticator(private val activity: FragmentActivity) : UserAut
     companion object {
         private const val KEY_ALIAS = "ferret-vault-kek-v1"
         private const val VAULT_KEY_FILE = "vault-key.v1"
+        private const val DEBUG_KEY_ALIAS = "ferret-vault-debug-kek-v1"
+        private const val DEBUG_VAULT_KEY_FILE = "vault-key.debug.v1"
     }
 }

@@ -1507,9 +1507,18 @@ fun androidCardanoTransactionEngine(
                 .let { if (it.networkId == Networks.mainnet().networkId) CardanoNetwork.MAINNET else CardanoNetwork.PREPROD }
             val response = runBlocking { evaluate(transactionNetwork, cbor) }
             require(response.transactionId == TransactionUtil.getTxHash(cbor))
+            val declared = Transaction.deserialize(cbor).witnessSet.redeemers.map {
+                requireNotNull(it.tag) to it.index.intValueExact()
+            }
             val results = response.redeemers.map { redeemer ->
+                val tag = if (redeemer.purpose == "unspecified") {
+                    declared.single { it.second == redeemer.index }.first
+                } else {
+                    redeemer.purpose.bloxbeanRedeemerTag()
+                }
+                require(tag to redeemer.index in declared)
                 EvaluationResult.builder()
-                    .redeemerTag(redeemer.purpose.bloxbeanRedeemerTag())
+                    .redeemerTag(tag)
                     .index(redeemer.index)
                     .exUnits(ExUnits.builder().mem(BigInteger.valueOf(redeemer.memory)).steps(BigInteger.valueOf(redeemer.steps)).build())
                     .build()
