@@ -1,13 +1,13 @@
 import Foundation
 import Shared
 import XCTest
-@testable import iosApp
+@testable import Ferret
 
 final class IosCryptoTests: XCTestCase {
     private let kit = IosCryptoKit()
 
     func testSha256AndHkdfVectors() {
-        XCTAssertEqual(hex(kit.sha256(input: bytes(Data("abc".utf8))),
+        XCTAssertEqual(hex(kit.sha256(input: bytes(Data("abc".utf8)))),
                        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
         XCTAssertEqual(hex(kit.hkdfSha256(input: bytes(Data(repeating: 0x0b, count: 22)),
                                               salt: bytes(Data(0...12)), info: bytes(Data(0xf0...0xf9)), size: 42)),
