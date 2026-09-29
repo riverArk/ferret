@@ -29,7 +29,7 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import platform.cardano.FerretBuffer
-import platform.cardano.FerretBuild
+import cnames.structs.FerretBuild
 import platform.cardano.FerretBytes
 import platform.cardano.ferret_authorize
 import platform.cardano.ferret_buffer_free
