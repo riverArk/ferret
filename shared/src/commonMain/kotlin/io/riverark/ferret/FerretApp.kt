@@ -123,6 +123,7 @@ fun FerretApp(
     dependencies: FerretDependencies,
     onUnlock: (() -> Unit)?,
     onSensitiveContentChanged: (Boolean) -> Unit = {},
+    unlockError: String? = null,
 ) {
     FerretTheme {
         val manager = dependencies.walletManager
@@ -171,6 +172,7 @@ fun FerretApp(
             dependencies.walletRemovalManager,
             onUnlock,
             onSensitiveContentChanged,
+            unlockError,
         )
     }
 }
@@ -203,6 +205,7 @@ private fun WalletNavigation(
     walletRemovalManager: WalletRemovalManager?,
     onUnlock: (() -> Unit)?,
     onSensitiveContentChanged: (Boolean) -> Unit,
+    unlockError: String?,
 ) {
     val state by repository.state.collectAsState()
     val navController = rememberNavController()
@@ -260,6 +263,7 @@ private fun WalletNavigation(
                         Image(painterResource(Res.drawable.splash_ferret), null, Modifier.size(180.dp))
                         Text("Ferret", style = MaterialTheme.typography.displaySmall)
                         Text("Your wallet stays encrypted on this device.", textAlign = TextAlign.Center)
+                        unlockError?.let { Text(it, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center) }
                     }
                     if (onUnlock != null) FerretPrimaryButton("Unlock", onUnlock)
                 }

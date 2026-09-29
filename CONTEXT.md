@@ -85,6 +85,12 @@ Android installation and manual verification require an API 36 device or emulato
 
 Entries below are chronological evidence. Older “remaining” or “gated” statements describe their date and are superseded by the Snapshot, Known platform gaps, and newest entry above.
 
+### 2026-09-29 — Android biometric restoration and tag metadata
+
+- Removed the debug biometric bypass and its alternate unlock key. Protected unwrap revokes legacy bypass material only after successful authentication; missing protected-key material preserves encrypted wallet records and fails locked.
+- A Pixel 8a upgraded in place without clearing funded data. A fresh fingerprint challenge restored its existing Mainnet wallet; cancelling fingerprint or PIN stayed locked with encrypted index/seed records present. Background expiry after five minutes returned to Unlock. API 28 and 29 emulators passed both enrolled fingerprint and device-PIN fallback; the initial enrolled-fingerprint fallback exposed a callback ordering bug, fixed before retesting. Real-device PIN success and key-invalidation/lockout acceptance remain.
+- `bash scripts/test-ferret-version.sh` and `androidCheck` passed. The versioned debug APK manifest reported `1.2.3-alpha7` / `10203107`. iOS host and delivery remain unavailable pending the full platform integrations and macOS/physical acceptance.
+
 ### 2026-09-22 — Reviewed-asset channel Add
 
 - Per-channel Add now fixes the selected channel's reviewed asset and full keytag through preview, signing, encrypted local/Drive write-ahead, connector reservation/submission, reconciliation, and restart replay. Native Add conserves exact token quantity and existing capacity, computes channel minimum ADA, preserves complete change, and uses explicit ADA-only collateral.

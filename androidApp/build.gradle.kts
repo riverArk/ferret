@@ -15,9 +15,17 @@ val googleServerClientId = providers.environmentVariable("FERRET_GOOGLE_SERVER_C
 val buildCommit = providers.environmentVariable("FERRET_BUILD_COMMIT").getOrElse("development").also {
     require(it == "development" || Regex("[0-9a-f]{7,40}").matches(it)) { "FERRET_BUILD_COMMIT must be a lowercase git commit" }
 }
-val debugBiometricBypass = providers.gradleProperty("ferret.debugBiometricBypass")
-    .map(String::toBooleanStrict)
-    .getOrElse(false)
+val releaseVersionName = providers.gradleProperty("VERSION_NAME").orNull
+val releaseVersionCode = providers.gradleProperty("VERSION_CODE").orNull
+require((releaseVersionName == null) == (releaseVersionCode == null)) {
+    "VERSION_NAME and VERSION_CODE must be supplied together"
+}
+val resolvedVersionCode = if (releaseVersionCode == null) 1 else {
+    require(Regex("[0-9]+").matches(releaseVersionCode)) { "VERSION_CODE must be a positive integer" }
+    releaseVersionCode.toIntOrNull() ?: error("VERSION_CODE is outside the supported range")
+}
+require(resolvedVersionCode in 1..2_100_000_000) { "VERSION_CODE is outside the supported range" }
+require(releaseVersionName == null || releaseVersionName.isNotBlank()) { "VERSION_NAME must not be blank" }
 if (gradle.startParameter.taskNames.any { it.contains("release", ignoreCase = true) }) {
     require(googleServerClientId.getOrElse("").isNotBlank()) { "FERRET_GOOGLE_SERVER_CLIENT_ID is required for release builds" }
 }
@@ -30,8 +38,8 @@ android {
         applicationId = "io.riverark.ferret"
         minSdk = 28
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = resolvedVersionCode
+        versionName = releaseVersionName ?: "1.0.0"
         buildConfigField("String", "GOOGLE_SERVER_CLIENT_ID", "\"${googleServerClientId.getOrElse("")}\"")
         buildConfigField("String", "BUILD_COMMIT", "\"$buildCommit\"")
     }
@@ -44,14 +52,12 @@ android {
     buildTypes {
         debug {
             isMinifyEnabled = false
-            buildConfigField("boolean", "DEBUG_BIOMETRIC_BYPASS", debugBiometricBypass.toString())
         }
         release {
             isDebuggable = false
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            buildConfigField("boolean", "DEBUG_BIOMETRIC_BYPASS", "false")
         }
     }
     buildFeatures { compose = true; buildConfig = true }

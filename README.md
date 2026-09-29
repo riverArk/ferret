@@ -45,6 +45,11 @@ Release verification requires the Google OAuth server client ID:
 FERRET_GOOGLE_SERVER_CLIENT_ID='<client-id>' ./gradlew androidReleaseCheck
 ```
 
+Tagged-release metadata can be checked with `bash scripts/test-ferret-version.sh` and
+`scripts/ferret-version.sh v1.2.3-alpha7`. Supply its `VERSION_NAME` and
+`VERSION_CODE` as a pair of Gradle properties for versioned builds; local builds
+without them retain version `1.0.0` (code `1`). This does not sign or publish an APK.
+
 ## Repository map
 
 - `shared/src/commonMain`: shared domain models, repositories, state, typed navigation, and Compose screens.

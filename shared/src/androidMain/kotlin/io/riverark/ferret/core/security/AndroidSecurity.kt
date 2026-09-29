@@ -1,6 +1,13 @@
 package io.riverark.ferret.core.security
 
 import android.content.Context
+import android.app.KeyguardManager
+import android.os.Build
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.getSystemService
+import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.CancellationException
+import kotlin.coroutines.resume
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.AtomicFile
@@ -16,6 +23,8 @@ import io.riverark.ferret.core.model.CardanoNetwork
 import io.riverark.ferret.core.model.ChannelState
 import io.riverark.ferret.core.model.WalletId
 import io.riverark.ferret.core.model.WalletProfile
+import java.io.IOException
+import java.security.GeneralSecurityException
 import java.security.KeyStore
 import java.security.SecureRandom
 import javax.crypto.Cipher
@@ -255,84 +264,195 @@ class AndroidSecureVault(
     }
 }
 
-class AndroidUserAuthenticator(
-    private val activity: FragmentActivity,
-    private val bypassAuthentication: Boolean = false,
-) : UserAuthenticator {
-    override suspend fun authenticate(reason: String): ByteArray {
-        if (!bypassAuthentication) return authenticateProtected(reason)
-        val keyFile = AtomicFile(activity.filesDir.resolve(DEBUG_VAULT_KEY_FILE))
-        if (keyFile.baseFile.exists()) {
-            val wrappedVaultKey = keyFile.readFully()
-            require(wrappedVaultKey.size > 12)
-            return debugUnwrapCipher(wrappedVaultKey.copyOfRange(0, 12))
-                .doFinal(wrappedVaultKey, 12, wrappedVaultKey.size - 12)
+class VaultKeyRecoveryException : SecurityException("Vault key recovery required; wallet data was preserved.")
+class AuthenticationPrerequisiteException(message: String) : SecurityException(message)
+
+class AndroidUserAuthenticator(private val activity: FragmentActivity) : UserAuthenticator {
+    private val biometrics = BiometricManager.from(activity)
+    private val credential = activity.registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        credentialResult?.let { continuation ->
+            credentialResult = null
+            if (continuation.isActive) {
+                if (result.resultCode == android.app.Activity.RESULT_OK) continuation.resume(Unit)
+                else continuation.cancel(CancellationException("Screen lock cancelled."))
+            }
         }
-        return authenticateProtected(reason).also { vaultKey ->
-            val cipher = debugWrapCipher()
-            val output = keyFile.startWrite()
+    }
+    private var credentialResult: CancellableContinuation<Unit>? = null
+    private var pendingPrompt: BiometricPrompt? = null
+    val isConfirmingScreenLock get() = credentialResult?.isActive == true
+
+    fun cancel() {
+        pendingPrompt?.cancelAuthentication()
+        pendingPrompt = null
+        credentialResult?.cancel(CancellationException("Authentication cancelled."))
+        credentialResult = null
+    }
+
+    override suspend fun authenticate(reason: String): ByteArray {
+        val keyFile = AtomicFile(activity.filesDir.resolve(VAULT_KEY_FILE))
+        val existing = keyFile.baseFile.exists()
+        if (!existing && activity.filesDir.listFiles()?.any {
+                it.name.startsWith("wallet-") || it.name == DEBUG_VAULT_KEY_FILE ||
+                    it.name.startsWith("vault-key.")
+            } == true) {
+            throw VaultKeyRecoveryException()
+        }
+        if (existing && !keyStore().containsAlias(KEY_ALIAS)) {
+            throw VaultKeyRecoveryException()
+        }
+        val wrapped = if (existing) try { keyFile.readFully() } catch (_: IOException) {
+            throw VaultKeyRecoveryException()
+        } else null
+        if (wrapped != null && wrapped.size < 29) {
+            throw VaultKeyRecoveryException()
+        }
+        if (Build.VERSION.SDK_INT >= 30 && biometrics.canAuthenticate(
+                BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.DEVICE_CREDENTIAL,
+            ) != BiometricManager.BIOMETRIC_SUCCESS) {
+            throw AuthenticationPrerequisiteException("Set up biometrics or a device screen lock to unlock Ferret.")
+        }
+        val vaultKey = try {
+            if (Build.VERSION.SDK_INT >= 30) {
+                val cipher = if (wrapped == null) wrapCipher() else unwrapCipher(wrapped.copyOfRange(0, 12))
+                prompt(cipher, reason) { authorized ->
+                    if (wrapped == null) newVaultKey(keyFile, authorized) else authorized.doFinal(wrapped, 12, wrapped.size - 12)
+                }
+            } else {
+                legacyAuthenticate(reason)
+                val cipher = if (wrapped == null) wrapCipher() else unwrapCipher(wrapped.copyOfRange(0, 12))
+                if (wrapped == null) newVaultKey(keyFile, cipher) else cipher.doFinal(wrapped, 12, wrapped.size - 12)
+            }
+        } catch (error: GeneralSecurityException) {
+            if (existing) throw VaultKeyRecoveryException()
+            throw error
+        }
+        try {
+            if (vaultKey.size != 32) throw VaultKeyRecoveryException()
+            revokeDebugKey()
+            return vaultKey
+        } catch (error: Throwable) {
+            vaultKey.fill(0)
+            throw error
+        }
+    }
+
+    private fun newVaultKey(file: AtomicFile, cipher: Cipher): ByteArray {
+        val key = SecureRandom().generateSeed(32)
+        try {
+            val output = file.startWrite()
             try {
-                output.write(cipher.iv + cipher.doFinal(vaultKey))
+                output.write(cipher.iv + cipher.doFinal(key))
                 output.fd.sync()
-                keyFile.finishWrite(output)
+                file.finishWrite(output)
             } catch (error: Throwable) {
-                keyFile.failWrite(output)
-                vaultKey.fill(0)
+                file.failWrite(output)
                 throw error
             }
-        }
-    }
-
-    private suspend fun authenticateProtected(reason: String): ByteArray {
-        val keyFile = AtomicFile(activity.filesDir.resolve(VAULT_KEY_FILE))
-        val wrappedVaultKey = if (keyFile.baseFile.exists()) keyFile.readFully() else null
-        if (wrappedVaultKey != null) {
-            require(wrappedVaultKey.size > 12)
-            val cipher = unwrapCipher(wrappedVaultKey.copyOfRange(0, 12))
-            return authenticate(cipher, reason) { it.doFinal(wrappedVaultKey, 12, wrappedVaultKey.size - 12) }
-        }
-
-        val vaultKey = SecureRandom().generateSeed(32)
-        return try {
-            val cipher = wrapCipher()
-            authenticate(cipher, reason) {
-                val output = keyFile.startWrite()
-                try {
-                    output.write(it.iv + it.doFinal(vaultKey))
-                    output.fd.sync()
-                    keyFile.finishWrite(output)
-                    vaultKey.copyOf()
-                } catch (error: Throwable) {
-                    keyFile.failWrite(output)
-                    throw error
-                }
-            }
+            return key.copyOf()
         } finally {
-            vaultKey.fill(0)
+            key.fill(0)
         }
     }
 
-    private suspend fun authenticate(cipher: Cipher, reason: String, result: (Cipher) -> ByteArray): ByteArray =
-        suspendCancellableCoroutine { continuation ->
+    private fun revokeDebugKey() {
+        val debug = AtomicFile(activity.filesDir.resolve(DEBUG_VAULT_KEY_FILE))
+        debug.delete()
+        check(!debug.baseFile.exists()) { "Legacy key revocation failed." }
+        val store = keyStore()
+        if (store.containsAlias(DEBUG_KEY_ALIAS)) store.deleteEntry(DEBUG_KEY_ALIAS)
+        check(!store.containsAlias(DEBUG_KEY_ALIAS)) { "Legacy key revocation failed." }
+    }
+
+    private suspend fun prompt(cipher: Cipher, reason: String, result: (Cipher) -> ByteArray): ByteArray {
+        val allowed = BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.DEVICE_CREDENTIAL
+        return suspendCancellableCoroutine { continuation ->
             val prompt = BiometricPrompt(activity, ContextCompat.getMainExecutor(activity), object : BiometricPrompt.AuthenticationCallback() {
                 override fun onAuthenticationSucceeded(authentication: BiometricPrompt.AuthenticationResult) {
-                    try { continuation.resume(result(authentication.cryptoObject!!.cipher!!)) }
-                    catch (error: Throwable) { continuation.resumeWithException(error) }
+                    if (!continuation.isActive) return
+                    try {
+                        val key = result(checkNotNull(authentication.cryptoObject?.cipher))
+                        if (continuation.isActive) continuation.resume(key) else key.fill(0)
+                    } catch (error: Throwable) {
+                        if (continuation.isActive) continuation.resumeWithException(error)
+                    }
+                    pendingPrompt = null
                 }
                 override fun onAuthenticationError(code: Int, message: CharSequence) {
-                    continuation.resumeWithException(SecurityException("authentication failed: $code"))
+                    if (continuation.isActive) continuation.resumeWithException(SecurityException("Authentication failed: $code"))
+                    pendingPrompt = null
                 }
             })
+            pendingPrompt = prompt
+            continuation.invokeOnCancellation {
+                prompt.cancelAuthentication()
+                if (pendingPrompt === prompt) pendingPrompt = null
+            }
             prompt.authenticate(
                 BiometricPrompt.PromptInfo.Builder()
                     .setTitle("Unlock Ferret")
                     .setSubtitle(reason)
-                    .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.DEVICE_CREDENTIAL)
+                    .setAllowedAuthenticators(allowed)
                     .build(),
                 BiometricPrompt.CryptoObject(cipher),
             )
-            continuation.invokeOnCancellation { prompt.cancelAuthentication() }
         }
+    }
+
+    private suspend fun legacyAuthenticate(reason: String) {
+        val keyguard = checkNotNull(activity.getSystemService<KeyguardManager>())
+        val biometricAvailable = biometrics.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG) ==
+            BiometricManager.BIOMETRIC_SUCCESS
+        if (!biometricAvailable) {
+            if (!keyguard.isDeviceSecure) throw AuthenticationPrerequisiteException("Set up a device screen lock to unlock Ferret.")
+            confirmCredential(keyguard)
+            return
+        }
+        val useCredential = suspendCancellableCoroutine<Boolean> { continuation ->
+            val prompt = BiometricPrompt(activity, ContextCompat.getMainExecutor(activity), object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(authentication: BiometricPrompt.AuthenticationResult) {
+                    if (continuation.isActive) continuation.resume(false)
+                    pendingPrompt = null
+                }
+                override fun onAuthenticationError(code: Int, message: CharSequence) {
+                    if (continuation.isActive) {
+                        if (code == BiometricPrompt.ERROR_NEGATIVE_BUTTON || code == BiometricPrompt.ERROR_LOCKOUT ||
+                            code == BiometricPrompt.ERROR_LOCKOUT_PERMANENT) {
+                            continuation.resume(true)
+                        } else continuation.resumeWithException(SecurityException("Authentication failed: $code"))
+                    }
+                    pendingPrompt = null
+                }
+            })
+            pendingPrompt = prompt
+            continuation.invokeOnCancellation {
+                prompt.cancelAuthentication()
+                if (pendingPrompt === prompt) pendingPrompt = null
+            }
+            prompt.authenticate(
+                BiometricPrompt.PromptInfo.Builder()
+                    .setTitle("Unlock Ferret")
+                    .setSubtitle(reason)
+                    .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
+                    .setNegativeButtonText("Use screen lock")
+                    .build(),
+            )
+        }
+        if (useCredential) {
+            if (!keyguard.isDeviceSecure) throw AuthenticationPrerequisiteException("Set up a device screen lock to unlock Ferret.")
+            confirmCredential(keyguard)
+        }
+    }
+
+    private suspend fun confirmCredential(keyguard: KeyguardManager) {
+        val intent = keyguard.createConfirmDeviceCredentialIntent("Unlock Ferret", "Authenticate to access your wallets")
+            ?: throw AuthenticationPrerequisiteException("Set up a device screen lock to unlock Ferret.")
+        suspendCancellableCoroutine<Unit> { continuation ->
+            credentialResult = continuation
+            continuation.invokeOnCancellation { if (credentialResult === continuation) credentialResult = null }
+            credential.launch(intent)
+        }
+    }
 
     private fun wrapCipher(): Cipher = Cipher.getInstance("AES/GCM/NoPadding").apply {
         init(Cipher.ENCRYPT_MODE, keystoreKey())
@@ -341,49 +461,29 @@ class AndroidUserAuthenticator(
     private fun unwrapCipher(iv: ByteArray): Cipher = Cipher.getInstance("AES/GCM/NoPadding").apply {
         init(Cipher.DECRYPT_MODE, keystoreKey(), GCMParameterSpec(128, iv))
     }
-    private fun debugWrapCipher(): Cipher = Cipher.getInstance("AES/GCM/NoPadding").apply {
-        init(Cipher.ENCRYPT_MODE, debugKeystoreKey())
-    }
 
-    private fun debugUnwrapCipher(iv: ByteArray): Cipher = Cipher.getInstance("AES/GCM/NoPadding").apply {
-        init(Cipher.DECRYPT_MODE, debugKeystoreKey(), GCMParameterSpec(128, iv))
-    }
-
-    private fun debugKeystoreKey(): SecretKey {
-        val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        return (store.getKey(DEBUG_KEY_ALIAS, null) as? SecretKey) ?: KeyGenerator
-            .getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
-            .apply {
-                init(
-                    KeyGenParameterSpec.Builder(
-                        DEBUG_KEY_ALIAS,
-                        KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
-                    )
-                        .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-                        .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-                        .build(),
-                )
-            }
-            .generateKey()
-    }
-
+    private fun keyStore() = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
     private fun keystoreKey(): SecretKey {
-        val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        return (store.getKey(KEY_ALIAS, null) as? SecretKey) ?: generateKey()
+        val store = keyStore()
+        return (store.getKey(KEY_ALIAS, null) as? SecretKey)
+            ?: if (store.containsAlias(KEY_ALIAS)) throw VaultKeyRecoveryException()
+            else generateKey()
     }
 
     private fun generateKey(): SecretKey {
         fun generate(strongBox: Boolean): SecretKey {
             val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
-            val spec = KeyGenParameterSpec.Builder(KEY_ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
+            val builder = KeyGenParameterSpec.Builder(KEY_ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
                 .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
                 .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
                 .setUserAuthenticationRequired(true)
                 .setInvalidatedByBiometricEnrollment(true)
-                .setUserAuthenticationParameters(0, KeyProperties.AUTH_BIOMETRIC_STRONG or KeyProperties.AUTH_DEVICE_CREDENTIAL)
-                .setIsStrongBoxBacked(strongBox)
-                .build()
-            generator.init(spec)
+            if (Build.VERSION.SDK_INT >= 30) {
+                builder.setUserAuthenticationParameters(0, KeyProperties.AUTH_BIOMETRIC_STRONG or KeyProperties.AUTH_DEVICE_CREDENTIAL)
+            } else {
+                builder.setUserAuthenticationValidityDurationSeconds(30)
+            }
+            generator.init(builder.setIsStrongBoxBacked(strongBox).build())
             return generator.generateKey()
         }
         return try { generate(true) } catch (_: Exception) { generate(false) }

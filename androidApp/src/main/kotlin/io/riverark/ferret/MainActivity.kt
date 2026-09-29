@@ -15,6 +15,9 @@ import android.view.WindowManager
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.fragment.app.FragmentActivity
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.Lifecycle
 import io.ktor.client.HttpClient
@@ -55,6 +58,8 @@ import io.riverark.ferret.core.security.ForegroundLockPolicy
 import io.riverark.ferret.core.security.SensitiveContentCounter
 import io.riverark.ferret.core.security.AndroidUserAuthenticator
 import io.riverark.ferret.core.security.AndroidBackupCrypto
+import io.riverark.ferret.core.security.AuthenticationPrerequisiteException
+import io.riverark.ferret.core.security.VaultKeyRecoveryException
 import io.riverark.ferret.core.channel.VaultChannelJournal
 import io.riverark.ferret.core.channel.AdaptorChannelRemote
 import io.riverark.ferret.core.channel.ChannelRepository
@@ -89,6 +94,7 @@ class MainActivity : FragmentActivity() {
     private val wallets = WalletRepository()
     private val lockPolicy = ForegroundLockPolicy(SystemClock::elapsedRealtime)
     private val diagnostics = RuntimeDiagnostics()
+    private var unlockError by mutableStateOf<String?>(null)
     private val clipboardHandler = Handler(Looper.getMainLooper())
     private lateinit var connectivity: ConnectivityManager
     private lateinit var vault: AndroidSecureVault
@@ -139,7 +145,7 @@ class MainActivity : FragmentActivity() {
             RefreshCoordinator(deployment(it), assetCatalog, connectors.getValue(it), adaptors.getValue(it))
         }
         vault = AndroidSecureVault(this, assetCatalog)
-        authenticator = AndroidUserAuthenticator(this, BuildConfig.DEBUG_BIOMETRIC_BYPASS)
+        authenticator = AndroidUserAuthenticator(this)
         val walletSelection = getSharedPreferences("wallet-selection", Context.MODE_PRIVATE)
         walletManager = WalletManager(
             vault,
@@ -463,6 +469,7 @@ class MainActivity : FragmentActivity() {
                 ),
                 ::unlock,
                 ::setSensitiveContent,
+                unlockError,
             )
         }
     }
@@ -478,6 +485,7 @@ class MainActivity : FragmentActivity() {
     }
 
     override fun onStop() {
+        if (::authenticator.isInitialized && !authenticator.isConfirmingScreenLock) authenticator.cancel()
         if (!isChangingConfigurations && ::vault.isInitialized && vault.isUnlocked) {
             lockPolicy.backgrounded()
             cancelActiveWork()
@@ -491,6 +499,7 @@ class MainActivity : FragmentActivity() {
     }
 
     override fun onDestroy() {
+        if (::authenticator.isInitialized) authenticator.cancel()
         cancelActiveWork()
         backgroundLock?.cancel()
         if (::connectivity.isInitialized) connectivity.unregisterNetworkCallback(networkCallback)
@@ -528,6 +537,7 @@ class MainActivity : FragmentActivity() {
 
     private fun startOnlineSession(authenticate: Boolean) {
         if (activeWork?.isActive == true || (authenticate && unlocking)) return
+        if (authenticate) unlockError = null
         if (authenticate) unlocking = true
         activeWork = lifecycleScope.launch {
             try {
@@ -559,8 +569,9 @@ class MainActivity : FragmentActivity() {
                 diagnostics.clear()
             } catch (error: CancellationException) {
                 throw error
-            } catch (_: SecurityException) {
+            } catch (error: SecurityException) {
                 diagnostics.record(DiagnosticCode.AUTHENTICATION)
+                unlockError = if (error is AuthenticationPrerequisiteException || error is VaultKeyRecoveryException) error.message else null
                 lockSession()
             } catch (_: GeneralSecurityException) {
                 diagnostics.record(DiagnosticCode.KEYSTORE)
