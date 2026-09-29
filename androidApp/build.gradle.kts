@@ -26,7 +26,12 @@ val resolvedVersionCode = if (releaseVersionCode == null) 1 else {
 }
 require(resolvedVersionCode in 1..2_100_000_000) { "VERSION_CODE is outside the supported range" }
 require(releaseVersionName == null || releaseVersionName.isNotBlank()) { "VERSION_NAME must not be blank" }
-if (gradle.startParameter.taskNames.any { it.contains("release", ignoreCase = true) }) {
+if (gradle.startParameter.taskNames.any {
+        val task = it.substringAfterLast(':')
+        task == "androidReleaseCheck" ||
+            (task.contains("Release") && (it.removePrefix(":").startsWith("androidApp:") || !it.contains(':')))
+    }
+) {
     require(googleServerClientId.getOrElse("").isNotBlank()) { "FERRET_GOOGLE_SERVER_CLIENT_ID is required for release builds" }
 }
 
