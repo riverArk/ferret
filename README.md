@@ -50,13 +50,18 @@ Tagged-release metadata can be checked with `bash scripts/test-ferret-version.sh
 `VERSION_CODE` as a pair of Gradle properties for versioned builds; local builds
 without them retain version `1.0.0` (code `1`). This does not sign or publish an APK.
 
+On macOS with Xcode 26.6, iOS 26.5 simulator, JDK 17, and Android SDK 36,
+`scripts/check-ios.sh` compiles the shared iOS target, runs its tests and the
+Xcode UI test, then installs and launches Ferret on the iPhone 17 simulator.
+The iOS host is not yet a functional wallet or a signed release.
+
 ## Repository map
 
 - `shared/src/commonMain`: shared domain models, repositories, state, typed navigation, and Compose screens.
 - `shared/src/androidMain`: Android secure vault, biometric authentication support, Cardano implementation, and camera scanner.
 - `shared/src/iosMain`: thin shared Compose entry point with the intentional wallet-availability gate.
 - `androidApp`: Android application host, dependency construction, system-bar configuration, and sensitive-screen protection.
-- `iosApp`: thin Swift host source; no Xcode project is checked in yet.
+- `iosApp`: checked-in SwiftUI/Xcode host with simulator UI smoke; wallet operations remain intentionally gated.
 - `native/cardano-ios-bridge`: reserved iOS Cardano bridge surface; implementation remains part of the iOS follow-up.
 
 ## Security model
