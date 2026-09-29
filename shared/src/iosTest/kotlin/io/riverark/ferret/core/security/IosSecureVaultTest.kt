@@ -13,6 +13,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
+@OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
 class IosSecureVaultTest {
     @Test fun confirmationAndEncryptedStateSurviveLockButMissingIndexFailsClosed() = runBlocking {
         val directory = NSTemporaryDirectory() + "/ferret-vault-${NSUUID().UUIDString}"
