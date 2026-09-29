@@ -5,7 +5,7 @@ package io.riverark.ferret.core.security
 import io.riverark.ferret.core.backup.BackupCrypto
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.usePinned
-import platform.Foundation.NSData
+import platform.Foundation.*
 import platform.Security.SecRandomCopyBytes
 import platform.Security.kSecRandomDefault
 
