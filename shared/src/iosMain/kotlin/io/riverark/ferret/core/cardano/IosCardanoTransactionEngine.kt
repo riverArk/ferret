@@ -24,6 +24,7 @@ import kotlinx.cinterop.readBytes
 import kotlinx.cinterop.readValue
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.usePinned
+import kotlinx.cinterop.value
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString

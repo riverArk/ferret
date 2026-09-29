@@ -839,9 +839,11 @@ class AndroidCardanoTransactionEngineTest {
         val mainnet = engine.deriveWallet(entropy, CardanoNetwork.MAINNET)
 
         assertEquals(first, second)
-        assertTrue(first.paymentAddress.startsWith("addr_test1"))
-        assertTrue(mainnet.paymentAddress.startsWith("addr1"))
-        assertEquals(56, first.paymentCredentialHex.length)
+        assertEquals("addr_test1qqzkxpwrnvu3ylqvj6wupde0pjk4w28zu9893wu55z4upfcuafluqtl6qqeua5h8m66l6mxpvvqh0w7gfuwrs6npgtus705qux", first.paymentAddress)
+        assertEquals("stake_test1uqww5l7q9laqqv7w6tnaad0adnqkxqthh0yy78pcdfs597gejrlds", first.stakeAddress)
+        assertEquals("addr1qyzkxpwrnvu3ylqvj6wupde0pjk4w28zu9893wu55z4upfcuafluqtl6qqeua5h8m66l6mxpvvqh0w7gfuwrs6npgtusaefqse", mainnet.paymentAddress)
+        assertEquals("stake1uyww5l7q9laqqv7w6tnaad0adnqkxqthh0yy78pcdfs597g7cfafd", mainnet.stakeAddress)
+        assertEquals("056305c39b39127c0c969dc0b72f0cad5728e2e14e58bb94a0abc0a7", first.paymentCredentialHex)
         assertEquals(first.paymentCredentialHex, mainnet.paymentCredentialHex)
     }
 

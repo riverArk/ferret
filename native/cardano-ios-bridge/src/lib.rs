@@ -297,9 +297,11 @@ mod tests {
         let entropy: Vec<u8> = (0..32).collect();
         let mainnet: serde_json::Value = serde_json::from_slice(&derived(&entropy, 1).unwrap()).unwrap();
         let preprod: serde_json::Value = serde_json::from_slice(&derived(&entropy, 0).unwrap()).unwrap();
-        let main_address = mainnet["paymentAddress"].as_str().unwrap();
-        let test_address = preprod["paymentAddress"].as_str().unwrap();
-        assert!(main_address.starts_with("addr1") && test_address.starts_with("addr_test1"));
+        assert_eq!(mainnet["paymentAddress"], "addr1qyzkxpwrnvu3ylqvj6wupde0pjk4w28zu9893wu55z4upfcuafluqtl6qqeua5h8m66l6mxpvvqh0w7gfuwrs6npgtusaefqse");
+        assert_eq!(mainnet["stakeAddress"], "stake1uyww5l7q9laqqv7w6tnaad0adnqkxqthh0yy78pcdfs597g7cfafd");
+        assert_eq!(preprod["paymentAddress"], "addr_test1qqzkxpwrnvu3ylqvj6wupde0pjk4w28zu9893wu55z4upfcuafluqtl6qqeua5h8m66l6mxpvvqh0w7gfuwrs6npgtus705qux");
+        assert_eq!(preprod["stakeAddress"], "stake_test1uqww5l7q9laqqv7w6tnaad0adnqkxqthh0yy78pcdfs597gejrlds");
+        assert_eq!(mainnet["paymentCredentialHex"], "056305c39b39127c0c969dc0b72f0cad5728e2e14e58bb94a0abc0a7");
         assert_eq!(mainnet["paymentCredentialHex"], preprod["paymentCredentialHex"]);
         let message = b"Ferret protocol signing regression";
         let key = payment_key(&entropy).unwrap().to_public().to_raw_key();
