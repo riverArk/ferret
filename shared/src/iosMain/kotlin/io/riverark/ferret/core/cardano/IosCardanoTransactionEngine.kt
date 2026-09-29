@@ -107,7 +107,7 @@ class IosCardanoTransactionEngine(
             error.ptr = null
             error.len = 0u
             try {
-                val status = withBytes(request) { ferret_build_begin(it, out.ptr, error.cPointer) }
+                val status = withBytes(request) { ferret_build_begin(it, out.cPointer, error.cPointer) }
                 if (status != 0) throw bridgeError(status)
                 requireNotNull(out.value) { BRIDGE_FAILURE }
             } catch (failure: Throwable) {

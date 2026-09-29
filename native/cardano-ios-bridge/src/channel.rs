@@ -416,7 +416,7 @@ fn build_candidate(request:&Value,budget:Option<(u64,u64)>)->Result<(csl::Transa
  let channel=if kind=="OpenChannel"{None}else{Some(field(intent,"channelInput")?)};
  let spending=channel.is_some();
  let reference=field(intent,"referenceInput")?;
- let ref_script=reference_script(reference,text(if let Some(c)=channel{field(intent,"currentDatum")?}else{field(intent,"datum")?},"validatorHashHex")?)?;
+ let ref_script=reference_script(reference,text(if spending{field(intent,"currentDatum")?}else{field(intent,"datum")?},"validatorHashHex")?)?;
  let quantity=if kind=="CloseChannel"{0}else{number(field(intent,"amount")?,"baseUnits")?};
  let selected=if kind=="CloseChannel"{None}else{asset_unit(field(field(intent,"amount")?,"asset")?)?};
  let native=selected.is_some();
