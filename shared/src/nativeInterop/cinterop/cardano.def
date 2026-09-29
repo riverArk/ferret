@@ -1,2 +1,3 @@
 headers = ferret_cardano.h
 package = platform.cardano
+staticLibraries = libferret_cardano.a

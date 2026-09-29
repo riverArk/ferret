@@ -26,9 +26,9 @@ kotlin {
         target.compilations.getByName("main").cinterops.create("cardano") {
             defFile(project.file("src/nativeInterop/cinterop/cardano.def"))
             includeDirs(crate.resolve("include"))
+            extraOpts("-libraryPath", libraryDirectory.absolutePath)
         }
-        target.binaries.all { linkerOpts("-L${libraryDirectory.absolutePath}", "-lferret_cardano") }
-        tasks.matching { it.name.startsWith("link") && it.name.endsWith(target.name.replaceFirstChar(Char::uppercase)) }
+        tasks.matching { it.name == "cinteropCardano${target.name.replaceFirstChar(Char::uppercase)}" }
             .configureEach { dependsOn(buildCardano) }
         target.binaries.framework {
             baseName = "Shared"
