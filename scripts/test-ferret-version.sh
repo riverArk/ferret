@@ -18,7 +18,9 @@ assert_version v99.99.99 999999400 false 99.99.99 400.0.1
 assert_version v01.02.03-alpha07 10203107 true 1.2.3 107.0.1
 previous=0
 for tag in v0.0.99 v0.1.0 v0.99.99 v1.0.0 v1.99.99 v2.0.0; do
-    code=$("$script" "$tag" | { while IFS= read -r line; do case $line in VERSION_CODE=*) printf '%s' "${line#VERSION_CODE=}";; esac; done; })
+    output=$("$script" "$tag")
+    code=${output#*VERSION_CODE=}
+    code=${code%%$'\n'*}
     (( code > previous )) || { echo "Version order failed: $tag" >&2; exit 1; }
     previous=$code
 done
