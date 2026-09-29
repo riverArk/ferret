@@ -16,8 +16,21 @@ kotlin {
         withHostTestBuilder {}
         withDeviceTestBuilder { sourceSetTreeName = "test" }
     }
-    listOf(iosArm64(), iosSimulatorArm64()).forEach {
-        it.binaries.framework {
+    listOf(iosArm64(), iosSimulatorArm64()).forEach { target ->
+        val rustTarget = if (target.name == "iosArm64") "aarch64-apple-ios" else "aarch64-apple-ios-sim"
+        val crate = rootProject.file("native/cardano-ios-bridge")
+        val libraryDirectory = crate.resolve("target/$rustTarget/release")
+        val buildCardano = tasks.register<Exec>("build${target.name.replaceFirstChar(Char::uppercase)}Cardano") {
+            commandLine(rootProject.file("scripts/build-cardano-ios.sh"), rustTarget)
+        }
+        target.compilations.getByName("main").cinterops.create("cardano") {
+            defFile(project.file("src/nativeInterop/cinterop/cardano.def"))
+            includeDirs(crate.resolve("include"))
+            linkerOpts("-L${libraryDirectory.absolutePath}", "-lferret_cardano")
+        }
+        tasks.matching { it.name.startsWith("link") && it.name.endsWith(target.name.replaceFirstChar(Char::uppercase)) }
+            .configureEach { dependsOn(buildCardano) }
+        target.binaries.framework {
             baseName = "Shared"
             isStatic = true
         }

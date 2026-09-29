@@ -1,0 +1,15 @@
+[package]
+name = "ferret-cardano-ios-bridge"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+cardano-serialization-lib = "=17.0.0"
+ed25519-bip32 = "=0.4.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hex = "0.4"
+zeroize = "1"

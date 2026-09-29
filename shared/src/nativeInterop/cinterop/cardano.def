@@ -1,0 +1,2 @@
+headers = ferret_cardano.h
+package = platform.cardano

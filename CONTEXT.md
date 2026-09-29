@@ -10,13 +10,13 @@
 
 Ferret is an Android-first Cardano and Lightning wallet. Android has real biometric/device-credential authentication, encrypted persistence, Cardano wallet derivation and transaction authorization, Google Drive channel recovery, keyed Mainnet ADA/native channels, QR-only BOLT11 payment with eligible-channel selection, catalog-asset L1 transfer, channel Open/Add flows, ADA sweep, and safe wallet-removal orchestration. Shared Kotlin code supplies domain state, typed navigation, repositories, ViewModels, and Compose UI.
 
-iOS compiles and launches the shared Compose root from a checked-in Xcode host and displays `Wallet setup is not available in this iOS build.` It does not provide wallet operations. `IOS_FOLLOW_UP.md` owns secure vault, authentication, mnemonic, Cardano, Drive, TLS, QR, signing, and physical-device work.
+iOS compiles and launches shared Compose from the checked-in Xcode host and displays `Wallet setup is not available in this iOS build.` It has simulator-verified vault records, BIP-39 recovery words, and CryptoKit backup primitives; the Keychain/LocalAuthentication path compiles but has not been exercised on a physical iPhone. `IOS_FOLLOW_UP.md` tracks the remaining Cardano, Drive, TLS, QR, signing, and physical-device work.
 
 ## Module map
 
 - `shared/src/commonMain`: domain models, `WalletManager`, `WalletRepository`, `SecureVault` contract, typed `Route`, ViewModels, shared Compose UI, and the Ferret theme.
 - `shared/src/androidMain`: Android vault/authentication, recovery codec, Cardano engine, protocol signer, and camera scanner.
-- `shared/src/iosMain`: Compose view-controller entry point and explicit platform gate.
+- `shared/src/iosMain`: Compose availability gate, encrypted vault, authentication, recovery codec, installation identity, and CryptoKit adapter.
 - `androidApp`: Android host, dependency construction, edge-to-edge setup, and screenshot protection.
 - `iosApp`: Xcode/SwiftUI host, shared-framework build phase, launch assets, privacy manifest, and simulator UI smoke.
 - `native/cardano-ios-bridge`: deferred iOS Cardano bridge surface.
@@ -90,6 +90,7 @@ Entries below are chronological evidence. Older “remaining” or “gated” s
 - Removed the debug biometric bypass and its alternate unlock key. Protected unwrap revokes legacy bypass material only after successful authentication; missing protected-key material preserves encrypted wallet records and fails locked.
 - A Pixel 8a upgraded in place without clearing funded data. A fresh fingerprint challenge restored its existing Mainnet wallet; cancelling fingerprint or PIN stayed locked with encrypted index/seed records present. Background expiry after five minutes returned to Unlock. API 28 and 29 emulators passed both enrolled fingerprint and device-PIN fallback; the initial enrolled-fingerprint fallback exposed a callback ordering bug, fixed before retesting. Real-device PIN success and key-invalidation/lockout acceptance remain.
 - `bash scripts/test-ferret-version.sh` and `androidCheck` passed. The versioned debug APK manifest reported `1.2.3-alpha7` / `10203107`. macOS [iOS host check](https://github.com/riverArk/ferret/actions/runs/36623274453) passed Kotlin simulator compilation/tests, Xcode UI launch test, and simulator install/launch/screenshot. The iOS wallet remains unavailable pending full platform integrations and physical acceptance. API 28 emulator rejection after a cancelled biometric prompt stayed locked despite a late fingerprint; a deliberately corrupted disposable vault key reported recovery required while retaining encrypted wallet records.
+- macOS [iOS custody check](https://github.com/riverArk/ferret/actions/runs/36632235698) passed simulator vault lock/reopen, recovery-confirmation persistence, corrupted record/missing index failure, BIP-39 public vector, CryptoKit AES-GCM/HKDF/SHA-256 vectors, Xcode unit/UI tests, and simulator launch. Physical iPhone Face ID/passcode and full iOS wallet operation remain outstanding.
 
 ### 2026-09-22 — Reviewed-asset channel Add
 

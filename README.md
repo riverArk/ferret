@@ -59,7 +59,7 @@ The iOS host is not yet a functional wallet or a signed release.
 
 - `shared/src/commonMain`: shared domain models, repositories, state, typed navigation, and Compose screens.
 - `shared/src/androidMain`: Android secure vault, biometric authentication support, Cardano implementation, and camera scanner.
-- `shared/src/iosMain`: thin shared Compose entry point with the intentional wallet-availability gate.
+- `shared/src/iosMain`: shared Compose entry point plus Keychain-backed vault, BIP-39 codec, CryptoKit backup primitives, and the intentional wallet-availability gate.
 - `androidApp`: Android application host, dependency construction, system-bar configuration, and sensitive-screen protection.
 - `iosApp`: checked-in SwiftUI/Xcode host with simulator UI smoke; wallet operations remain intentionally gated.
 - `native/cardano-ios-bridge`: reserved iOS Cardano bridge surface; implementation remains part of the iOS follow-up.

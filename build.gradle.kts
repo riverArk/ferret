@@ -682,9 +682,9 @@ allprojects {
 }
 
 tasks.register("androidCheck") {
-    dependsOn(":shared:allTests", ":androidApp:testDebugUnitTest", ":androidApp:lintDebug", ":androidApp:assembleDebug", "verifyEmbeddedAssetMetadata", "testEmbeddedAssetMetadata")
+    dependsOn(":shared:testAndroidHostTest", ":androidApp:testDebugUnitTest", ":androidApp:lintDebug", ":androidApp:assembleDebug", "verifyEmbeddedAssetMetadata", "testEmbeddedAssetMetadata")
 }
 
 tasks.register("androidReleaseCheck") {
-    dependsOn(":shared:allTests", ":androidApp:test", ":androidApp:lintRelease", ":androidApp:verifyReleaseSecurity", ":androidApp:generateReleaseSbom", "verifyEmbeddedAssetMetadata", "testEmbeddedAssetMetadata")
+    dependsOn(":shared:testAndroidHostTest", ":androidApp:test", ":androidApp:lintRelease", ":androidApp:verifyReleaseSecurity", ":androidApp:generateReleaseSbom", "verifyEmbeddedAssetMetadata", "testEmbeddedAssetMetadata")
 }

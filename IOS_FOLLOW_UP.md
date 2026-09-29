@@ -1,14 +1,14 @@
 # iOS Follow-up
 
-The shared Kotlin Multiplatform theme, typed onboarding navigation, and explicit iOS wallet-unavailable state compile with `:shared:compileKotlinIosSimulatorArm64`. Completing and validating an iOS wallet requires macOS, Xcode, Apple signing, and the platform-specific integrations below.
+The checked-in iOS Xcode host launches shared Compose on the iPhone simulator. Wallet actions remain unavailable until the Cardano, networking, backup, camera, and runtime integrations below are complete and physically verified.
 
 ## Current iOS Surface
 
 - `shared/build.gradle.kts` declares `iosArm64` and `iosSimulatorArm64` static frameworks named `Shared`.
-- `shared/src/iosMain/kotlin/io/riverark/ferret/MainViewController.kt` exposes the shared Compose root with `walletManager = null`.
-- `iosApp/iosApp/FerretApp.swift` is the thin Swift host source, but no Xcode project is checked in.
-- Shared theme, navigation, wallet, channel, backup, payment, and ViewModel contracts compile for the iOS simulator target.
-- The current UI intentionally displays `Wallet setup is not available in this iOS build.` No secure-vault, authentication, mnemonic, Cardano bridge, Drive, camera, or iOS TLS adapter exists yet.
+- `shared/src/iosMain/kotlin/io/riverark/ferret/MainViewController.kt` exposes shared Compose with `walletManager = null` until the platform runtime is complete.
+- `iosApp/iosApp.xcodeproj` builds and launches the SwiftUI host and runs simulator UI and CryptoKit tests.
+- iOS custody includes a Keychain-protected data key with LocalAuthentication, encrypted atomic Application Support vault, installation identity, BIP-39 recovery codec, and backup-compatible CryptoKit bridge. The simulator vault record/tamper and public crypto-vector tests pass; Face ID/passcode behavior on a physical iPhone remains unverified.
+- The UI still displays `Wallet setup is not available in this iOS build.` No iOS Cardano bridge, Drive, camera, or pinned networking adapter is wired.
 
 ## Required macOS Tooling and Credentials
 
