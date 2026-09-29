@@ -33,6 +33,8 @@ kotlin {
         target.binaries.framework {
             baseName = "Shared"
             isStatic = true
+            // Kotlin/Native 2.4.10 crashes in this release-only optimizer (KT-64508).
+            freeCompilerArgs += "-Xdisable-phases=RemoveRedundantCallsToStaticInitializersPhase"
         }
     }
 

@@ -30,6 +30,13 @@ jobs:
         run: scripts/check-ios.sh
       - name: Link the iPhone device framework
         run: ./gradlew :shared:linkReleaseFrameworkIosArm64 --no-daemon
+      - name: Assemble the device and simulator XCFramework
+        run: |
+          ./gradlew :shared:linkReleaseFrameworkIosSimulatorArm64 --no-daemon
+          xcodebuild -create-xcframework \
+            -framework shared/build/bin/iosArm64/releaseFramework/Shared.framework \
+            -framework shared/build/bin/iosSimulatorArm64/releaseFramework/Shared.framework \
+            -output "$RUNNER_TEMP/FerretShared.xcframework"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:

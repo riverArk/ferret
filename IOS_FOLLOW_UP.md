@@ -8,13 +8,13 @@ The checked-in iOS Xcode host launches shared Compose on the iPhone simulator. W
 - `shared/src/iosMain/kotlin/io/riverark/ferret/MainViewController.kt` exposes shared Compose with `walletManager = null` until the platform runtime is complete.
 - `iosApp/iosApp.xcodeproj` builds and launches the SwiftUI host and runs simulator UI and CryptoKit tests.
 - iOS custody includes a Keychain-protected data key with LocalAuthentication, encrypted atomic Application Support vault, installation identity, BIP-39 recovery codec, and backup-compatible CryptoKit bridge. The simulator vault record/tamper and public crypto-vector tests pass; Face ID/passcode behavior on a physical iPhone remains unverified.
-- The UI still displays `Wallet setup is not available in this iOS build.` No iOS Cardano bridge, Drive, camera, or pinned networking adapter is wired.
+- The Rust/CSL Cardano bridge and Kotlin transaction adapter compile into the simulator app; the public CIP-1852 identity vector and native Rust tests pass. Full Android-equivalent five-intent semantic fixtures, controlled Mainnet-node evaluation, and physical iPhone operation remain unverified. The UI still displays `Wallet setup is not available in this iOS build.` No Drive, camera, or pinned networking adapter is wired.
 
 ## Required macOS Tooling and Credentials
 
 1. Install the current Xcode version supporting iOS 17 and accept its license.
 2. Select the Xcode toolchain with `xcode-select`.
-3. Install Rust and the pinned toolchain declared by `native/cardano-ios-bridge/rust-toolchain.toml` once that file is added.
+3. Install Rust and the pinned toolchain declared by `native/cardano-ios-bridge/rust-toolchain.toml`.
 4. Configure an Apple development team and signing identity.
 5. Create the iOS Google OAuth client and URL scheme. Keep client IDs and signing data outside source control.
 6. Provision a dedicated Google Drive test account and funded low-value Mainnet wallets for recovery and payment tests.

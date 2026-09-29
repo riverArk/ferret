@@ -10,16 +10,16 @@
 
 Ferret is an Android-first Cardano and Lightning wallet. Android has real biometric/device-credential authentication, encrypted persistence, Cardano wallet derivation and transaction authorization, Google Drive channel recovery, keyed Mainnet ADA/native channels, QR-only BOLT11 payment with eligible-channel selection, catalog-asset L1 transfer, channel Open/Add flows, ADA sweep, and safe wallet-removal orchestration. Shared Kotlin code supplies domain state, typed navigation, repositories, ViewModels, and Compose UI.
 
-iOS compiles and launches shared Compose from the checked-in Xcode host and displays `Wallet setup is not available in this iOS build.` It has simulator-verified vault records, BIP-39 recovery words, and CryptoKit backup primitives; the Keychain/LocalAuthentication path compiles but has not been exercised on a physical iPhone. `IOS_FOLLOW_UP.md` tracks the remaining Cardano, Drive, TLS, QR, signing, and physical-device work.
+iOS compiles and launches shared Compose from the checked-in Xcode host and displays `Wallet setup is not available in this iOS build.` Simulator checks cover vault records, BIP-39 recovery words, CryptoKit primitives, and the Rust/CSL Cardano identity vector. The native engine exists but full five-intent semantic/ledger parity is unverified; Keychain/LocalAuthentication has not been exercised on a physical iPhone. `IOS_FOLLOW_UP.md` tracks remaining Cardano validation, Drive, TLS, QR, signing, and physical-device work.
 
 ## Module map
 
 - `shared/src/commonMain`: domain models, `WalletManager`, `WalletRepository`, `SecureVault` contract, typed `Route`, ViewModels, shared Compose UI, and the Ferret theme.
 - `shared/src/androidMain`: Android vault/authentication, recovery codec, Cardano engine, protocol signer, and camera scanner.
-- `shared/src/iosMain`: Compose availability gate, encrypted vault, authentication, recovery codec, installation identity, and CryptoKit adapter.
+- `shared/src/iosMain`: Compose availability gate, encrypted vault, authentication, recovery codec, installation identity, CryptoKit adapter, and Cardano engine adapter.
 - `androidApp`: Android host, dependency construction, edge-to-edge setup, and screenshot protection.
 - `iosApp`: Xcode/SwiftUI host, shared-framework build phase, launch assets, privacy manifest, and simulator UI smoke.
-- `native/cardano-ios-bridge`: deferred iOS Cardano bridge surface.
+- `native/cardano-ios-bridge`: pinned Rust/CSL iOS Cardano C ABI and Apple static-library build.
 
 ## Runtime and security
 
