@@ -76,13 +76,14 @@ private fun readProtected(path: String): ByteArray {
     }
 }
 
-class IosSecureVault(
+class IosSecureVault internal constructor(
     private val crypto: BackupCrypto,
     private val random: SecureRandomSource,
+    private val directory: String,
 ) : SecureVault {
+    constructor(crypto: BackupCrypto, random: SecureRandomSource) : this(crypto, random, applicationSupport())
     private val mutex = Mutex()
     private val json = Json { ignoreUnknownKeys = false }
-    private val directory = applicationSupport()
     private var dataKey: ByteArray? = null
     override val isUnlocked: Boolean get() = dataKey != null
 
