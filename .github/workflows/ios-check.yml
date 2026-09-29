@@ -1,6 +1,8 @@
 name: iOS Check
 on:
   workflow_dispatch:
+  push:
+    branches: [work/tagged-mobile-releases]
 permissions:
   contents: read
 jobs:
