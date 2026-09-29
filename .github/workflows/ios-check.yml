@@ -22,6 +22,8 @@ jobs:
       - name: Prepare Android SDK
         run: |
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-36' 'build-tools;36.0.0' 'platform-tools'
+      - name: Verify tag version calculations on macOS
+        run: bash scripts/test-ferret-version.sh
       - name: Build, test, and launch the iOS simulator app
         run: scripts/check-ios.sh
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

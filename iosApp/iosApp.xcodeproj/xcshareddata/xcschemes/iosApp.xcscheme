@@ -7,6 +7,7 @@
     </BuildAction>
     <TestAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.IDEFoundation.Launcher.Posix" shouldUseLaunchSchemeArgsEnv="YES">
         <Testables>
+            <TestableReference skipped="NO"><BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="A10000000000000000000061" BuildableName="iosAppTests.xctest" BlueprintName="iosAppTests" ReferencedContainer="container:iosApp.xcodeproj"/></TestableReference>
             <TestableReference skipped="NO"><BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="A10000000000000000000062" BuildableName="iosAppUITests.xctest" BlueprintName="iosAppUITests" ReferencedContainer="container:iosApp.xcodeproj"/></TestableReference>
         </Testables>
     </TestAction>

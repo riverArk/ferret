@@ -20,3 +20,8 @@ https://github.com/google/material-design-icons
 Exo 2 and Ubuntu Mono fonts
 Copyright their respective authors.
 Bundled under the license texts in shared/src/commonMain/composeResources/font/.
+
+BIP-39 English word list
+Source: https://github.com/bitcoin/bips/blob/master/bip-0039/english.txt
+BIP-39 by Marek Palatinus, Pavol Rusnak, Aaron Voisine and Sean Bowe.
+Licensed under the MIT License: https://github.com/bitcoin/bips/blob/master/bip-0039.mediawiki
