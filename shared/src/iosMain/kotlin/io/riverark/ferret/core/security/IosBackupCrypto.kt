@@ -71,7 +71,7 @@ class IosBackupCrypto(private val crypto: IosCrypto) : BackupCrypto {
     override fun base64Url(input: ByteArray): String {
         if (input.isEmpty()) return ""
         return input.usePinned { pinned ->
-            NSData.create(bytes = pinned.addressOf(0), length = input.size.toULong())
+            NSData.dataWithBytes(pinned.addressOf(0), input.size.toULong())
                 .base64EncodedStringWithOptions(0u)
         }.replace('+', '-').replace('/', '_').trimEnd('=')
     }

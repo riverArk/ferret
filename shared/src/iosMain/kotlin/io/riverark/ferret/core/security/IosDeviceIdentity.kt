@@ -16,7 +16,7 @@ class IosDeviceIdentity {
     fun publicKeyHex(): String {
         val manager = NSFileManager.defaultManager
         val bytes = if (manager.fileExistsAtPath(path)) {
-            val data = NSData.dataWithContentsOfFile(path) ?: error("Device identity is unreadable.")
+            val data = manager.contentsAtPath(path) ?: error("Device identity is unreadable.")
             require(data.length == 32uL) { "Device identity is corrupt." }
             ByteArray(32).also { buffer ->
                 buffer.usePinned { memcpy(it.addressOf(0), data.bytes, 32.convert()) }

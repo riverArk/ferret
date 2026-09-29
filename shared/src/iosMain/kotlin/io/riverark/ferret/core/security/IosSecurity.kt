@@ -69,7 +69,7 @@ internal fun protectedAtomicWrite(path: String, bytes: ByteArray) {
 }
 
 private fun readProtected(path: String): ByteArray {
-    val data = NSData.dataWithContentsOfFile(path) ?: error("Wallet record is missing or unreadable.")
+    val data = NSFileManager.defaultManager.contentsAtPath(path) ?: error("Wallet record is missing or unreadable.")
     check(data.length <= Int.MAX_VALUE.toULong()) { "Wallet record is too large." }
     return ByteArray(data.length.toInt()).also { output ->
         output.usePinned { pinned -> if (output.isNotEmpty()) platform.posix.memcpy(pinned.addressOf(0), data.bytes, output.size.convert()) }
@@ -239,14 +239,14 @@ class IosUserAuthenticator : UserAuthenticator {
             memScoped {
                 val error = alloc<ObjCObjectVar<NSError?>>()
                 if (!context.canEvaluatePolicy(LAPolicyDeviceOwnerAuthentication, error.ptr))
-                    throw SecurityException("Set up biometrics or a device screen lock to unlock Ferret.")
+                    throw IllegalStateException("Set up biometrics or a device screen lock to unlock Ferret.")
             }
             suspendCancellableCoroutine<Unit> { continuation ->
                 continuation.invokeOnCancellation { context.invalidate() }
                 context.evaluatePolicy(LAPolicyDeviceOwnerAuthentication, "Unlock your Ferret wallets.") { success, _ ->
                     if (continuation.isActive) {
                         if (success) continuation.resume(Unit)
-                        else continuation.resumeWithException(SecurityException("Wallet authentication failed or was cancelled."))
+                        else continuation.resumeWithException(IllegalStateException("Wallet authentication failed or was cancelled."))
                     }
                 }
             }
@@ -279,15 +279,15 @@ class IosUserAuthenticator : UserAuthenticator {
             val result = alloc<CFTypeRefVar>()
             val status = try { SecItemCopyMatching(query, result.ptr) } finally { CFRelease(query) }
             if (status == errSecSuccess) {
-                val data = CFBridgingRelease(result.value) as? NSData ?: throw SecurityException("Vault key is corrupt.")
-                if (data.length != 32uL) throw SecurityException("Vault key recovery required; wallet data was preserved.")
+                val data = CFBridgingRelease(result.value) as? NSData ?: throw IllegalStateException("Vault key is corrupt.")
+                if (data.length != 32uL) throw IllegalStateException("Vault key recovery required; wallet data was preserved.")
                 return@memScoped ByteArray(32).also { key ->
                     key.usePinned { pinned -> memcpy(pinned.addressOf(0), data.bytes, 32.convert()) }
                 }
             }
-            if (status != errSecItemNotFound) throw SecurityException("Protected vault key is unavailable.")
+            if (status != errSecItemNotFound) throw IllegalStateException("Protected vault key is unavailable.")
             if (hasWalletRecords(applicationSupport()))
-                throw SecurityException("Vault key recovery required; wallet data was preserved.")
+                throw IllegalStateException("Vault key recovery required; wallet data was preserved.")
             val key = ByteArray(32)
             try {
                 key.usePinned { pinned -> check(SecRandomCopyBytes(kSecRandomDefault, 32.convert(), pinned.addressOf(0)) == errSecSuccess) }
