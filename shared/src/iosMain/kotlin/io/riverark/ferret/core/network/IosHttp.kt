@@ -28,7 +28,7 @@ fun iosFerretHttpClient(crypto: IosCrypto): HttpClient = ferretHttpClient(Darwin
 })
 
 private fun trustedPinnedChain(trust: SecTrustRef, host: String, pins: Set<String>, crypto: IosCrypto): Boolean {
-    val name = memScoped { CFStringCreateWithCString(null, host.cstr.ptr, kCFStringEncodingUTF8) }
+    val name = CFStringCreateWithCString(null, host, kCFStringEncodingUTF8)
         ?: return false
     try {
         val policy = SecPolicyCreateSSL(true, name)
