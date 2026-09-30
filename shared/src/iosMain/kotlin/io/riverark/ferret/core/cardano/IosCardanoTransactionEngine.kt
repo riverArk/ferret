@@ -138,7 +138,7 @@ class IosCardanoTransactionEngine(
                         val expectedId = transactionId(candidate)
                         val evaluated = evaluate(ledger.network, candidate)
                         require(evaluated.transactionId == expectedId) { "invalid channel evaluation" }
-                        val declared = inspect(candidate).redeemers.map { it.purpose to it.index }.toSet()
+                        val declared = inspect(candidate).redeemers.map { it.purpose.lowercase() to it.index }.toSet()
                         require(evaluated.redeemers.map { it.purpose to it.index.toLong() }.toSet() == declared) {
                             "invalid channel evaluation"
                         }
