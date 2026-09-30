@@ -53,6 +53,7 @@ without them retain version `1.0.0` (code `1`). This does not sign or publish an
 On macOS with Xcode 26.6, iOS 26.5 simulator, JDK 17, and Android SDK 36,
 `scripts/check-ios.sh` compiles the shared iOS target, runs its tests and the
 Xcode UI test, then installs and launches Ferret on the iPhone 17 simulator.
+The iOS check workflow also links the iPhone framework and assembles a device/simulator XCFramework.
 The iOS host is not yet a functional wallet or a signed release.
 
 ## Repository map

@@ -5,10 +5,11 @@ The checked-in iOS Xcode host launches shared Compose on the iPhone simulator. W
 ## Current iOS Surface
 
 - `shared/build.gradle.kts` declares `iosArm64` and `iosSimulatorArm64` static frameworks named `Shared`.
+- macOS CI links the iPhone release framework and assembles a device/simulator XCFramework; no app has been installed on a physical iPhone.
 - `shared/src/iosMain/kotlin/io/riverark/ferret/MainViewController.kt` exposes shared Compose with `walletManager = null` until the platform runtime is complete.
 - `iosApp/iosApp.xcodeproj` builds and launches the SwiftUI host and runs simulator UI and CryptoKit tests.
 - iOS custody includes a Keychain-protected data key with LocalAuthentication, encrypted atomic Application Support vault, installation identity, BIP-39 recovery codec, and backup-compatible CryptoKit bridge. The simulator vault record/tamper and public crypto-vector tests pass; Face ID/passcode behavior on a physical iPhone remains unverified.
-- The Rust/CSL Cardano bridge and Kotlin transaction adapter compile into the simulator app; the public CIP-1852 identity vector and native Rust tests pass. Full Android-equivalent five-intent semantic fixtures, controlled Mainnet-node evaluation, and physical iPhone operation remain unverified. The UI still displays `Wallet setup is not available in this iOS build.` No Drive, camera, or pinned networking adapter is wired.
+- The Rust/CSL Cardano bridge and Kotlin transaction adapter compile into the simulator app; public CIP-1852 identity, synthetic ADA transfer/sweep conservation and signer binding, and native Rust tests pass. Full Android-equivalent five-intent semantic fixtures, controlled Mainnet-node evaluation, and physical iPhone operation remain unverified. The UI still displays `Wallet setup is not available in this iOS build.` No Drive, camera, or pinned networking adapter is wired.
 
 ## Required macOS Tooling and Credentials
 
