@@ -21,7 +21,7 @@ fun iosFerretHttpClient(crypto: IosCrypto): HttpClient = ferretHttpClient(Darwin
         } else {
             val trust = space.serverTrust
             val accepted = pins != null && trust != null && trustedPinnedChain(trust, host, pins, crypto)
-            if (accepted) complete(NSURLSessionAuthChallengeUseCredential, NSURLCredential.credentialForTrust(trust!!))
+            if (accepted) complete(NSURLSessionAuthChallengeUseCredential, NSURLCredential.credentialForTrust(trust))
             else complete(NSURLSessionAuthChallengeCancelAuthenticationChallenge, null)
         }
     }

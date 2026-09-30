@@ -14,7 +14,7 @@ class IosTlsPinsTest {
             val cert = certificate(spki)
             assertContentEquals(spki, certificateSpki(cert))
             assertNull(certificateSpki(cert.copyOf(cert.size - 1)))
-            assertNull(certificateSpki(cert.clone().apply { this[1] = 0x80.toByte() }))
+            assertNull(certificateSpki(cert.copyOf().apply { this[1] = 0x80.toByte() }))
         }
     }
 
