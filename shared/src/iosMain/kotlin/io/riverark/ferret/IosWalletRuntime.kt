@@ -17,11 +17,8 @@ import io.riverark.ferret.feature.payment.IosQrScanner
 import io.riverark.ferret.feature.payment.QrPaymentScannerScreen
 import platform.Foundation.NSBundle
 import io.riverark.ferret.feature.wallet.*
-import kotlinx.cinterop.alloc
-import kotlinx.cinterop.memScoped
-import kotlinx.cinterop.ptr
 import kotlinx.coroutines.*
-import platform.Foundation.NSDate
+import kotlin.time.Clock
 import platform.Foundation.NSUUID
 import platform.Foundation.NSUserDefaults
 import platform.Network.*
@@ -32,18 +29,19 @@ import platform.darwin.*
 class IosWalletRuntime(
     crypto: IosCrypto,
     google: IosGoogleSignIn,
-    sensitiveContentChanged: (Boolean) -> Unit,
+    private val sensitiveContentChanged: (Boolean) -> Unit,
     scannerFactory: () -> IosQrScanner,
     qrEncoder: IosQrEncoder,
+    continuousMillis: () -> Long,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-    private val clock = ForegroundLockPolicy(::monotonicMillis)
+    private val clock = ForegroundLockPolicy(continuousMillis)
     private val diagnostics = RuntimeDiagnostics()
     private val wallets = WalletRepository()
     private val sensitiveContent = SensitiveContentCounter()
     private val protocolCrypto = IosProtocolCrypto(crypto)
     private val catalog = runBlocking { loadEmbeddedAssetCatalog(protocolCrypto) }
-    private val http = iosFerretHttpClient()
+    private val http = iosFerretHttpClient(crypto)
     private val connectors = CardanoNetwork.entries.associateWith { ConnectorClient(http, deployment(it)) }
     private val adaptors = CardanoNetwork.entries.associateWith { AdaptorClient(http, deployment(it), protocolCrypto) }
     private val coordinators = CardanoNetwork.entries.associateWith {
@@ -439,10 +437,5 @@ class IosWalletRuntime(
         try { block(this) } finally { ciphertextHash.fill(0); channelSnapshot.fill(0) }
 }
 
-private fun wallClockMillis(): Long = (NSDate().timeIntervalSince1970 * 1_000).toLong()
+private fun wallClockMillis(): Long = Clock.System.now().toEpochMilliseconds()
 private fun operationId(): String = NSUUID().UUIDString.lowercase()
-private fun monotonicMillis(): Long = memScoped {
-    val timebase = alloc<mach_timebase_info_data_t>()
-    check(mach_timebase_info(timebase.ptr) == 0)
-    (mach_continuous_time().toDouble() * timebase.numer.toDouble() / timebase.denom.toDouble() / 1_000_000).toLong()
-}

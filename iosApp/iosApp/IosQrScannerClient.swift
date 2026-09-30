@@ -75,8 +75,7 @@ final class IosQrScannerClient: NSObject, IosQrScanner, AVCaptureMetadataOutputO
         events = nil
         resumeEvents = nil
         preview.videoLayer.session = nil
-        captureQueue.async { [weak self] in
-            guard let self else { return }
+        captureQueue.async { [self] in
             self.session?.stopRunning()
             self.session = nil
         }
@@ -112,9 +111,9 @@ final class IosQrScannerClient: NSObject, IosQrScanner, AVCaptureMetadataOutputO
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.generation == token, UIApplication.shared.applicationState == .active else { return }
                 self.preview.videoLayer.session = session
-                self.captureQueue.async { [weak self] in
-                    guard let self else { return }
-                    // stop() queues after this job; it invalidates pending callbacks synchronously.
+                self.captureQueue.async { [self] in
+                    // stop() can invalidate the request before this queued start executes.
+                    guard DispatchQueue.main.sync(execute: { self.generation == token }) else { return }
                     self.session = session
                     session.startRunning()
                 }

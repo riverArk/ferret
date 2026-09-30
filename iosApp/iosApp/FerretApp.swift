@@ -2,6 +2,7 @@ import SwiftUI
 import Shared
 import GoogleSignIn
 import UIKit
+import Darwin
 
 @main
 struct FerretIosApp: App {
@@ -19,6 +20,19 @@ struct FerretIosApp: App {
                     host.protectedDataUnavailable()
                 }
         }
+    }
+}
+
+private enum ContinuousClock {
+    static let timebase: mach_timebase_info_data_t = {
+        var info = mach_timebase_info_data_t()
+        precondition(mach_timebase_info(&info) == KERN_SUCCESS)
+        return info
+    }()
+
+    static func millis() -> Int64 {
+        let nanoseconds = Double(mach_continuous_time()) * Double(timebase.numer) / Double(timebase.denom)
+        return Int64(nanoseconds / 1_000_000)
     }
 }
 
@@ -43,7 +57,8 @@ private final class IosHost: ObservableObject {
                 self?.cover?.setSensitiveContentVisible(visible)
             },
             scannerFactory: { IosQrScannerClient() },
-            qrEncoder: IosAddressQrEncoder()
+            qrEncoder: IosAddressQrEncoder(),
+            continuousMillis: ContinuousClock.millis
         )
         instance = created
         return created

@@ -2,15 +2,15 @@
 
 package io.riverark.ferret.core.network
 
+import io.riverark.ferret.core.security.IosCrypto
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.darwin.Darwin
 import kotlinx.cinterop.*
-import platform.CommonCrypto.CC_SHA256
 import platform.CoreFoundation.*
 import platform.Foundation.*
 import platform.Security.*
 
-fun iosFerretHttpClient(): HttpClient = ferretHttpClient(Darwin.create {
+fun iosFerretHttpClient(crypto: IosCrypto): HttpClient = ferretHttpClient(Darwin.create {
     handleChallenge { _, _, challenge, complete ->
         val space = challenge.protectionSpace
         val host = space.host.lowercase()
@@ -20,21 +20,22 @@ fun iosFerretHttpClient(): HttpClient = ferretHttpClient(Darwin.create {
             complete(NSURLSessionAuthChallengePerformDefaultHandling, null)
         } else {
             val trust = space.serverTrust
-            val accepted = pins != null && trust != null && trustedPinnedChain(trust, host, pins)
+            val accepted = pins != null && trust != null && trustedPinnedChain(trust, host, pins, crypto)
             if (accepted) complete(NSURLSessionAuthChallengeUseCredential, NSURLCredential.credentialForTrust(trust!!))
             else complete(NSURLSessionAuthChallengeCancelAuthenticationChallenge, null)
         }
     }
 })
 
-private fun trustedPinnedChain(trust: SecTrustRef, host: String, pins: Set<String>): Boolean {
-    val name = CFBridgingRetain(host)
+private fun trustedPinnedChain(trust: SecTrustRef, host: String, pins: Set<String>, crypto: IosCrypto): Boolean {
+    val name = memScoped { CFStringCreateWithCString(null, host.cstr.ptr, kCFStringEncodingUTF8) }
+        ?: return false
     try {
         val policy = SecPolicyCreateSSL(true, name)
         try {
             if (SecTrustSetPolicies(trust, policy) != errSecSuccess || !SecTrustEvaluateWithError(trust, null)) return false
         } finally { CFRelease(policy) }
-    } finally { CFBridgingRelease(name) }
+    } finally { CFRelease(name) }
     for (index in 0 until SecTrustGetCertificateCount(trust).toInt()) {
         val certificate = SecTrustGetCertificateAtIndex(trust, index.toLong()) ?: return false
         val data = SecCertificateCopyData(certificate) ?: return false
@@ -42,19 +43,17 @@ private fun trustedPinnedChain(trust: SecTrustRef, host: String, pins: Set<Strin
             val size = CFDataGetLength(data).toInt()
             if (size !in 1..65_536) return false
             val der = CFDataGetBytePtr(data)!!.readBytes(size)
-            val pin = certificatePin(der) ?: return false
+            val pin = certificatePin(der, crypto) ?: return false
             if (pin in pins) return true
         } finally { CFRelease(data) }
     }
     return false
 }
 
-internal fun certificatePin(der: ByteArray): String? {
+internal fun certificatePin(der: ByteArray, crypto: IosCrypto): String? {
     val spki = certificateSpki(der) ?: return null
-    val digest = ByteArray(32)
-    spki.usePinned { input -> digest.usePinned { output ->
-        CC_SHA256(input.addressOf(0), spki.size.convert(), output.addressOf(0))
-    } }
+    val digest = crypto.sha256(spki) ?: return null
+    if (digest.size != 32) return null
     return digest.usePinned { bytes ->
         NSData.dataWithBytes(bytes.addressOf(0), 32u).base64EncodedStringWithOptions(0u)
     }

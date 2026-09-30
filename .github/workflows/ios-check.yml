@@ -24,6 +24,8 @@ jobs:
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-36' 'build-tools;36.0.0' 'platform-tools'
       - name: Verify tag version calculations on macOS
         run: bash scripts/test-ferret-version.sh
+      - name: Resolve exact Google Sign-In Swift package
+        run: xcodebuild -resolvePackageDependencies -project iosApp/iosApp.xcodeproj -scheme iosApp
       - name: Build, test, and launch the iOS simulator app
         run: scripts/check-ios.sh
       - name: Link the iPhone device framework
