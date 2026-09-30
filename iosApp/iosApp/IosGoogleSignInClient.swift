@@ -41,7 +41,7 @@ final class IosGoogleSignInClient: NSObject, IosGoogleSignIn {
         return DispatchQueue.main.sync(execute: current)
     }
 
-    func connect(completion: @escaping (String?, String?) -> KotlinUnit) {
+    func connect(completion: @escaping @Sendable (String?, String?) -> Void) {
         DispatchQueue.main.async { [self] in
             guard clientID.hasSuffix(".apps.googleusercontent.com") else { _ = completion(nil, "Google iOS client ID is not configured."); return }
             guard configurationReady else { _ = completion(nil, "Google Drive authentication is unavailable."); return }
@@ -66,7 +66,13 @@ final class IosGoogleSignInClient: NSObject, IosGoogleSignIn {
         }
     }
 
-    func accessToken(completion: @escaping (String?, String?) -> KotlinUnit) {
+    func connect() async -> (String?, String?) {
+        await withCheckedContinuation { continuation in
+            connect { account, error in continuation.resume(returning: (account, error)) }
+        }
+    }
+
+    func accessToken(completion: @escaping @Sendable (String?, String?) -> Void) {
         DispatchQueue.main.async { [self] in
             guard clientID.hasSuffix(".apps.googleusercontent.com") else { _ = completion(nil, "Google iOS client ID is not configured."); return }
             guard configurationReady else { _ = completion(nil, "Google Drive authentication is unavailable."); return }
@@ -88,6 +94,12 @@ final class IosGoogleSignInClient: NSObject, IosGoogleSignIn {
                 }
                 _ = completion(refreshed.accessToken.tokenString, nil)
             }
+        }
+    }
+
+    func accessToken() async -> (String?, String?) {
+        await withCheckedContinuation { continuation in
+            accessToken { token, error in continuation.resume(returning: (token, error)) }
         }
     }
 }

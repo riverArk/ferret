@@ -30,8 +30,8 @@ fun copyIosAddress(address: String) {
     UIPasteboard.generalPasteboard.setItems(
         listOf(mapOf("public.utf8-plain-text" to address)),
         options = mapOf(
-            "UIPasteboardOptionLocalOnly" to true,
-            "UIPasteboardOptionExpirationDate" to NSDate(timeIntervalSinceReferenceDate = platform.CoreFoundation.CFAbsoluteTimeGetCurrent() + 60.0),
+            platform.UIKit.UIPasteboardOptionLocalOnly to true,
+            platform.UIKit.UIPasteboardOptionExpirationDate to NSDate(timeIntervalSinceReferenceDate = platform.CoreFoundation.CFAbsoluteTimeGetCurrent() + 60.0),
         ),
     )
 }
