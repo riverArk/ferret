@@ -17,6 +17,9 @@ import java.util.zip.CRC32
 import javax.imageio.ImageIO
 import javax.imageio.stream.MemoryCacheImageInputStream
 import javax.net.ssl.HttpsURLConnection
+import javax.xml.XMLConstants
+import javax.xml.parsers.DocumentBuilderFactory
+import org.w3c.dom.Element
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.file.RegularFileProperty
@@ -674,6 +677,76 @@ tasks.register<TestEmbeddedAssetMetadata>("testEmbeddedAssetMetadata") {
     catalogFile.set(embeddedCatalog)
     catalogDigestFile.set(embeddedCatalogDigest)
     outputs.upToDateWhen { false }
+}
+
+abstract class GenerateIosTlsPins : DefaultTask() {
+    @get:InputFile abstract val androidPins: RegularFileProperty
+    @get:InputFile abstract val deployments: RegularFileProperty
+    @get:OutputDirectory abstract val destination: DirectoryProperty
+
+    @TaskAction fun generate() {
+        val factory = DocumentBuilderFactory.newInstance().apply {
+            setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+            setFeature("http://xml.org/sax/features/external-general-entities", false)
+            setFeature("http://xml.org/sax/features/external-parameter-entities", false)
+            setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false)
+            setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true)
+            isXIncludeAware = false
+            isExpandEntityReferences = false
+        }
+        val root = factory.newDocumentBuilder().parse(androidPins.get().asFile).documentElement
+        require(root.tagName == "network-security-config")
+        val hosts = linkedMapOf<String, List<String>>()
+        val configs = root.getElementsByTagName("domain-config")
+        for (index in 0 until configs.length) {
+            val config = configs.item(index) as Element
+            val pinSets = config.getElementsByTagName("pin-set")
+            require(pinSets.length == 1) { "Each domain config must have one pin set." }
+            val pins = (pinSets.item(0) as Element).getElementsByTagName("pin")
+            val hashes = (0 until pins.length).map { position ->
+                val pin = pins.item(position) as Element
+                val hash = pin.textContent.trim()
+                require(pin.getAttribute("digest") == "SHA-256" &&
+                    Regex("[A-Za-z0-9+/]{43}=").matches(hash) &&
+                    Base64.getDecoder().decode(hash).size == 32) { "Invalid SHA-256 SPKI pin." }
+                hash
+            }
+            require(hashes.isNotEmpty()) { "Empty pin set." }
+            val domains = config.getElementsByTagName("domain")
+            require(domains.length > 0) { "Pin set without domains." }
+            for (position in 0 until domains.length) {
+                val domain = domains.item(position) as Element
+                val host = domain.textContent.trim()
+                require(domain.getAttribute("includeSubdomains") == "false" &&
+                    Regex("[a-z0-9-]+(\\.[a-z0-9-]+)+").matches(host) &&
+                    hosts.putIfAbsent(host, hashes) == null) { "Invalid or duplicate pinned domain." }
+            }
+        }
+        val deploymentHosts = Regex("""HttpsUrl\("https://([^"/]+)"\)""")
+            .findAll(deployments.get().asFile.readText()).map { it.groupValues[1] }.toSet()
+        require(deploymentHosts.isNotEmpty() && hosts.keys.containsAll(deploymentHosts)) {
+            "A deployment host lacks TLS pins."
+        }
+        val source = buildString {
+            appendLine("package io.riverark.ferret.core.network")
+            appendLine()
+            appendLine("// Generated from androidApp/src/main/res/xml/network_security_config.xml.")
+            appendLine("internal val iosTlsPins: Map<String, Set<String>> = mapOf(")
+            hosts.forEach { (host, pins) ->
+                appendLine("    \"$host\" to setOf(${pins.joinToString { "\"$it\"" }}),")
+            }
+            appendLine(")")
+        }
+        val file = destination.get().file("io/riverark/ferret/core/network/IosTlsPins.kt").asFile
+        file.parentFile.mkdirs()
+        file.writeText(source)
+    }
+}
+
+tasks.register<GenerateIosTlsPins>("generateIosTlsPins") {
+    androidPins.set(layout.projectDirectory.file("androidApp/src/main/res/xml/network_security_config.xml"))
+    deployments.set(layout.projectDirectory.file("shared/src/commonMain/kotlin/io/riverark/ferret/core/network/Deployments.kt"))
+    destination.set(layout.projectDirectory.dir("shared/build/generated/iosTlsPins"))
 }
 
 

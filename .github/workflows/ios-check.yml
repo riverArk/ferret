@@ -43,4 +43,5 @@ jobs:
             ${{ runner.temp }}/ferret-ios.xcresult
             ${{ runner.temp }}/ferret-ios-launch.png
             shared/build/test-results/iosSimulatorArm64Test/*.xml
+            iosApp/iosApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
           if-no-files-found: warn

@@ -38,6 +38,11 @@ kotlin {
         }
     }
 
+    sourceSets.matching { it.name == "iosMain" }.configureEach {
+        kotlin.srcDir(files(layout.buildDirectory.dir("generated/iosTlsPins"))
+            .builtBy(rootProject.tasks.named("generateIosTlsPins")))
+        dependencies { implementation(libs.ktor.client.darwin) }
+    }
 
     sourceSets {
         commonMain.dependencies {

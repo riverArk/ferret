@@ -1,4 +1,5 @@
 import Foundation
+import CoreImage
 import Shared
 import XCTest
 @testable import Ferret
@@ -36,6 +37,31 @@ final class IosCryptoTests: XCTestCase {
         let adapter = IosBackupCrypto(crypto: kit)
         XCTAssertEqual(adapter.base64Url(input: bytes(Data([0xfb, 0xff, 0xff, 0xfa]))), "-___-g")
         XCTAssertEqual(adapter.base64Url(input: bytes(Data())), "")
+    }
+
+    func testAddressQrRoundTrip() {
+        let address = "addr_test1vrpynvza5vswczszkjhe5cvqz2awmzukf84xa5wway8durqpmfm2m"
+        guard let encoded = IosAddressQrEncoder().encode(address: address) else {
+            return XCTFail("QR generation failed")
+        }
+        let width = Int(UInt8(bitPattern: encoded.get(index: 0))) * 256
+            + Int(UInt8(bitPattern: encoded.get(index: 1)))
+        let size = width + 8
+        var pixels = [UInt8](repeating: 255, count: size * size)
+        for y in 0..<width {
+            for x in 0..<width {
+                pixels[(y + 4) * size + x + 4] =
+                    encoded.get(index: Int32(2 + y * width + x)) == 1 ? 0 : 255
+            }
+        }
+        let image = CIImage(bitmapData: Data(pixels), bytesPerRow: size,
+                            size: CGSize(width: size, height: size), format: .L8,
+                            colorSpace: CGColorSpaceCreateDeviceGray())
+            .transformed(by: CGAffineTransform(scaleX: 8, y: 8))
+        let detector = CIDetector(ofType: CIDetectorTypeQRCode, context: CIContext(),
+                                  options: [CIDetectorAccuracy: CIDetectorAccuracyHigh])
+        let found = detector?.features(in: image).compactMap { ($0 as? CIQRCodeFeature)?.messageString }
+        XCTAssertEqual(found, [address])
     }
 
     private func bytes(_ data: Data) -> KotlinByteArray {

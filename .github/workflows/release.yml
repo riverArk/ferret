@@ -1,0 +1,342 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  metadata:
+    runs-on: ubuntu-24.04
+    outputs:
+      version_name: ${{ steps.version.outputs.VERSION_NAME }}
+      version_code: ${{ steps.version.outputs.VERSION_CODE }}
+      release_draft: ${{ steps.version.outputs.RELEASE_DRAFT }}
+      ios_marketing_version: ${{ steps.version.outputs.IOS_MARKETING_VERSION }}
+      ios_build_version: ${{ steps.version.outputs.IOS_BUILD_VERSION }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Verify version parser
+        run: bash scripts/test-ferret-version.sh
+      - name: Validate tag
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+          ATTEMPT: ${{ github.run_attempt }}
+        run: scripts/ferret-version.sh "$TAG" "$ATTEMPT" >> "$GITHUB_OUTPUT"
+
+  android:
+    needs: metadata
+    runs-on: ubuntu-24.04
+    environment: mobile-release
+    env:
+      VERSION_NAME: ${{ needs.metadata.outputs.version_name }}
+      VERSION_CODE: ${{ needs.metadata.outputs.version_code }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@0b6dd653ba04f4f93bf581ec31e66cbd7dcb644d # v4
+      - name: Install Android SDK 36
+        run: "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-36' 'build-tools;36.0.0' 'platform-tools'
+      - name: Verify, align and sign Android release
+        shell: bash
+        env:
+          FERRET_RELEASE_KEYSTORE_BASE64: ${{ secrets.FERRET_RELEASE_KEYSTORE_BASE64 }}
+          FERRET_RELEASE_STORE_PASSWORD: ${{ secrets.FERRET_RELEASE_STORE_PASSWORD }}
+          FERRET_RELEASE_KEY_ALIAS: ${{ secrets.FERRET_RELEASE_KEY_ALIAS }}
+          FERRET_RELEASE_KEY_PASSWORD: ${{ secrets.FERRET_RELEASE_KEY_PASSWORD }}
+          FERRET_GOOGLE_SERVER_CLIENT_ID: ${{ secrets.FERRET_GOOGLE_SERVER_CLIENT_ID }}
+        run: |
+          set -euo pipefail
+          for name in FERRET_RELEASE_KEYSTORE_BASE64 FERRET_RELEASE_STORE_PASSWORD FERRET_RELEASE_KEY_ALIAS FERRET_RELEASE_KEY_PASSWORD FERRET_GOOGLE_SERVER_CLIENT_ID; do
+            [[ -n ${!name} ]] || { echo "Missing $name" >&2; exit 1; }
+          done
+          signing="$RUNNER_TEMP/ferret"
+          mkdir -p "$signing" dist
+          chmod 700 "$signing"
+          trap 'rm -f "$signing/release.jks" "$signing/aligned.apk"' EXIT
+          umask 077
+          printf '%s' "$FERRET_RELEASE_KEYSTORE_BASE64" | base64 --decode > "$signing/release.jks"
+          export FERRET_BUILD_COMMIT
+          FERRET_BUILD_COMMIT=$(git rev-parse HEAD)
+          ./gradlew androidCheck androidReleaseCheck --no-daemon --no-configuration-cache \
+            -PVERSION_NAME="$VERSION_NAME" -PVERSION_CODE="$VERSION_CODE"
+          unsigned=androidApp/build/outputs/apk/release/androidApp-release-unsigned.apk
+          sbom=androidApp/build/reports/sbom/android-release.cdx.json
+          mapping=androidApp/build/outputs/mapping/release/mapping.txt
+          for file in "$unsigned" "$sbom" "$mapping"; do [[ -s $file ]] || { echo "Missing $file" >&2; exit 1; }; done
+          tools="$ANDROID_HOME/build-tools/36.0.0"
+          "$tools/zipalign" -P 16 -f 4 "$unsigned" "$signing/aligned.apk"
+          apk="dist/ferret-${VERSION_NAME}-android.apk"
+          "$tools/apksigner" sign --ks "$signing/release.jks" --ks-key-alias "$FERRET_RELEASE_KEY_ALIAS" \
+            --ks-pass env:FERRET_RELEASE_STORE_PASSWORD --key-pass env:FERRET_RELEASE_KEY_PASSWORD \
+            --out "$apk" "$signing/aligned.apk"
+          verified=$("$tools/apksigner" verify --verbose --print-certs "$apk")
+          printf '%s\n' "$verified"
+          "$tools/zipalign" -c -P 16 4 "$apk"
+          [[ $verified =~ Signer\ \#1\ certificate\ SHA-256\ digest:\ ([0-9a-f]+) ]] || { echo 'Missing APK signing certificate digest' >&2; exit 1; }
+          apk_digest=${BASH_REMATCH[1]}
+          jks_digest=$(keytool -exportcert -keystore "$signing/release.jks" -alias "$FERRET_RELEASE_KEY_ALIAS" \
+            -storepass:env FERRET_RELEASE_STORE_PASSWORD | openssl dgst -sha256 -r | cut -d ' ' -f 1)
+          [[ $apk_digest == "$jks_digest" ]] || { echo 'APK signer does not match release key alias' >&2; exit 1; }
+          badging=$("$tools/aapt" dump badging "$apk")
+          [[ $badging == *"name='io.riverark.ferret' versionCode='$VERSION_CODE' versionName='$VERSION_NAME'"* ]] || {
+            echo 'Packaged Android ID/version does not match tag' >&2; exit 1;
+          }
+          (cd dist && sha256sum "${apk##*/}" > "${apk##*/}.sha256")
+          cp "$sbom" dist/android-release.cdx.json
+          cp "$mapping" "$RUNNER_TEMP/android-mapping.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: android-${{ needs.metadata.outputs.version_name }}
+          path: |
+            dist/ferret-${{ needs.metadata.outputs.version_name }}-android.apk
+            dist/ferret-${{ needs.metadata.outputs.version_name }}-android.apk.sha256
+            dist/android-release.cdx.json
+          if-no-files-found: error
+          overwrite: true
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: android-mapping-${{ needs.metadata.outputs.version_name }}
+          path: ${{ runner.temp }}/android-mapping.txt
+          if-no-files-found: error
+          overwrite: true
+
+  ios:
+    needs: metadata
+    runs-on: macos-26
+    environment: mobile-release
+    outputs:
+      ios_build_version: ${{ steps.version.outputs.IOS_BUILD_VERSION }}
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      VERSION_NAME: ${{ needs.metadata.outputs.version_name }}
+      IOS_MARKETING_VERSION: ${{ needs.metadata.outputs.ios_marketing_version }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Recalculate iOS version for this execution
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+          ATTEMPT: ${{ github.run_attempt }}
+        run: scripts/ferret-version.sh "$TAG" "$ATTEMPT" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@0b6dd653ba04f4f93bf581ec31e66cbd7dcb644d # v4
+      - name: Prepare pinned build tools
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-36' 'build-tools;36.0.0' 'platform-tools'
+          rustup target add aarch64-apple-ios aarch64-apple-ios-sim --toolchain 1.98.1
+          help=$(xcrun altool --help 2>&1)
+          for flag in --validate-app --upload-app --apiKey --apiIssuer; do
+            [[ $help == *"$flag"* ]] || { echo "altool lacks $flag" >&2; exit 1; }
+          done
+      - name: Test actual iOS simulator wallet
+        run: scripts/check-ios.sh
+      - name: Validate signing inputs, archive, export, and upload to TestFlight
+        shell: bash
+        env:
+          FERRET_APPLE_DISTRIBUTION_P12_BASE64: ${{ secrets.FERRET_APPLE_DISTRIBUTION_P12_BASE64 }}
+          FERRET_APPLE_DISTRIBUTION_P12_PASSWORD: ${{ secrets.FERRET_APPLE_DISTRIBUTION_P12_PASSWORD }}
+          FERRET_IOS_PROFILE_BASE64: ${{ secrets.FERRET_IOS_PROFILE_BASE64 }}
+          FERRET_ASC_KEY_ID: ${{ secrets.FERRET_ASC_KEY_ID }}
+          FERRET_ASC_ISSUER_ID: ${{ secrets.FERRET_ASC_ISSUER_ID }}
+          FERRET_ASC_PRIVATE_KEY_BASE64: ${{ secrets.FERRET_ASC_PRIVATE_KEY_BASE64 }}
+          FERRET_APPLE_TEAM_ID: ${{ vars.FERRET_APPLE_TEAM_ID }}
+          FERRET_GOOGLE_IOS_CLIENT_ID: ${{ vars.FERRET_GOOGLE_IOS_CLIENT_ID }}
+          FERRET_GOOGLE_IOS_REVERSED_CLIENT_ID: ${{ vars.FERRET_GOOGLE_IOS_REVERSED_CLIENT_ID }}
+          IOS_BUILD_VERSION: ${{ steps.version.outputs.IOS_BUILD_VERSION }}
+        run: |
+          set -euo pipefail
+          for name in FERRET_APPLE_DISTRIBUTION_P12_BASE64 FERRET_APPLE_DISTRIBUTION_P12_PASSWORD FERRET_IOS_PROFILE_BASE64 FERRET_ASC_KEY_ID FERRET_ASC_ISSUER_ID FERRET_ASC_PRIVATE_KEY_BASE64 FERRET_APPLE_TEAM_ID FERRET_GOOGLE_IOS_CLIENT_ID FERRET_GOOGLE_IOS_REVERSED_CLIENT_ID; do
+            [[ -n ${!name} ]] || { echo "Missing $name" >&2; exit 1; }
+          done
+          [[ $FERRET_ASC_KEY_ID =~ ^[A-Z0-9]{10}$ && $FERRET_APPLE_TEAM_ID =~ ^[A-Z0-9]{10}$ && $FERRET_ASC_ISSUER_ID =~ ^[0-9a-fA-F-]{36}$ ]] || { echo 'Invalid Apple signing identifiers' >&2; exit 1; }
+          work="$RUNNER_TEMP/ferret-signing"
+          mkdir -p "$work" dist "$HOME/.appstoreconnect/private_keys" "$HOME/Library/MobileDevice/Provisioning Profiles"
+          chmod 700 "$work" "$HOME/.appstoreconnect/private_keys"
+          umask 077
+          printf '%s' "$FERRET_APPLE_DISTRIBUTION_P12_BASE64" | base64 -D > "$work/distribution.p12"
+          printf '%s' "$FERRET_IOS_PROFILE_BASE64" | base64 -D > "$work/distribution.mobileprovision"
+          printf '%s' "$FERRET_ASC_KEY_ID" > "$work/asc-key-id"
+          printf '%s' "$FERRET_ASC_PRIVATE_KEY_BASE64" | base64 -D > "$HOME/.appstoreconnect/private_keys/AuthKey_${FERRET_ASC_KEY_ID}.p8"
+          security cms -D -i "$work/distribution.mobileprovision" -o "$work/profile.plist"
+          plist=/usr/libexec/PlistBuddy
+          uuid=$("$plist" -c 'Print :UUID' "$work/profile.plist")
+          team=$("$plist" -c 'Print :TeamIdentifier:0' "$work/profile.plist")
+          app_id=$("$plist" -c 'Print :Entitlements:application-identifier' "$work/profile.plist")
+          python3 -c 'import datetime,plistlib,sys; p=plistlib.load(open(sys.argv[1],"rb")); assert p["ExpirationDate"].replace(tzinfo=datetime.timezone.utc)>datetime.datetime.now(datetime.timezone.utc), "Distribution profile expired"' "$work/profile.plist"
+          [[ $uuid =~ ^[0-9A-Fa-f-]{36}$ && $team == "$FERRET_APPLE_TEAM_ID" && $app_id == "$team.io.riverark.ferret" ]] || { echo 'Distribution profile does not match app/team' >&2; exit 1; }
+          [[ $("$plist" -c 'Print :Entitlements:get-task-allow' "$work/profile.plist") == false ]] || { echo 'Profile permits debugging' >&2; exit 1; }
+          ! "$plist" -c 'Print :ProvisionedDevices' "$work/profile.plist" >/dev/null 2>&1 || { echo 'Profile is not App Store distribution' >&2; exit 1; }
+          ! "$plist" -c 'Print :ProvisionsAllDevices' "$work/profile.plist" >/dev/null 2>&1 || { echo 'Enterprise profile is not App Store distribution' >&2; exit 1; }
+          openssl pkcs12 -in "$work/distribution.p12" -clcerts -nokeys -passin env:FERRET_APPLE_DISTRIBUTION_P12_PASSWORD 2>/dev/null | openssl x509 -noout -checkend 0
+          keychain="$work/release.keychain-db"
+          password=$(openssl rand -hex 32)
+          security list-keychains -d user > "$work/original-keychains"
+          security create-keychain -p "$password" "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          keys=("$keychain")
+          while IFS= read -r line; do
+            line=${line#*\"}; line=${line%\"*}
+            [[ -n $line ]] && keys+=("$line")
+          done < "$work/original-keychains"
+          security list-keychains -d user -s "${keys[@]}"
+          security import "$work/distribution.p12" -k "$keychain" -P "$FERRET_APPLE_DISTRIBUTION_P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" >/dev/null
+          cp "$work/distribution.mobileprovision" "$HOME/Library/MobileDevice/Provisioning Profiles/$uuid.mobileprovision"
+          xcodebuild -disableAutomaticPackageResolution -project iosApp/iosApp.xcodeproj -scheme iosApp -configuration Release \
+            -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/Ferret.xcarchive" \
+            MARKETING_VERSION="$IOS_MARKETING_VERSION" CURRENT_PROJECT_VERSION="$IOS_BUILD_VERSION" \
+            DEVELOPMENT_TEAM="$team" CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY='Apple Distribution' \
+            FERRET_IOS_PROFILE_UUID="$uuid" FERRET_GOOGLE_IOS_CLIENT_ID="$FERRET_GOOGLE_IOS_CLIENT_ID" \
+            FERRET_GOOGLE_IOS_REVERSED_CLIENT_ID="$FERRET_GOOGLE_IOS_REVERSED_CLIENT_ID" \
+            OTHER_CODE_SIGN_FLAGS="--keychain $keychain" archive
+          app="$RUNNER_TEMP/Ferret.xcarchive/Products/Applications/Ferret.app"
+          [[ -d $app ]] || { echo 'Archived app missing' >&2; exit 1; }
+          bundle_id=$("$plist" -c 'Print :CFBundleIdentifier' "$app/Info.plist")
+          marketing=$("$plist" -c 'Print :CFBundleShortVersionString' "$app/Info.plist")
+          build=$("$plist" -c 'Print :CFBundleVersion' "$app/Info.plist")
+          [[ $bundle_id == io.riverark.ferret && $marketing == "$IOS_MARKETING_VERSION" && $build == "$IOS_BUILD_VERSION" ]] || { echo 'Archived bundle/version mismatch' >&2; exit 1; }
+          file "$app/Ferret" | grep -q 'arm64'
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -d --entitlements :- "$app" > "$work/archive-entitlements.plist" 2>/dev/null
+          [[ $("$plist" -c 'Print :get-task-allow' "$work/archive-entitlements.plist") == false ]] || { echo 'Archive permits debugging' >&2; exit 1; }
+          [[ $("$plist" -c 'Print :application-identifier' "$work/archive-entitlements.plist") == "$team.io.riverark.ferret" ]] || { echo 'Archive entitlement mismatch' >&2; exit 1; }
+          security cms -D -i "$app/embedded.mobileprovision" -o "$work/archive-profile.plist"
+          [[ $("$plist" -c 'Print :UUID' "$work/archive-profile.plist") == "$uuid" ]] || { echo 'Archive profile mismatch' >&2; exit 1; }
+          cat > "$work/export-options.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+          <key>method</key><string>app-store-connect</string>
+          <key>destination</key><string>export</string>
+          <key>signingStyle</key><string>manual</string>
+          <key>teamID</key><string>$team</string>
+          <key>signingCertificate</key><string>Apple Distribution</string>
+          <key>provisioningProfiles</key><dict><key>io.riverark.ferret</key><string>$uuid</string></dict>
+          <key>manageAppVersionAndBuildNumber</key><false/>
+          <key>stripSwiftSymbols</key><true/>
+          <key>uploadSymbols</key><true/>
+          </dict></plist>
+          EOF
+          xcodebuild -exportArchive -archivePath "$RUNNER_TEMP/Ferret.xcarchive" \
+            -exportOptionsPlist "$work/export-options.plist" -exportPath "$work/export" \
+            OTHER_CODE_SIGN_FLAGS="--keychain $keychain"
+          ipas=("$work"/export/*.ipa)
+          [[ ${#ipas[@]} -eq 1 && -s ${ipas[0]} ]] || { echo 'Expected exactly one exported IPA' >&2; exit 1; }
+          ipa="dist/ferret-${VERSION_NAME}-ios.ipa"
+          cp "${ipas[0]}" "$ipa"
+          unzip -q "$ipa" 'Payload/Ferret.app/*' -d "$work/ipa"
+          exported="$work/ipa/Payload/Ferret.app"
+          [[ $("$plist" -c 'Print :CFBundleIdentifier' "$exported/Info.plist") == "$bundle_id" && $("$plist" -c 'Print :CFBundleShortVersionString' "$exported/Info.plist") == "$marketing" && $("$plist" -c 'Print :CFBundleVersion' "$exported/Info.plist") == "$build" ]] || { echo 'Exported app/version mismatch' >&2; exit 1; }
+          codesign --verify --deep --strict --verbose=2 "$exported"
+          codesign -d --entitlements :- "$exported" > "$work/export-entitlements.plist" 2>/dev/null
+          [[ $("$plist" -c 'Print :get-task-allow' "$work/export-entitlements.plist") == false ]] || { echo 'Exported app permits debugging' >&2; exit 1; }
+          (cd dist && shasum -a 256 "${ipa##*/}" > "${ipa##*/}.sha256")
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ios-${{ needs.metadata.outputs.version_name }}-${{ steps.version.outputs.IOS_BUILD_VERSION }}
+          path: |
+            dist/ferret-${{ needs.metadata.outputs.version_name }}-ios.ipa
+            dist/ferret-${{ needs.metadata.outputs.version_name }}-ios.ipa.sha256
+            ${{ runner.temp }}/Ferret.xcarchive/dSYMs/*.dSYM
+            ${{ runner.temp }}/ferret-ios.xcresult
+            ${{ runner.temp }}/ferret-ios-launch.png
+          if-no-files-found: error
+          overwrite: true
+      - name: Validate and upload to App Store Connect
+        shell: bash
+        env:
+          FERRET_ASC_KEY_ID: ${{ secrets.FERRET_ASC_KEY_ID }}
+          FERRET_ASC_ISSUER_ID: ${{ secrets.FERRET_ASC_ISSUER_ID }}
+          VERSION_NAME: ${{ needs.metadata.outputs.version_name }}
+        run: |
+          set -euo pipefail
+          ipa="dist/ferret-${VERSION_NAME}-ios.ipa"
+          [[ -s $ipa ]] || { echo 'Missing signed IPA' >&2; exit 1; }
+          xcrun altool --validate-app --type ios --file "$ipa" --apiKey "$FERRET_ASC_KEY_ID" --apiIssuer "$FERRET_ASC_ISSUER_ID"
+          xcrun altool --upload-app --type ios --file "$ipa" --apiKey "$FERRET_ASC_KEY_ID" --apiIssuer "$FERRET_ASC_ISSUER_ID"
+      - name: Remove Apple signing material
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/ferret-signing"
+          if [[ -f $work/original-keychains ]]; then
+            keys=()
+            while IFS= read -r line; do
+              line=${line#*\"}; line=${line%\"*}
+              [[ -n $line ]] && keys+=("$line")
+            done < "$work/original-keychains"
+            if [[ ${#keys[@]} -gt 0 ]]; then security list-keychains -d user -s "${keys[@]}"; fi
+          fi
+          [[ ! -e $work/release.keychain-db ]] || security delete-keychain "$work/release.keychain-db"
+          if [[ -f $work/profile.plist ]]; then
+            uuid=$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$work/profile.plist")
+            rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/$uuid.mobileprovision"
+          fi
+          if [[ -f $work/asc-key-id ]]; then
+            key_id=$(<"$work/asc-key-id")
+            [[ $key_id =~ ^[A-Z0-9]{10}$ ]] && rm -f "$HOME/.appstoreconnect/private_keys/AuthKey_${key_id}.p8"
+          fi
+          rm -rf "$work"
+
+  publish:
+    needs: [metadata, android, ios]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION_NAME: ${{ needs.metadata.outputs.version_name }}
+      RELEASE_DRAFT: ${{ needs.metadata.outputs.release_draft }}
+      IOS_MARKETING_VERSION: ${{ needs.metadata.outputs.ios_marketing_version }}
+      IOS_BUILD_VERSION: ${{ needs.ios.outputs.ios_build_version }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: android-${{ needs.metadata.outputs.version_name }}
+          path: dist
+      - name: Publish signed Android release and internal TestFlight reference
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk="dist/ferret-${VERSION_NAME}-android.apk"
+          for file in "$apk" "$apk.sha256" dist/android-release.cdx.json; do [[ -s $file ]] || { echo "Missing $file" >&2; exit 1; }; done
+          (cd dist && sha256sum -c "${apk##*/}.sha256")
+          note="iOS ${IOS_MARKETING_VERSION} (${IOS_BUILD_VERSION}) uploaded to internal TestFlight; availability follows Apple processing and export-compliance review."
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$apk" "$apk.sha256" dist/android-release.cdx.json --clobber
+            body=$(gh release view "$TAG" --json body --jq .body)
+            notes=''
+            while IFS= read -r line; do
+              case "$line" in
+                'iOS '*' uploaded to internal TestFlight;'*) ;;
+                *) notes+="$line"$'\n' ;;
+              esac
+            done <<< "$body"
+            gh release edit "$TAG" --notes "${notes}${note}"
+          else
+            options=(--verify-tag --generate-notes --notes "$note")
+            if [[ $RELEASE_DRAFT == true ]]; then options+=(--draft --prerelease); fi
+            gh release create "$TAG" "$apk" "$apk.sha256" dist/android-release.cdx.json "${options[@]}"
+          fi

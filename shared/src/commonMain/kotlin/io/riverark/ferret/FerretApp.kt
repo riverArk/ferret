@@ -4,7 +4,6 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
@@ -93,7 +92,7 @@ import kotlinx.coroutines.launch
 
 data class FerretDependencies(
     val wallets: WalletRepository,
-    val walletManager: WalletManager?,
+    val walletManager: WalletManager,
     val assetCatalog: AssetCatalog? = null,
     val loadBalance: (suspend (WalletProfile) -> WalletBalance)? = null,
     val loadHistory: (suspend (WalletProfile) -> List<TransactionRecord>)? = null,
@@ -126,20 +125,6 @@ fun FerretApp(
     unlockError: String? = null,
 ) {
     FerretTheme {
-        val manager = dependencies.walletManager
-        if (manager == null) {
-            FerretScreen {
-                Column(
-                    Modifier.fillMaxSize(),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center,
-                ) {
-                    Image(painterResource(Res.drawable.splash_ferret), null, Modifier.size(180.dp))
-                    FerretEmptyState("Ferret", "Wallet setup is not available in this iOS build.")
-                }
-            }
-            return@FerretTheme
-        }
         val assetCatalog = checkNotNull(dependencies.assetCatalog) { "Asset catalog is unavailable." }
         val loadBalance = checkNotNull(dependencies.loadBalance) { "Wallet balance loader is unavailable." }
         val loadHistory = checkNotNull(dependencies.loadHistory) { "Wallet history loader is unavailable." }
@@ -147,7 +132,7 @@ fun FerretApp(
         val copyAddress = checkNotNull(dependencies.copyAddress) { "Clipboard is unavailable." }
         WalletNavigation(
             dependencies.wallets,
-            manager,
+            dependencies.walletManager,
             assetCatalog,
             loadBalance,
             loadHistory,
