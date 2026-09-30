@@ -40,6 +40,7 @@ class IosCardanoIdentityTest {
     @Test fun transferAndSweepConserveAdaAndBindSigner() = runBlocking {
         val engine = IosCardanoTransactionEngine(catalog) { _, _ -> error("L1 requires no evaluation") }
         val seed = ByteArray(32) { it.toByte() }
+        var stage = "derive"
         try {
             val source = engine.deriveWallet(seed, CardanoNetwork.PREPROD)
             val destination = engine.deriveWallet(ByteArray(32) { (it + 1).toByte() }, CardanoNetwork.PREPROD)
@@ -48,6 +49,7 @@ class IosCardanoIdentityTest {
                 """{"coins_per_utxo_size":"4310","min_fee_a":44,"min_fee_b":155381,"max_tx_size":16384}""", 100)
             val transfer = CardanoIntent.Transfer(source.paymentAddress, destination.paymentAddress,
                 AssetAmount(catalog.ada, 5_000_000), "00000000-0000-4000-8000-000000000001", 100, 200)
+            stage = "build transfer"
             val unsigned = engine.build(transfer, ledger)
             val summary = engine.inspect(unsigned.cbor)
             assertEquals(5_000_000, summary.outputs.single { it.address == destination.paymentAddress }.lovelace.value)
@@ -55,17 +57,21 @@ class IosCardanoIdentityTest {
             assertFailsWith<IllegalArgumentException> {
                 engine.requireAuthorized(unsigned, transfer.copy(destinationAddress = source.paymentAddress), ledger)
             }
+            stage = "sign transfer"
             val signed = engine.sign(unsigned, seed, transfer, ledger)
             assertEquals(engine.transactionId(unsigned.cbor), engine.transactionId(signed.cbor))
             assertTrue(engine.inspect(signed.cbor).keyWitnesses.single().signatureValid)
 
             val sweep = CardanoIntent.SweepWallet(source.paymentAddress, destination.paymentAddress,
                 Lovelace(1), "00000000-0000-4000-8000-000000000002", 100, 200)
+            stage = "build sweep"
             val swept = engine.buildSweep(sweep, ledger)
             val sweptSummary = engine.inspect(swept.cbor)
             assertEquals(1, sweptSummary.outputs.size)
             assertEquals(20_000_000, sweptSummary.outputs.single().lovelace.value + sweptSummary.fee.value)
             assertTrue(sweptSummary.outputs.single().lovelace.value > 1)
+        } catch (failure: IllegalArgumentException) {
+            throw AssertionError("Native Cardano $stage failed: ${failure.message}", failure)
         } finally {
             seed.fill(0)
         }

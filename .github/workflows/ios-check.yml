@@ -44,4 +44,5 @@ jobs:
           path: |
             ${{ runner.temp }}/ferret-ios.xcresult
             ${{ runner.temp }}/ferret-ios-launch.png
+            shared/build/test-results/iosSimulatorArm64Test/*.xml
           if-no-files-found: warn
