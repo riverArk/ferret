@@ -97,7 +97,9 @@ fn reference_script(reference:&Value,hash:&str)->Result<csl::PlutusScript,Failur
  if number(reference,"scriptRefVersion")?!=3||text(reference,"scriptRefHashHex")?!=hash{return Err(Failure::Invalid)}
  let encoded=text(reference,"scriptRefHex")?;
  if encoded.is_empty()||encoded.len()>131072||encoded.len()%2!=0{return Err(Failure::Invalid)}
- let script=csl::PlutusScript::from_bytes_v3(hex::decode(encoded).map_err(|_|Failure::Invalid)?).map_err(|_|Failure::Invalid)?;
+ let bytes=hex::decode(encoded).map_err(|_|Failure::Invalid)?;
+ if csl::PlutusScript::from_bytes_v3(bytes.clone()).map_err(|_|Failure::Invalid)?.to_bytes()!=bytes{return Err(Failure::Invalid)}
+ let script=csl::PlutusScript::new_v3(bytes);
  if script.hash().to_hex()!=hash{return Err(Failure::Invalid)}
  Ok(script)
 }
@@ -495,11 +497,15 @@ fn build_candidate(request:&Value,budget:Option<(u64,u64)>)->Result<(csl::Transa
  for _ in 0..12{
   let change=total_ada.checked_sub(recipient_ada).and_then(|v|v.checked_sub(fee)).ok_or(Failure::Funds)?;
   let mut outputs=csl::TransactionOutputs::new();
-  outputs.add(&fixed);
-  if change>0||!total_assets.is_empty(){
-   let wallet_change=output(&source_address,change,&total_assets,None)?;
-   if change<minimum(&wallet_change,per_byte)?{return Err(Failure::Funds)}
-   outputs.add(&wallet_change);
+  if kind=="CloseChannel"&&inline.is_none(){
+   outputs.add(&output(&source_address,total_ada.checked_sub(fee).ok_or(Failure::Funds)?,&total_assets,None)?);
+  }else{
+   outputs.add(&fixed);
+   if change>0||!total_assets.is_empty(){
+    let wallet_change=output(&source_address,change,&total_assets,None)?;
+    if change<minimum(&wallet_change,per_byte)?{return Err(Failure::Funds)}
+    outputs.add(&wallet_change);
+   }
   }
   let mut body=csl::TransactionBody::new_tx_body(&transaction_inputs,&outputs,&csl::BigNum::from(fee));
   body.set_validity_start_interval_bignum(&csl::BigNum::from(number(intent,"validFrom")?));
@@ -557,6 +563,177 @@ mod tests{
   for (step,key) in [("ADD","redeemer_add"),("CLOSE","redeemer_close"),("ELAPSE","redeemer_elapse"),("END","redeemer_end")]{
    let kind=if step=="ADD"{"AddChannelFunds"}else{"CloseChannel"};
    assert_eq!(hex::encode(channel_redeemer(kind,step).to_bytes()),fixture[key].as_str().unwrap());
+  }
+ }
+
+ #[test]
+ fn synthetic_channel_transactions_preserve_reviewed_value_and_script_policy(){
+  let fixture:Value=serde_json::from_str(include_str!("../../../shared/src/androidHostTest/resources/konduit/channel-conformance.json")).unwrap();
+  let entropy:Vec<u8>=(0..32).collect();
+  let source:Value=serde_json::from_slice(&crate::derived(&entropy,1).unwrap()).unwrap();
+  let source=source["paymentAddress"].as_str().unwrap();
+  let public=hex::encode(crate::payment_public(&entropy).unwrap().as_bytes());
+  let ada=json!({"alias":"ada","policyId":null,"assetName":null,"decimals":6,"pricing":"ADA","catalogDigest":"a".repeat(64)});
+  let assets=json!([ada]);
+  let datum_for=|name:&str|{
+   let mut value:Value=serde_json::from_slice(&decode(fixture[name].as_str().unwrap().as_bytes(),&serde_json::to_vec(&assets).unwrap()).unwrap()).unwrap();
+   value["constants"]["addVerificationKeyHex"]=json!(public);
+   value
+  };
+  let opened=datum_for("datum_opened_empty");
+  let used=datum_for("datum_opened_used");
+  let closed=datum_for("datum_closed_used");
+  let responded=datum_for("datum_responded_pending");
+  let validator="addr1wxcrrmk4g6ta93942evluyw6c2ffy2xanpl6lc43tyzvupqswlfa5";
+  let reference=json!({"transactionId":"11".repeat(32),"index":0,"address":validator,"lovelace":2_000_000,
+   "scriptRefHex":fixture["reference_script"],"scriptRefVersion":3,"scriptRefHashHex":fixture["validator_hash"]});
+  let collateral=json!({"transactionId":"00".repeat(32),"index":0,"address":source,"lovelace":5_000_000});
+  let funding=json!({"transactionId":"33".repeat(32),"index":0,"address":source,"lovelace":100_000_000});
+  let channel=|value:&Value|json!({"transactionId":"22".repeat(32),"index":0,"address":validator,"lovelace":5_000_000,
+   "datumHex":hex::encode(datum(value).unwrap().to_bytes())});
+  let request=|intent:Value,channel_input:Option<Value>,slot:u64|{
+   let mut utxos=vec![reference.clone(),collateral.clone(),funding.clone()];
+   if let Some(input)=channel_input{utxos.push(input);}
+   json!({"intent":intent,"assets":assets,"ledger":{"network":"MAINNET","utxos":utxos,
+    "protocolParametersJson":fixture["protocol_parameters_fixture"].to_string(),"currentSlot":slot}})
+  };
+  let base=|kind:&str,from:u64|json!({"type":format!("io.riverark.ferret.core.cardano.CardanoIntent.{kind}"),
+   "sourceAddress":source,"referenceInput":reference,"operationId":"00000000-0000-4000-8000-000000000018",
+   "validFrom":from,"validUntil":from+100});
+  let identity=|value:&Value|json!({"transactionId":value["transactionId"],"index":value["index"]});
+  let inspect=|cbor:&str|->Value{
+   serde_json::from_slice(&crate::authorization::inspect(&hex::decode(cbor).unwrap()).unwrap()).unwrap()
+  };
+
+  let from=4_492_800;
+  let mut open=base("OpenChannel",from);
+  open["validatorAddress"]=json!(validator);
+  open["datum"]=opened.clone();
+  open["amount"]=json!({"asset":ada,"baseUnits":5_000_000});
+  let mut build=begin(&serde_json::to_vec(&request(open,None,from)).unwrap()).unwrap();
+  let complete:Value=serde_json::from_slice(&next(&mut build,&[],&[]).unwrap()).unwrap();
+  assert_eq!(complete["kind"],"complete");
+  let summary=inspect(complete["cborHex"].as_str().unwrap());
+  assert_eq!(summary["inputs"],json!([identity(&collateral),identity(&funding)]));
+  assert_eq!(summary["referenceInputs"],json!([]));
+  assert_eq!(summary["collateralInputs"],json!([]));
+  assert_eq!(summary["outputs"][0]["address"],validator);
+  assert_eq!(summary["outputs"][0]["lovelace"],5_000_000);
+  assert_eq!(summary["outputs"][0]["datum"]["cborHex"],hex::encode(datum(&opened).unwrap().to_bytes()));
+  assert_eq!(summary["outputs"][1]["address"],source);
+  assert_eq!(summary["outputs"][1]["lovelace"].as_u64().unwrap()+summary["fee"].as_u64().unwrap(),100_000_000);
+  assert_eq!(summary["validityStart"],from);
+  assert_eq!(summary["validityEnd"],from+100);
+  assert_eq!(complete["feeBound"],summary["fee"]);
+  assert!(summary["scriptDataHashHex"].is_null());
+  assert!(matches!(next(&mut build,&[],&[]),Err(Failure::Invalid)));
+
+  let token=json!({"alias":"usda","policyId":"fe7c786ab321f41c654ef6c1af7b3250a613c24e4213e0425a7ae456",
+   "assetName":"55534441","decimals":6,"pricing":"USD_PEG","catalogDigest":"a".repeat(64)});
+  let selected=format!("{}{}",token["policyId"].as_str().unwrap(),token["assetName"].as_str().unwrap());
+  let other=format!("{}{}",token["policyId"].as_str().unwrap(),"ff");
+  let mut token_datum=opened.clone();
+  token_datum["constants"]["asset"]=token.clone();
+  let mut token_open=base("OpenChannel",from);
+  token_open["validatorAddress"]=json!(validator);
+  token_open["datum"]=token_datum.clone();
+  token_open["amount"]=json!({"asset":token,"baseUnits":40});
+  let mut token_request=request(token_open,None,from);
+  token_request["assets"]=json!([ada,token]);
+  let mut balances=serde_json::Map::new();
+  balances.insert(selected.clone(),json!(90));
+  balances.insert(other.clone(),json!(7));
+  token_request["ledger"]["utxos"][2]["assets"]=Value::Object(balances);
+  let mut token_build=begin(&serde_json::to_vec(&token_request).unwrap()).unwrap();
+  let token_result:Value=serde_json::from_slice(&next(&mut token_build,&[],&[]).unwrap()).unwrap();
+  let token_summary=inspect(token_result["cborHex"].as_str().unwrap());
+  assert_eq!(token_summary["outputs"][0]["assets"][selected.as_str()],40);
+  assert_eq!(token_summary["outputs"][1]["assets"][selected.as_str()],50);
+  assert_eq!(token_summary["outputs"][1]["assets"][other.as_str()],7);
+  assert_eq!(token_summary["outputs"][0]["datum"]["cborHex"],hex::encode(datum(&token_datum).unwrap().to_bytes()));
+  assert_eq!(token_summary["outputs"][0]["lovelace"].as_u64().unwrap()+
+   token_summary["outputs"][1]["lovelace"].as_u64().unwrap()+
+   token_summary["fee"].as_u64().unwrap(),105_000_000);
+
+  for (step,current,result,slot) in [
+   ("ADD",&opened,Some(&opened),from),
+   ("CLOSE",&used,Some(&closed),from),
+   ("ELAPSE",&closed,None,108_433_709),
+   ("END",&responded,None,108_433_710),
+  ]{
+   let mut intent=base(if step=="ADD"{"AddChannelFunds"}else{"CloseChannel"},slot);
+   let spent=channel(current);
+   intent["channelInput"]=spent.clone();
+   intent["currentDatum"]=current.clone();
+   intent["resultingDatum"]=result.cloned().unwrap_or(Value::Null);
+   if step=="ADD"{intent["amount"]=json!({"asset":ada,"baseUnits":1_000_000});}
+   else{intent["step"]=json!(step);intent["amount"]=json!(5_000_000);}
+   if step=="ADD"{
+    let mut bad=request(intent.clone(),Some(spent.clone()),slot);
+    bad["intent"]["referenceInput"]["scriptRefHashHex"]=json!("00".repeat(28));
+    assert!(matches!(begin(&serde_json::to_vec(&bad).unwrap()),Err(Failure::Invalid)));
+    bad=request(intent.clone(),Some(spent.clone()),slot);
+    bad["intent"]["amount"]["asset"]["catalogDigest"]=json!("b".repeat(64));
+    assert!(matches!(begin(&serde_json::to_vec(&bad).unwrap()),Err(Failure::Invalid)));
+   }
+   let mut build=begin(&serde_json::to_vec(&request(intent,Some(spent.clone()),slot)).unwrap()).unwrap();
+   let exposed:Value=serde_json::from_slice(&next(&mut build,&[],if step=="ADD"{&entropy}else{&[]}).unwrap()).unwrap();
+   assert_eq!(exposed["kind"],"evaluate");
+   let candidate=inspect(exposed["cborHex"].as_str().unwrap());
+   assert_eq!(candidate["referenceInputs"],json!([identity(&reference)]));
+   assert_eq!(candidate["collateralInputs"],json!([identity(&collateral)]));
+   assert_eq!(candidate["inputs"],json!([identity(&spent),identity(&funding)]));
+   assert_eq!(candidate["outputs"][0]["address"],if result.is_some(){validator}else{source});
+   assert_eq!(candidate["outputs"][0]["datum"],result.map_or(json!({"type":"io.riverark.ferret.core.cardano.TransactionDatum.Absent"}),|value|
+    json!({"type":"io.riverark.ferret.core.cardano.TransactionDatum.Inline","cborHex":hex::encode(datum(value).unwrap().to_bytes())})));
+   if result.is_some(){
+    assert_eq!(candidate["outputs"][0]["lovelace"],if step=="ADD"{6_000_000}else{5_000_000});
+    assert_eq!(candidate["outputs"][1]["address"],source);
+   }else{assert_eq!(candidate["outputs"].as_array().unwrap().len(),1);}
+   assert_eq!(candidate["validityStart"],slot);
+   assert_eq!(candidate["validityEnd"],slot+100);
+   assert_eq!(candidate["redeemers"][0]["purpose"],"SPEND");
+   assert_eq!(candidate["redeemers"][0]["dataCborHex"],fixture[format!("redeemer_{}",step.to_lowercase())]);
+   assert_eq!(candidate["redeemers"][0]["index"],0);
+   assert_eq!(candidate["redeemers"].as_array().unwrap().len(),1);
+   assert_eq!(candidate["totalCollateral"].as_u64().unwrap()+candidate["collateralReturn"]["lovelace"].as_u64().unwrap(),5_000_000);
+   assert_eq!(candidate["outputs"].as_array().unwrap().iter().map(|out|out["lovelace"].as_u64().unwrap()).sum::<u64>()+
+    candidate["fee"].as_u64().unwrap(),105_000_000);
+   assert!(candidate["scriptDataHashHex"].as_str().is_some_and(|v|v.len()==64));
+   assert_eq!(candidate["keyWitnesses"].as_array().unwrap().len(),usize::from(step=="ADD"));
+
+   let respond=|summary:&Value,memory:u64|serde_json::to_vec(&json!({"transaction_id":
+    crate::channel::txid(&csl::Transaction::from_bytes(hex::decode(exposed["cborHex"].as_str().unwrap()).unwrap()).unwrap()).unwrap(),
+    "redeemers":[{"purpose":"spend","index":summary["redeemers"][0]["index"],"memory":memory,"steps":10_000_000}]})).unwrap();
+   let wrong=json!({"transaction_id":"ff".repeat(32),"redeemers":[{"purpose":"spend","index":0,"memory":10_000,"steps":10_000_000}]});
+   let tx=csl::Transaction::from_bytes(hex::decode(exposed["cborHex"].as_str().unwrap()).unwrap()).unwrap();
+   let params=fixture["protocol_parameters_fixture"].clone();
+   assert!(evaluation(&serde_json::to_vec(&wrong).unwrap(),&tx,&params,None).is_err());
+   let mut extra:Value=serde_json::from_slice(&respond(&candidate,10_000)).unwrap();
+   let duplicate=extra["redeemers"][0].clone();
+   extra["redeemers"].as_array_mut().unwrap().push(duplicate);
+   assert!(evaluation(&serde_json::to_vec(&extra).unwrap(),&tx,&params,None).is_err());
+   extra["redeemers"]=json!([{"purpose":"mint","index":0,"memory":10_000,"steps":10_000_000}]);
+   assert!(evaluation(&serde_json::to_vec(&extra).unwrap(),&tx,&params,None).is_err());
+   let next_result:Value=serde_json::from_slice(&next(&mut build,&respond(&candidate,10_000),&[]).unwrap()).unwrap();
+   assert_eq!(next_result["kind"],"evaluate");
+   let final_candidate=inspect(next_result["cborHex"].as_str().unwrap());
+   assert_eq!(final_candidate["redeemers"][0]["memory"],10_000);
+   assert_eq!(final_candidate["redeemers"][0]["steps"],10_000_000);
+   assert!(final_candidate["fee"].as_u64().unwrap()>candidate["fee"].as_u64().unwrap());
+   if result.is_some(){assert_eq!(final_candidate["outputs"][0],candidate["outputs"][0]);}
+   else{assert_eq!(final_candidate["outputs"][0]["lovelace"].as_u64().unwrap()+
+    final_candidate["fee"].as_u64().unwrap(),105_000_000);}
+   assert_eq!(final_candidate["totalCollateral"].as_u64().unwrap()+
+    final_candidate["collateralReturn"]["lovelace"].as_u64().unwrap(),5_000_000);
+   let final_tx=csl::Transaction::from_bytes(hex::decode(next_result["cborHex"].as_str().unwrap()).unwrap()).unwrap();
+   let final_reply=json!({"transaction_id":txid(&final_tx).unwrap(),
+    "redeemers":[{"purpose":"spend","index":final_candidate["redeemers"][0]["index"],"memory":10_000,"steps":10_000_000}]});
+   assert!(evaluation(&serde_json::to_vec(&final_reply).unwrap(),&final_tx,&params,Some((9_999,10_000_000))).is_err());
+   let completed:Value=serde_json::from_slice(&next(&mut build,&serde_json::to_vec(&final_reply).unwrap(),&[]).unwrap()).unwrap();
+   assert_eq!(completed["kind"],"complete");
+   assert_eq!(completed["cborHex"],next_result["cborHex"]);
+   assert_eq!(completed["feeBound"],final_candidate["fee"]);
   }
  }
 }

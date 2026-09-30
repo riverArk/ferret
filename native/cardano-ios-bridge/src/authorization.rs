@@ -592,9 +592,9 @@ fn authorize_channel(tx: &csl::Transaction, report: &Summary, request: &Request,
                 .and_then(|n| n.checked_mul(per_byte)).ok_or(Failure::Invalid)?;
             if remaining < checked(minimum)? { return Err(Failure::Invalid); }
         }
-        let script = csl::PlutusScript::from_bytes_v3(
+        let script = csl::PlutusScript::new_v3(
             hex::decode(reference.script_ref_hex.as_ref().ok_or(Failure::Invalid)?).map_err(|_| Failure::Invalid)?,
-        ).map_err(|_| Failure::Invalid)?;
+        );
         let ref_bytes = csl::ScriptRef::new_plutus_script(&script).to_unwrapped_bytes().len();
         let price = decimal(params.get("min_fee_ref_script_cost_per_byte").ok_or(Failure::Invalid)?)?;
         let ref_fee: u64 = csl::min_ref_script_fee(ref_bytes, &price).map_err(|_| Failure::Invalid)?.into();

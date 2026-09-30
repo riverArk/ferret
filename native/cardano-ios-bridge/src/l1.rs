@@ -104,7 +104,7 @@ fn source_utxos<'a>(ledger: &'a Ledger, source: &str, native: bool) -> Result<Ve
             u.datum_hash_hex.as_ref().is_some_and(|hash| !valid_hex(hash, 64)) ||
             u.script_ref_hash_hex.as_ref().is_some_and(|hash| !valid_hex(hash, 56)) ||
             u.script_ref_hex.as_ref().is_some_and(|script| script.len() % 2 != 0 || !script.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())) ||
-            u.script_ref_hex.is_some() != u.script_ref_hash_hex.is_some() ||
+            (u.script_ref_hex.is_some() && u.script_ref_hash_hex.is_none()) ||
             u.script_ref_version.is_some_and(|v| u.script_ref_hex.is_none() || !(0..=3).contains(&v)) ||
             u.assets.iter().any(|(unit, amount)| unit.len() < 56 || unit.len() > 120 ||
                 unit.len() % 2 != 0 || !unit.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) || *amount <= 0) {
