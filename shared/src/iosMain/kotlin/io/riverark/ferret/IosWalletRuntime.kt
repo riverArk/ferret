@@ -419,9 +419,7 @@ class IosWalletRuntime(
 
     private suspend fun <T> onlineRefresh(profile: WalletProfile, block: suspend () -> T): T {
         requireFinancialSession(profile.id)
-        return try { coordinators.getValue(profile.network).refresh(block) }
-        catch (error: CancellationException) { throw error }
-        catch (_: Exception) { networkUnavailable(); throw CancellationException("wallet session offline") }
+        return coordinators.getValue(profile.network).refresh(block)
     }
 
     private suspend fun <T> withSnapshot(id: WalletId, action: suspend (ByteArray) -> T): T {

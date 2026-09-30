@@ -33,7 +33,7 @@ final class IosGoogleSignInClient: NSObject, IosGoogleSignIn {
 
     var accountName: String? {
         let current = {
-            guard let selectedAccount,
+            guard let selectedAccount = self.selectedAccount,
                   GIDSignIn.sharedInstance.currentUser?.profile?.email == selectedAccount else { return nil as String? }
             return selectedAccount
         }

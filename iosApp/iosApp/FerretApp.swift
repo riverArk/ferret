@@ -53,12 +53,12 @@ private final class IosHost: ObservableObject {
             crypto: IosCryptoKit(),
             google: google,
             sensitiveContentChanged: { [weak self] visible in
-                self?.sensitive = visible
-                self?.cover?.setSensitiveContentVisible(visible)
+                self?.sensitive = visible.boolValue
+                self?.cover?.setSensitiveContentVisible(visible.boolValue)
             },
             scannerFactory: { IosQrScannerClient() },
             qrEncoder: IosAddressQrEncoder(),
-            continuousMillis: ContinuousClock.millis
+            continuousMillis: { KotlinLong(value: ContinuousClock.millis()) }
         )
         instance = created
         return created
