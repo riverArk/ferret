@@ -12,7 +12,7 @@ Android repository-contained wallet flows include:
 - encrypted Drive appData backup verification, missing-backup replacement, restore, stale-writer detection and confirmed takeover, checkpoint-bound single-writer channel journaling, controlled Mainnet ADA channel opening, and QR-only BOLT11 payment with durable reconciliation;
 - a shared cream, charcoal, yellow, and coral Compose interface.
 
-Controlled Mainnet ADA channel opening and Lightning payment have passed on an Android device against the owned `crustypants.com` services. The current app supports one ADA channel per wallet; native-asset channel funding, USDM/USDCx payments, multiple channels, and explicit payment-channel selection are required next steps in [`NATIVE_MIGRATION_PLAN.md`](NATIVE_MIGRATION_PLAN.md), not current capabilities. ADA transfer, ADA channel opening, payment, and removal are enabled in debug and release builds; their foreground-session, deployment-validation, encrypted-backup, balance, and reconciliation checks remain mandatory. Add/close/squash channel controls, funded L1 transfer/finality acceptance, the two-device Drive matrix, the complete removal scenario, and production release credential/device review remain. Preprod and `ferret.channel` are unsupported test or release targets. The iOS shared target compiles and renders an explicit platform-availability gate; iOS wallet support remains disabled until [`IOS_FOLLOW_UP.md`](IOS_FOLLOW_UP.md) is complete.
+Controlled Mainnet ADA channel opening and Lightning payment have passed on an Android device against the owned `crustypants.com` services. The shared app exposes reviewed ADA/USDA/USDCx/USDM transfer, channel Open/Add, eligible-channel BOLT11 payment, and guarded wallet removal on Android and iOS. Channel close/squash controls remain unexposed until their complete flows exist. Native-asset Add and settlement, funded L1 finality, Drive takeover, and removal require additional controlled Mainnet acceptance; iOS physical-device and ledger parity checks are manual through TestFlight. Preprod and `ferret.channel` are unsupported test or release targets. See [`NATIVE_MIGRATION_PLAN.md`](NATIVE_MIGRATION_PLAN.md) and [`IOS_FOLLOW_UP.md`](IOS_FOLLOW_UP.md) for outstanding acceptance.
 
 ## Prerequisites
 
@@ -45,24 +45,25 @@ Release verification requires the Google OAuth server client ID:
 FERRET_GOOGLE_SERVER_CLIENT_ID='<client-id>' ./gradlew androidReleaseCheck
 ```
 
-Tagged-release metadata can be checked with `bash scripts/test-ferret-version.sh` and
-`scripts/ferret-version.sh v1.2.3-alpha7`. Supply its `VERSION_NAME` and
-`VERSION_CODE` as a pair of Gradle properties for versioned builds; local builds
-without them retain version `1.0.0` (code `1`). This does not sign or publish an APK.
+Tagged `v*` releases build signed Android APKs and iOS IPAs, upload the IPA to
+internal TestFlight, and publish the verified APK/SBOM after both platforms
+succeed. Configure the protected `mobile-release` environment first; see
+[`IOS_FOLLOW_UP.md`](IOS_FOLLOW_UP.md) for credentials, upload, and physical
+device acceptance. `bash scripts/test-ferret-version.sh` checks version metadata.
 
 On macOS with Xcode 26.6, iOS 26.5 simulator, JDK 17, and Android SDK 36,
-`scripts/check-ios.sh` compiles the shared iOS target, runs its tests and the
-Xcode UI test, then installs and launches Ferret on the iPhone 17 simulator.
-The iOS check workflow also links the iPhone framework and assembles a device/simulator XCFramework.
-The iOS host is not yet a functional wallet or a signed release.
+`scripts/check-ios.sh` runs shared iOS tests and the Xcode unit/UI tests,
+then installs and launches the app on an iPhone 17 simulator. The iOS check
+workflow also links the iPhone framework and assembles an XCFramework.
+Physical-device and controlled Mainnet financial acceptance remain manual.
 
 ## Repository map
 
 - `shared/src/commonMain`: shared domain models, repositories, state, typed navigation, and Compose screens.
 - `shared/src/androidMain`: Android secure vault, biometric authentication support, Cardano implementation, and camera scanner.
-- `shared/src/iosMain`: shared Compose entry point, Keychain-backed vault, BIP-39 codec, CryptoKit backup primitives, Cardano engine adapter, and the intentional wallet-availability gate.
+- `shared/src/iosMain`: Compose runtime, Keychain vault, CryptoKit backup, pinned Darwin networking, Cardano and Drive adapters, and local QR services.
 - `androidApp`: Android application host, dependency construction, system-bar configuration, and sensitive-screen protection.
-- `iosApp`: checked-in SwiftUI/Xcode host with simulator UI smoke; wallet operations remain intentionally gated.
+- `iosApp`: SwiftUI/Xcode host, Google Sign-In, camera, sensitive-content cover, and simulator checks.
 - `native/cardano-ios-bridge`: pinned Rust/CSL C ABI for iOS derivation, transaction construction, signing, inspection, and channel codecs; full semantic and controlled-node parity remains unverified.
 
 ## Security model

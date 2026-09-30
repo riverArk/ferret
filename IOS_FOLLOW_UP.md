@@ -1,15 +1,15 @@
 # iOS Follow-up
 
-The checked-in iOS Xcode host launches shared Compose on the iPhone simulator. Wallet actions remain unavailable until the Cardano, networking, backup, camera, and runtime integrations below are complete and physically verified.
+The checked-in iOS host now constructs the real shared wallet and exposes implemented financial actions. The contracts below describe the platform integrations; signing, physical custody, controlled Mainnet ledger parity, and financial acceptance remain unverified.
 
 ## Current iOS Surface
 
 - `shared/build.gradle.kts` declares `iosArm64` and `iosSimulatorArm64` static frameworks named `Shared`.
 - macOS CI links the iPhone release framework and assembles a device/simulator XCFramework; no app has been installed on a physical iPhone.
-- `shared/src/iosMain/kotlin/io/riverark/ferret/MainViewController.kt` exposes shared Compose with `walletManager = null` until the platform runtime is complete.
+- `MainViewController.kt` receives the real `IosWalletRuntime` from the Swift scene host. No nullable wallet manager or demo fallback remains.
 - `iosApp/iosApp.xcodeproj` builds and launches the SwiftUI host and runs simulator UI and CryptoKit tests.
 - iOS custody includes a Keychain-protected data key with LocalAuthentication, encrypted atomic Application Support vault, installation identity, BIP-39 recovery codec, and backup-compatible CryptoKit bridge. The simulator vault record/tamper and public crypto-vector tests pass; Face ID/passcode behavior on a physical iPhone remains unverified.
-- The Rust/CSL bridge and Kotlin adapter compile into the simulator app. Simulator checks cover public CIP-1852 identity, synthetic ADA/native-asset transfer, sweep eligibility, conservation and signing; Rust fixtures cover Open/Add/CLOSE/ELAPSE/END construction and evaluation-response binding. These offline fixtures are not full Android semantic parity or controlled Mainnet-node ledger evaluation. Physical iPhone operation also remains unverified. The UI still displays `Wallet setup is not available in this iOS build.` No Drive, camera, or pinned networking adapter is wired.
+- The Rust/CSL bridge and Kotlin adapter compile into the simulator app. Offline simulator/Rust fixtures cover identity, synthetic transaction intents, conservation, signing, and evaluation-response binding; they do not prove Android semantic parity or controlled Mainnet ledger evaluation. Drive, pinned Darwin networking, QR scanning/output, and sensitive route obscuring are connected but have not been accepted on a physical iPhone.
 
 ## Required macOS Tooling and Credentials
 
@@ -19,6 +19,15 @@ The checked-in iOS Xcode host launches shared Compose on the iPhone simulator. W
 4. Configure an Apple development team and signing identity.
 5. Create the iOS Google OAuth client and URL scheme. Keep client IDs and signing data outside source control.
 6. Provision a dedicated Google Drive test account and funded low-value Mainnet wallets for recovery and payment tests.
+
+## Tagged TestFlight Delivery
+
+1. In Apple Developer, register `io.riverark.ferret`, enable the entitlements required by `iosApp/iosApp.xcodeproj`, and create an App Store distribution profile and matching Apple Distribution `.p12`. In App Store Connect, register the app and an API key with upload permission. Create an iOS Google OAuth client for the same bundle ID and its reversed URL scheme; configure its consent screen and authorized testers.
+2. Store these **environment secrets** in GitHub `mobile-release`: `FERRET_APPLE_DISTRIBUTION_P12_BASE64`, `FERRET_APPLE_DISTRIBUTION_P12_PASSWORD`, `FERRET_IOS_PROFILE_BASE64`, `FERRET_ASC_KEY_ID`, `FERRET_ASC_ISSUER_ID`, `FERRET_ASC_PRIVATE_KEY_BASE64`, plus Android `FERRET_RELEASE_KEYSTORE_BASE64`, `FERRET_RELEASE_STORE_PASSWORD`, `FERRET_RELEASE_KEY_ALIAS`, `FERRET_RELEASE_KEY_PASSWORD`, and `FERRET_GOOGLE_SERVER_CLIENT_ID`. Base64-encode the binary `.p12`, `.mobileprovision`, and `.p8` without line wraps. Never commit them.
+3. Set **environment variables** `FERRET_APPLE_TEAM_ID`, `FERRET_GOOGLE_IOS_CLIENT_ID`, and `FERRET_GOOGLE_IOS_REVERSED_CLIENT_ID`. Restrict `mobile-release` to `v*` tags and restrict who may create release tags; configure the App Store Connect internal tester group for automatic build distribution. The GitHub environment tag policy alone does not authenticate the tag creator.
+4. On the candidate commit, run `./gradlew androidCheck`, `bash scripts/test-ferret-version.sh`, and the `ios-check` workflow (`scripts/check-ios.sh` on a configured Mac). After both checks pass and credentials exist, push a unique `v<major>.<minor>.<patch>[-prerelease]` tag at that commit. `.github/workflows/release.yml` runs both platforms, verifies signatures, package identifiers and version metadata, uploads the signed IPA to App Store Connect, and publishes the Android APK/SBOM only after both jobs succeed. Never tag just to test missing signing material.
+5. Inspect the release run, then confirm Apple's processing/export-compliance state and assign the build to the internal group if auto-distribution is not configured. Upload success is not proof of TestFlight availability or physical-device acceptance. Install from TestFlight on a real iPhone and complete the matrix below. On failure, fix the cause and issue a **new** version tag; reruns use a distinct build number.
+
 
 ## 1. Create the Xcode Host
 
@@ -53,7 +62,7 @@ Requirements:
 - Never pass mnemonic strings, arbitrary callbacks, or untyped transaction-builder input through the ABI.
 - Implement `IosCardanoTransactionEngine` against the existing common `CardanoTransactionEngine` interface.
 - Run the same semantic fixtures used by `AndroidCardanoTransactionEngine`: inputs, outputs, value conservation, datum/redeemer/script hashes, signer set, validity bounds, and fee bounds must match. CBOR byte ordering and transaction IDs may differ.
-- Require controlled Mainnet-node ledger evaluation for all five intents before enabling financial actions.
+- Obtain controlled Mainnet-node ledger evaluation for all five intents before claiming financial parity or an externally accepted release; internal TestFlight is for manual verification.
 
 ## 3. Implement iOS Secret Custody and App Lock
 
@@ -132,21 +141,10 @@ Current Linux compile gate:
 ./gradlew :shared:compileKotlinIosSimulatorArm64
 ```
 
-After the platform adapters exist, run the shared/native tests on macOS:
+Run the full simulator/native host smoke on macOS with the pinned Xcode and iPhone 17 simulator:
 
 ```sh
-./gradlew :shared:iosSimulatorArm64Test
-```
-
-Run the Xcode host:
-
-```sh
-xcodebuild \
-  -project iosApp/iosApp.xcodeproj \
-  -scheme iosApp \
-  -sdk iphonesimulator \
-  -destination 'platform=iOS Simulator,name=iPhone 16' \
-  test
+scripts/check-ios.sh
 ```
 
 Then verify on an iOS 17 physical device:
@@ -156,7 +154,7 @@ Then verify on an iOS 17 physical device:
 3. Inspect app files, pasteboard, unified logs, and app-switcher snapshots for secret leakage.
 4. Compare CSL and Bloxbean semantics for all five Cardano intents.
 5. Exercise Drive initial backup, tamper rejection, restore, takeover, stale writer rejection, and same-generation conflict.
-6. Kill the process before submission, after submission, and after adaptor acceptance for channel open/add/pay/close; confirm one reconciled operation and no duplicate authorization.
+6. Kill the process before submission, after submission, and after adaptor acceptance for the exposed channel Open/Add/payment flows; confirm one reconciled operation and no duplicate authorization. Close is not exposed until its complete flow exists.
 7. Verify camera permission denial, lifecycle stop, valid BOLT11 payment, malformed/expired/wrong-network rejection, and durable receipt behavior.
 8. Verify offline lockout and cancellation of refresh/camera work.
 9. Verify sweep, 2160-block finality gate, local deletion, Drive deletion, and mnemonic restoration after wallet removal.
@@ -164,4 +162,4 @@ Then verify on an iOS 17 physical device:
 
 ## Completion Gate
 
-The compiling shared theme/navigation and unavailable state are not iOS wallet support. iOS is complete only when an Xcode host and its platform adapters pass the Android behavioral contracts and shared semantic fixtures on simulator and physical hardware. Any difference in decoded transaction intent, ledger validity, fee bounds, writer-lease behavior, backup recovery, interruption reconciliation, or sensitive-content protection blocks release.
+The internal TestFlight build enables implemented financial routes for manual acceptance; it is not evidence of financial parity or a production rollout. Physical custody, controlled-node intent evaluation, signing, Drive takeover, interruption recovery, and sensitive-content behavior must be verified before external distribution. Any mismatch in decoded intent, ledger validity, fee bounds, writer lease, backup recovery, reconciliation, or sensitive-content protection blocks external release.

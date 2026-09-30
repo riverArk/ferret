@@ -66,12 +66,6 @@ final class IosGoogleSignInClient: NSObject, IosGoogleSignIn {
         }
     }
 
-    func connect() async -> (String?, String?) {
-        await withCheckedContinuation { continuation in
-            connect { account, error in continuation.resume(returning: (account, error)) }
-        }
-    }
-
     func accessToken(completion: @escaping @Sendable (String?, String?) -> Void) {
         DispatchQueue.main.async { [self] in
             guard clientID.hasSuffix(".apps.googleusercontent.com") else { _ = completion(nil, "Google iOS client ID is not configured."); return }
@@ -94,12 +88,6 @@ final class IosGoogleSignInClient: NSObject, IosGoogleSignIn {
                 }
                 _ = completion(refreshed.accessToken.tokenString, nil)
             }
-        }
-    }
-
-    func accessToken() async -> (String?, String?) {
-        await withCheckedContinuation { continuation in
-            accessToken { token, error in continuation.resume(returning: (token, error)) }
         }
     }
 }

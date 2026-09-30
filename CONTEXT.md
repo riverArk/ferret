@@ -2,30 +2,30 @@
 
 ## Snapshot
 
-- Date: 2026-09-23
-- Current focus: complete controlled Mainnet device acceptance for reviewed channel Add and stablecoin-channel Lightning payments.
+- Date: 2026-09-30
+- Current focus: iOS simulator integration, signed TestFlight delivery, and subsequent manual physical-device acceptance.
 - The live repository is a Kotlin Multiplatform project. This file describes current code only.
 
 ## Product and platforms
 
 Ferret is an Android-first Cardano and Lightning wallet. Android has real biometric/device-credential authentication, encrypted persistence, Cardano wallet derivation and transaction authorization, Google Drive channel recovery, keyed Mainnet ADA/native channels, QR-only BOLT11 payment with eligible-channel selection, catalog-asset L1 transfer, channel Open/Add flows, ADA sweep, and safe wallet-removal orchestration. Shared Kotlin code supplies domain state, typed navigation, repositories, ViewModels, and Compose UI.
 
-iOS compiles and launches shared Compose from the checked-in Xcode host and displays `Wallet setup is not available in this iOS build.` Simulator checks cover vault records, BIP-39 recovery words, CryptoKit primitives, and the Rust/CSL Cardano identity vector. The native engine exists but full five-intent semantic/ledger parity is unverified; Keychain/LocalAuthentication has not been exercised on a physical iPhone. `IOS_FOLLOW_UP.md` tracks remaining Cardano validation, Drive, TLS, QR, signing, and physical-device work.
+iOS now constructs the real shared wallet runtime with Keychain/LocalAuthentication custody, Rust/CSL transactions, pinned Darwin networking, Google Drive appData, QR camera/output, lifecycle locking, and sensitive-screen cover. Physical iPhone authentication, controlled Mainnet ledger parity, Drive takeover, and financial acceptance are unverified; the tagged TestFlight workflow requires operator-owned signing and OAuth inputs. `IOS_FOLLOW_UP.md` tracks the manual matrix.
 
 ## Module map
 
 - `shared/src/commonMain`: domain models, `WalletManager`, `WalletRepository`, `SecureVault` contract, typed `Route`, ViewModels, shared Compose UI, and the Ferret theme.
 - `shared/src/androidMain`: Android vault/authentication, recovery codec, Cardano engine, protocol signer, and camera scanner.
-- `shared/src/iosMain`: Compose availability gate, encrypted vault, authentication, recovery codec, installation identity, CryptoKit adapter, and Cardano engine adapter.
+- `shared/src/iosMain`: Compose runtime, encrypted vault, authentication, recovery codec, installation identity, CryptoKit, pinned networking, Cardano, Drive, camera, and channel repositories.
 - `androidApp`: Android host, dependency construction, edge-to-edge setup, and screenshot protection.
-- `iosApp`: Xcode/SwiftUI host, shared-framework build phase, launch assets, privacy manifest, and simulator UI smoke.
+- `iosApp`: Xcode/SwiftUI host, scene/privacy lifecycle, Google Sign-In, camera, QR generation, and simulator UI smoke.
 - `native/cardano-ios-bridge`: pinned Rust/CSL iOS Cardano C ABI and Apple static-library build.
 
 ## Runtime and security
 
 `MainActivity` creates one `WalletRepository`, `AndroidSecureVault`, `AndroidUserAuthenticator`, and `WalletManager`. Unlock publishes encrypted vault profiles into `WalletRepository`. The Android vault stores an encrypted `wallet-index.v1` and one encrypted `wallet-<walletId>.v1` seed file per wallet using `AtomicFile`.
 
-Seed entropy is cleared after derivation and vault callbacks. Mnemonic restore/display/verification routes toggle Android `FLAG_SECURE` and never expose a copy action. A null `WalletManager` is the platform-availability gate; no demo wallet fallback exists.
+Seed entropy is cleared after derivation and vault callbacks. Mnemonic restore/display/verification routes toggle Android `FLAG_SECURE` and never expose a copy action. iOS uses the real wallet manager; unavailable platform integrations do not have a demo-wallet fallback.
 
 ## Wallet onboarding
 
@@ -52,7 +52,7 @@ Top-up renders a local address QR with owned sensitive-clipboard expiry. Transfe
 ## Known platform gaps
 
 - Reviewed ADA, USDA, USDCx, and USDM channels share the implemented Lightning payment path, exact asset/keytag authorization, encrypted write-ahead, verified receipt, isolated balance/history update, duplicate-invoice guard, and restart reconciliation. Pixel acceptance passed eligibility, multi-channel choice, USDM initialization, quote, and expired-invoice recovery; the operator declined the real payment, so USDM settlement/receipt and ADA/funded USDCx/USDA regressions remain.
-- iOS wallet setup and runtime integrations are unavailable; see `IOS_FOLLOW_UP.md`.
+- iOS simulator runtime and TestFlight upload are wired, but physical iPhone custody, Google consent, full five-intent controlled-node ledger parity, and financial/recovery paths need manual acceptance; see `IOS_FOLLOW_UP.md`.
 - Per-channel Add is implemented for reviewed ADA/native assets with exact current-output authorization, ADA-only collateral, encrypted write-ahead, idempotent submission, restart recovery, and eligible-channel UI. An operator-approved `0.9 USDM` Add reached submission but was rejected upstream; the reference ledger reproduced a script-integrity mismatch between the connector/Dolos protocol-10 cost model and its upstream node's protocol-11 parameters. After backend redeployment, the mismatch remained and Pixel channel refresh retained `0.085652 USDM` plus sibling `₳0.463953`. Do not request another Add approval until live parameters agree; confirmed capacity increase, interruption, and Drive acceptance remain. `NATIVE_MIGRATION_PLAN.md` records the evidence. Close, elapse, end, and squash controls are not connected.
 - Funded Mainnet ADA transfer/process-kill/finality acceptance, the two-device Drive takeover matrix, and the close/sweep/removal scenario remain.
 - Production release verification still requires the real Google OAuth client ID, signing material, and device security review.
@@ -61,7 +61,7 @@ Top-up renders a local address QR with owned sensitive-clipboard expiry. Transfe
 
 ## Decisions
 
-- Android is the functional delivery target for this pass.
+- Android and iOS use the shared wallet/navigation model; iOS financial acceptance is manual through internal TestFlight.
 - Shared Compose owns platform-independent UI and navigation.
 - `WalletManager`, `WalletRepository`, `SecureVault`, and `Route` remain the existing boundaries.
 - Newly created wallets must confirm backup before Home; restored wallets are already confirmed.
