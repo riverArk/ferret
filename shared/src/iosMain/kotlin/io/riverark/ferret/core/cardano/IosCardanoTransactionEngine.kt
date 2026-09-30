@@ -230,15 +230,18 @@ class IosCardanoTransactionEngine(
 
     private fun authorize(cbor: ByteArray, operationId: String, feeBound: Lovelace, intent: CardanoIntent, ledger: LedgerSnapshot, signed: Boolean) {
         require(intent.operationId == operationId)
-        val request = authorizationRequest(intent, ledger, operationId, feeBound)
-        bridgeCall { out, error ->
-            withBytes(cbor) { transaction ->
-                withBytes(request) { metadata -> ferret_authorize(transaction, metadata, out, error) }
-            }
-        }.also { require(it.isEmpty()) }
+        if (!signed) {
+            val request = authorizationRequest(intent, ledger, operationId, feeBound)
+            bridgeCall { out, error ->
+                withBytes(cbor) { transaction ->
+                    withBytes(request) { metadata -> ferret_authorize(transaction, metadata, out, error) }
+                }
+            }.also { require(it.isEmpty()) }
+        }
         val summary = inspect(cbor)
         require(ledger.network == summary.network)
-        require(summary.fee.value <= feeBound.value && summary.prohibitedBodyFields.isEmpty() && !summary.containsNonKeyWitnesses)
+        require(summary.fee.value <= feeBound.value && summary.prohibitedBodyFields.isEmpty())
+        require(summary.containsNonKeyWitnesses == (intent is CardanoIntent.AddChannelFunds || intent is CardanoIntent.CloseChannel))
         require(summary.validityStart == intent.validFrom && summary.validityEnd == intent.validUntil)
         require(summary.keyWitnesses.size == if (signed) 1 else 0)
         if (intent is CardanoIntent.Transfer || intent is CardanoIntent.SweepWallet) {
