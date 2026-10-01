@@ -139,6 +139,46 @@ class WalletRemovalTest {
     }
 
 
+    @Test fun fundedSettlementAndUnprovedReturnsBlockRemovalEvenAtZeroTrackedBalance() {
+        val profile = WalletProfile(WalletId("mainnet-${"00".repeat(28)}"), "Wallet",
+            CardanoNetwork.MAINNET, "addr1wallet", "stake1wallet")
+        for (state in listOf(ChannelState.Closed, ChannelState.Responded, ChannelState.Ending,
+            ChannelState.FundsReturned("aa".repeat(32)))) {
+            assertContains(readiness(profile, channels = collection(profile, state)).blockers(),
+                "Close every channel first.")
+        }
+        assertTrue(readiness(profile, channels = collection(profile, ChannelState.Absent)).blockers().isEmpty())
+    }
+
+    @Test fun provedReturnIsUsableAtFiveButRemovalWaitsForSettlement() {
+        val profile = WalletProfile(WalletId("mainnet-${"00".repeat(28)}"), "Wallet",
+            CardanoNetwork.MAINNET, "addr1wallet", "stake1wallet")
+        val keytag = ProtocolKeytag("01".repeat(64))
+        val tx = "ab".repeat(32)
+        val datum = io.riverark.ferret.core.cardano.ChannelDatum("11".repeat(28),
+            io.riverark.ferret.core.cardano.ChannelConstants("01".repeat(32), "01".repeat(32),
+                "02".repeat(32), 60_000, ADA),
+            io.riverark.ferret.core.cardano.ChannelDatumStage.Responded(0))
+        val input = io.riverark.ferret.core.cardano.LedgerUtxo("12".repeat(32), 0, "addr1script",
+            io.riverark.ferret.core.model.Lovelace(2_000_000), datumHex = "00")
+        fun returned(depth: Long) = ChannelSnapshot(keytag, ADA, ChannelState.FundsReturned(tx),
+            returnProof = io.riverark.ferret.core.channel.ChannelReturnProof(tx, input, datum,
+                profile.paymentAddress, AssetAmount(ADA, 2_000_000), input.lovelace,
+                io.riverark.ferret.core.model.Lovelace(200_000), depth),
+            history = listOf(io.riverark.ferret.core.channel.ChannelRemoteResult(
+                "operation", tx, keytag, ADA, tx, ChannelState.FundsReturned(tx),
+                io.riverark.ferret.core.model.OperationState.COMPLETED,
+                closeStep = io.riverark.ferret.core.cardano.CloseChannelStep.END, confirmationDepth = depth)))
+        fun check(depth: Long) = readiness(profile, channels = collection(profile).copy(
+            channels = mapOf(keytag.value to returned(depth)))).blockers()
+        assertContains(check(4), "Close every channel first.")
+        assertContains(check(5), "Wait for every transaction to settle.")
+        assertTrue(check(2_160).isEmpty())
+        val forged = returned(2_160).copy(history = emptyList())
+        assertContains(readiness(profile, channels = collection(profile).copy(
+            channels = mapOf(keytag.value to forged))).blockers(), "Close every channel first.")
+    }
+
     private fun readiness(
         profile: WalletProfile,
         spendable: Long = 0,

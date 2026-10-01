@@ -193,6 +193,25 @@ internal const val KONDUIT_MIN_ADA_BUFFER = 2_000_000L
 @Serializable enum class ChannelRedeemer { ADD, CLOSE, ELAPSE, END }
 @Serializable enum class CloseChannelStep { CLOSE, ELAPSE, END }
 
+internal fun cardanoSlotEpochMillis(network: CardanoNetwork, slot: Long): Long {
+    val zeroSlot: Long
+    val zeroTime: Long
+    when (network) {
+        CardanoNetwork.MAINNET -> {
+            zeroSlot = 4_492_800L
+            zeroTime = 1_596_059_091_000L
+        }
+        CardanoNetwork.PREPROD -> {
+            zeroSlot = 86_400L
+            zeroTime = 1_655_769_600_000L
+        }
+    }
+    require(slot >= zeroSlot) { "invalid channel slot" }
+    val elapsedSlots = slot - zeroSlot
+    require(elapsedSlots <= (Long.MAX_VALUE - zeroTime) / 1_000L) { "invalid channel slot" }
+    return zeroTime + elapsedSlots * 1_000L
+}
+
 @Serializable
 sealed interface CardanoIntent {
     val sourceAddress: String
@@ -381,7 +400,7 @@ fun TransactionSummary.requireChannelFunding(intent: CardanoIntent, ledger: Ledg
                     allowNativeAssets = when (intent) {
                         is CardanoIntent.OpenChannel -> intent.amount.asset.policyId != null
                         is CardanoIntent.AddChannelFunds -> intent.amount.asset.policyId != null
-                        is CardanoIntent.CloseChannel -> false
+                        is CardanoIntent.CloseChannel -> intent.currentDatum.constants.asset.policyId != null
                     },
                 ),
             )

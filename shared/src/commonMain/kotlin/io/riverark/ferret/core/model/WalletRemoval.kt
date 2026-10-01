@@ -115,7 +115,27 @@ fun RemovalReadiness.blockers(): List<String> = buildList {
 
 private fun RemovalReadiness.channelBlockers(): List<String> = buildList {
     if (channels.unresolvedLegacy.isNotEmpty()) add("Legacy channel recovery requires verified identity.")
-    if (channels.channels.values.any { it.state != ChannelState.Closed }) add("Close every channel first.")
+    if (channels.channels.values.any { channel ->
+        when (val state = channel.state) {
+            ChannelState.Absent -> channel.spendableBalance.baseUnits != 0L ||
+                channel.pending != null || channel.payments.pending != null || channel.chainObservation != null
+            is ChannelState.FundsReturned -> {
+                val proof = channel.returnProof
+                proof == null || proof.transactionId != state.transactionId || proof.confirmationDepth < 5 ||
+                    proof.returnedAmount.asset != channel.asset || channel.chainObservation != null ||
+                    channel.history.none {
+                        it.transactionId == state.transactionId && it.status == OperationState.COMPLETED &&
+                            it.confirmationDepth == proof.confirmationDepth &&
+                            (it.closeStep == io.riverark.ferret.core.cardano.CloseChannelStep.ELAPSE ||
+                                it.closeStep == io.riverark.ferret.core.cardano.CloseChannelStep.END)
+                    }
+            }
+            else -> true
+        }
+    }) add("Close every channel first.")
+    if (channels.channels.values.any {
+        it.confirmedReturnOperation != null || it.returnProof?.confirmationDepth?.let { depth -> depth < 2_160 } == true
+    }) add("Wait for every transaction to settle.")
     if (channels.channels.values.any { it.spendableBalance.baseUnits > 0 }) add("Empty every channel balance.")
     if (channels.channels.values.any { it.pending != null || it.payments.pending != null }) {
         add("Wait for every pending channel operation to reconcile.")

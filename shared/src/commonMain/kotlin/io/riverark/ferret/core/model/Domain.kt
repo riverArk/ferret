@@ -36,6 +36,7 @@ sealed interface ChannelState {
     @Serializable data object Closed : ChannelState
     @Serializable data object Responded : ChannelState
     @Serializable data object Ending : ChannelState
+    @Serializable data class FundsReturned(val transactionId: String) : ChannelState
 }
 
 @Serializable

@@ -96,6 +96,240 @@ import org.jetbrains.compose.resources.DrawableResource
 import org.jetbrains.compose.resources.painterResource
 import kotlin.random.Random
 
+internal fun channelReadyToReturn(channel: ChannelSnapshot): Boolean =
+    (channel.state == ChannelState.Closed || channel.state == ChannelState.Responded) &&
+        channel.pending == null && channel.payments.pending == null &&
+        channel.chainObservation?.let {
+            it.canReturn && it.confirmationDepth >= 5 &&
+                ((channel.state == ChannelState.Closed && it.datum.stage is io.riverark.ferret.core.cardano.ChannelDatumStage.Closed) ||
+                    (channel.state == ChannelState.Responded && it.datum.stage is io.riverark.ferret.core.cardano.ChannelDatumStage.Responded))
+        } == true
+
+internal fun channelProgressLabel(channel: ChannelSnapshot): String =
+    if (channelReadyToReturn(channel)) "Ready to return funds" else channelStateLabel(channel.state)
+
+internal fun settlementWait(afterEpochMillis: Long, nowEpochMillis: Long): String {
+    if (afterEpochMillis <= nowEpochMillis) return "Waiting for a refreshed status"
+    val millis = afterEpochMillis - nowEpochMillis.coerceAtLeast(0)
+    val minutes = millis / 60_000 + if (millis % 60_000 != 0L) 1 else 0
+    return when {
+        minutes < 60 -> "$minutes minute${if (minutes == 1L) "" else "s"}"
+        minutes < 1_440 -> {
+            val hours = minutes / 60 + if (minutes % 60 != 0L) 1 else 0
+            "$hours hour${if (hours == 1L) "" else "s"}"
+        }
+        else -> {
+            val days = minutes / 1_440 + if (minutes % 1_440 != 0L) 1 else 0
+            "$days day${if (days == 1L) "" else "s"}"
+        }
+    }
+}
+
+@Composable
+private fun ChannelHeldFunds(channel: ChannelSnapshot, catalog: AssetCatalog) {
+    when (channel.state) {
+        is ChannelState.FundsReturned -> Unit
+        is ChannelState.Open -> FerretDataBlock("Spendable capacity", formatAsset(channel.spendableBalance, catalog))
+        ChannelState.Absent, is ChannelState.Opening -> FerretDataBlock("Tracked amount", formatAsset(channel.spendableBalance, catalog))
+        else -> {
+            val observation = channel.chainObservation
+            if (observation != null) {
+                val units = if (channel.asset == catalog.ada) observation.output.lovelace.value
+                    else observation.output.assets[channel.asset.connectorUnit] ?: 0
+                FerretDataBlock("Funds still in channel", formatAsset(AssetAmount(channel.asset, units), catalog))
+                if (channel.asset != catalog.ada) {
+                    FerretDataBlock("Channel ADA", formatAsset(AssetAmount(catalog.ada, observation.output.lovelace.value), catalog))
+                }
+                Text("Includes unsettled payments", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+                FerretDataBlock("Last known available funds", formatAsset(channel.spendableBalance, catalog))
+                Text("Status unavailable", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+@Composable
+private fun CloseTransactionDetails(identity: String?, destination: String? = null) {
+    var expanded by rememberSaveable(identity, destination) { mutableStateOf(false) }
+    FerretSecondaryButton(
+        if (expanded) "Hide transaction details" else "Show transaction details",
+        { expanded = !expanded },
+        modifier = Modifier.semantics { stateDescription = if (expanded) "Expanded" else "Collapsed" },
+    )
+    if (expanded) {
+        SelectionContainer {
+            Column(verticalArrangement = Arrangement.spacedBy(FerretSpacing.sm)) {
+                identity?.let { FerretDataBlock("Transaction ID", it) }
+                destination?.let { FerretDataBlock("Destination · this wallet", it) }
+            }
+        }
+    }
+}
+
+@Composable
+fun ChannelCloseScreen(
+    profile: WalletProfile,
+    catalog: AssetCatalog,
+    state: ChannelCloseUiState,
+    onPreviewClose: () -> Unit,
+    onPreviewReturnFunds: () -> Unit,
+    onSubmit: () -> Unit,
+    onCancelPreview: () -> Unit,
+    onRefresh: () -> Unit,
+    onTopUp: () -> Unit,
+    onSettings: () -> Unit,
+    onBack: () -> Unit,
+) {
+    val channel = state.channel
+    val preview = state.preview
+    val payload = preview?.operation?.payload as? io.riverark.ferret.core.channel.ChannelPayload.Transaction
+    val intent = payload?.intent as? io.riverark.ferret.core.cardano.CardanoIntent.CloseChannel
+    val closingPreview = intent?.step == io.riverark.ferret.core.cardano.CloseChannelStep.CLOSE
+    val proof = channel?.returnProof
+    val returned = channel?.state is ChannelState.FundsReturned && proof != null && proof.confirmationDepth >= 5
+    val uncertain = state.operationId != null && (channel?.pending != null || state.error != null || preview != null)
+    val waiting = channel != null && !returned && (channel.state is ChannelState.Closing ||
+        channel.state == ChannelState.Closed || channel.state == ChannelState.Responded ||
+        channel.state == ChannelState.Ending || channel.pending != null || uncertain)
+    val unavailable = channel == null || state.error != null ||
+        (channel.state !is ChannelState.Open && !returned && channel.chainObservation == null)
+    val title = when {
+        returned -> "Funds returned"
+        uncertain -> "Checking transaction status"
+        preview != null -> if (closingPreview) "Review close" else "Review return funds"
+        channel != null -> if (channel.state is ChannelState.Open) "Close channel" else channelProgressLabel(channel)
+        else -> "Close channel"
+    }
+    FerretScreen {
+        LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(FerretSpacing.sm)) {
+            item {
+                FerretTopBar(title, navigation = { io.riverark.ferret.ui.FerretTextButton("Back", onBack) })
+                FerretStatusChip("${profile.network.name} · ${profile.name}")
+            }
+            channel?.let {
+                item {
+                    FerretCard(Modifier.fillMaxWidth().semantics { stateDescription = title }) {
+                        FerretDataBlock("Asset", assetName(it.asset, catalog))
+                        FerretDataBlock("Channel", state.collection?.channels?.keys?.toList()
+                            ?.let(::distinctKeytagSuffixes)?.get(it.keytag.value) ?: it.keytag.value)
+                        if (!returned) ChannelHeldFunds(it, catalog)
+                    }
+                }
+            }
+            if (preview != null && intent != null && !uncertain) {
+                item {
+                    FerretCard(Modifier.fillMaxWidth()) {
+                        if (closingPreview) {
+                            FerretDataBlock("Current capacity", formatAsset(preview.amount, catalog))
+                            val extraAda = preview.outputAda.baseUnits - intent.channelInput.lovelace.value
+                            FerretDataBlock("Required extra ADA", formatAsset(AssetAmount(catalog.ada, extraAda.coerceAtLeast(0)), catalog))
+                            val deadline = (intent.resultingDatum?.stage as? io.riverark.ferret.core.cardano.ChannelDatumStage.Closed)?.elapseAtEpochMillis
+                            deadline?.let {
+                                FerretDataBlock("Response wait", settlementWait(it, preview.operation.preparedAtEpochMillis))
+                            }
+                            Text("No funds return in this transaction. A later return transaction has a separate fee.")
+                        } else {
+                            FerretDataBlock("Gross asset returned", formatAsset(preview.amount, catalog))
+                            if (preview.amount.asset != catalog.ada) {
+                                FerretDataBlock("Gross ADA released · reserve included", formatAsset(preview.outputAda, catalog))
+                            } else Text("The gross returned ADA already includes the channel reserve.")
+                            TransactionChange("Wallet change", preview.sourceChange, catalog)
+                        }
+                        FerretDataBlock("Network fee · separate", formatAsset(preview.actualFee, catalog))
+                        if (preview.feeBound != preview.actualFee) FerretDataBlock("Fee bound", formatAsset(preview.feeBound, catalog))
+                        preview.collateral?.let {
+                            FerretDataBlock("Collateral at risk", formatAsset(it, catalog))
+                            Text("Collateral is not charged when the transaction succeeds.")
+                        }
+                        CloseTransactionDetails(payload?.expectedTransactionId, if (closingPreview) null else intent.sourceAddress)
+                    }
+                }
+                item {
+                    FerretPrimaryButton(if (closingPreview) "Confirm close channel" else "Confirm return funds",
+                        onSubmit, enabled = !state.busy && !unavailable)
+                    FerretSecondaryButton("Cancel", onCancelPreview, enabled = !state.busy)
+                }
+            } else if (returned) {
+                item {
+                    FerretCard(Modifier.fillMaxWidth()) {
+                        FerretDataBlock("Gross asset returned", formatAsset(proof!!.returnedAmount, catalog))
+                        if (proof.returnedAmount.asset != catalog.ada) {
+                            FerretDataBlock("Gross ADA released · reserve included", formatAsset(AssetAmount(catalog.ada, proof.releasedAda.value), catalog))
+                        }
+                        FerretDataBlock("Network fee · separate", formatAsset(AssetAmount(catalog.ada, proof.fee.value), catalog))
+                        Text("Your remaining channel funds are back in this wallet.")
+                        CloseTransactionDetails(proof.transactionId, proof.sourceAddress)
+                    }
+                }
+            } else if (uncertain) {
+                item { Text("Checking transaction status. Refresh status before continuing.") }
+            } else if (channel != null) when (channel.state) {
+                is ChannelState.Open -> item {
+                    Text("Closing stops payments from this channel. Your remaining funds and ADA reserve return to this wallet after settlement. You will confirm a second transaction when they are ready.")
+                    FerretPrimaryButton("Review close", onPreviewClose, enabled = !state.busy && !unavailable &&
+                        channel.pending == null && channel.payments.pending == null &&
+                        state.collection?.unresolvedLegacy?.isEmpty() == true &&
+                        state.collection?.channels?.values?.none { it.pending?.payload is io.riverark.ferret.core.channel.ChannelPayload.Transaction } == true)
+                }
+                is ChannelState.Closing -> item { Text("Your close request is being confirmed. Funds are still in the channel.") }
+                ChannelState.Ending -> item { Text("Your return transaction is being confirmed.") }
+                ChannelState.Closed, ChannelState.Responded -> item {
+                    if (channelReadyToReturn(channel)) {
+                        Text("Review the current remaining funds before confirming their return to this wallet.")
+                        FerretPrimaryButton("Return funds", onPreviewReturnFunds, enabled = !state.busy && !unavailable)
+                    } else {
+                        if (channel.state == ChannelState.Closed) {
+                            Text("Payments from this channel have stopped. The provider can settle completed payments during this period.")
+                            Text("If it does not respond, your remaining funds can be returned after this waiting period.")
+                        } else {
+                            FerretDataBlock("Remaining pending payments", channel.chainObservation?.datum?.stage?.evidenceCborHex?.size?.toString() ?: "Unavailable")
+                            Text("The amount available to return can change as pending payments finish.")
+                        }
+                        channel.chainObservation?.returnAfterEpochMillis?.let {
+                            FerretDataBlock("Remaining wait", settlementWait(it, state.lastRefreshEpochMillis ?: 0))
+                        }
+                    }
+                }
+                else -> Unit
+            }
+            if (waiting) item {
+                val transactionId = (channel?.pending?.payload as? io.riverark.ferret.core.channel.ChannelPayload.Transaction)
+                    ?.expectedTransactionId ?: channel?.history?.lastOrNull { it.transactionId != null }?.transactionId
+                CloseTransactionDetails(transactionId)
+            }
+            if (waiting) item { Text("You can leave this screen. Reopen Ferret to check progress and confirm the return.") }
+            if (unavailable) item {
+                FerretErrorState("Unable to check channel status. Refresh before continuing.")
+            }
+            state.error?.let { error ->
+                item {
+                    FerretErrorState(error)
+                    if (error.contains("collateral", ignoreCase = true) || error.contains("Insufficient", ignoreCase = true)) {
+                        Text("ADA in your L1 wallet is needed for fees and collateral. Collateral funding requires a separate ADA-only output of at least 5 ADA; this is not the amount at risk.")
+                        FerretSecondaryButton("Add ADA for fees and collateral", onTopUp)
+                    }
+                    if (error.contains("backup", true) || error.contains("Drive", true) || error.contains("writer", true) || error.contains("lease", true)) {
+                        FerretSecondaryButton("Resolve backup", onSettings)
+                    }
+                }
+            }
+            channel?.history?.lastOrNull()?.takeIf { it.status == OperationState.FAILED }?.failureMessage?.let { failure ->
+                item {
+                    FerretErrorState(failure)
+                    Regex("Collateral charged: ([0-9]+) lovelace").find(failure)?.groupValues?.get(1)?.toLongOrNull()?.let {
+                        FerretDataBlock("Collateral charged", formatAsset(AssetAmount(catalog.ada, it), catalog))
+                    }
+                }
+            }
+            if (state.busy) item { FerretLoadingState(if (state.operationId != null) "Checking transaction status" else "Preparing transaction") }
+            item {
+                FerretSecondaryButton(if (state.error != null || uncertain) "Retry status" else "Refresh status", onRefresh, enabled = !state.busy)
+                FerretPrimaryButton("Back to wallet", onBack)
+            }
+        }
+    }
+}
 @Composable
 fun WalletPickerScreen(
     state: WalletPickerUiState,
@@ -343,11 +577,25 @@ fun HomeScreen(
                     }
                     if (entries.isNotEmpty() || state.channels?.unresolvedLegacy?.isNotEmpty() == true) {
                         val labels = distinctKeytagSuffixes(entries.map { it.keytag.value })
-                        entries.filter { it.state != ChannelState.Absent }.takeIf { it.isNotEmpty() }?.let { active ->
+                        entries.filter { it.state != ChannelState.Absent && it.state !is ChannelState.FundsReturned }.takeIf { it.isNotEmpty() }?.let { active ->
                             Text("Channels", style = MaterialTheme.typography.titleMedium)
+                            if (onChannel != null && active.any {
+                                it.state is ChannelState.Closing || it.state == ChannelState.Closed ||
+                                    it.state == ChannelState.Responded || it.state == ChannelState.Ending
+                            }) {
+                                FerretListRow(
+                                    if (active.any(::channelReadyToReturn)) "Ready to return funds" else "View channel progress",
+                                    "Check settlement and confirm the return when ready",
+                                    onClick = onChannel,
+                                )
+                            }
                             active.forEach { channel ->
                                 ChannelSummary(channel, labels.getValue(channel.keytag.value), catalog)
                             }
+                        }
+                        entries.filter { it.state is ChannelState.FundsReturned }.takeIf { it.isNotEmpty() }?.let { returned ->
+                            Text("Closed channels", style = MaterialTheme.typography.titleMedium)
+                            returned.forEach { ChannelSummary(it, labels.getValue(it.keytag.value), catalog) }
                         }
                         entries.filter { it.state == ChannelState.Absent }.let { notOpened ->
                             if (notOpened.isNotEmpty() || state.channels?.unresolvedLegacy?.isNotEmpty() == true) {
@@ -455,10 +703,11 @@ internal fun channelStateLabel(state: ChannelState) = when (state) {
     ChannelState.Absent -> "Not opened"
     is ChannelState.Opening -> "Opening"
     is ChannelState.Open -> "Open"
-    is ChannelState.Closing -> "Closing"
-    ChannelState.Closed -> "Closed"
-    ChannelState.Responded -> "Responded"
-    ChannelState.Ending -> "Ending"
+    is ChannelState.Closing -> "Confirming close"
+    ChannelState.Closed -> "Waiting for settlement"
+    ChannelState.Responded -> "Finishing pending payments"
+    ChannelState.Ending -> "Returning funds"
+    is ChannelState.FundsReturned -> "Funds returned"
 }
 
 @Composable
@@ -472,6 +721,7 @@ fun ChannelScreen(
     onAddFunds: ((ProtocolKeytag) -> Unit)?,
     onRetry: () -> Unit,
     onBack: () -> Unit,
+    onCloseChannel: ((ProtocolKeytag) -> Unit)? = null,
 ) {
     var confirmingCleanup by rememberSaveable(collection?.unresolvedLegacy?.contentHashCode()) {
         mutableStateOf(false)
@@ -487,7 +737,8 @@ fun ChannelScreen(
                     FerretEmptyState("No channels", "Open an ADA channel from the wallet menu.")
                 } else {
                     val entries = channelDisplayOrder(collection.channels.values)
-                    val active = entries.filter { it.state != ChannelState.Absent }
+                    val active = entries.filter { it.state != ChannelState.Absent && it.state !is ChannelState.FundsReturned }
+                    val returned = entries.filter { it.state is ChannelState.FundsReturned }
                     val notOpened = entries.filter { it.state == ChannelState.Absent }
                     val labels = distinctKeytagSuffixes(entries.map { it.keytag.value })
                     val fundingAvailable = collection.unresolvedLegacy.isEmpty() &&
@@ -508,7 +759,18 @@ fun ChannelScreen(
                                         fundingAvailable && channel.state is ChannelState.Open &&
                                             channel.pending == null && channel.payments.pending == null
                                     }?.let { add -> { add(channel.keytag) } },
+                                    onCloseChannel = onCloseChannel?.let { close -> { close(channel.keytag) } },
+                                    closeDisabledReason = if (channel.state is ChannelState.Open &&
+                                        (!fundingAvailable || channel.pending != null || channel.payments.pending != null)
+                                    ) "Finish pending work and resolve the backup before closing this channel." else null,
                                 )
+                            }
+                        }
+                        if (returned.isNotEmpty()) {
+                            item { Text("Closed channels", style = MaterialTheme.typography.titleMedium) }
+                            items(returned, key = { it.keytag.value }) { channel ->
+                                ChannelSummary(channel, labels.getValue(channel.keytag.value), catalog, detailed = true,
+                                    onCloseChannel = onCloseChannel?.let { close -> { close(channel.keytag) } })
                             }
                         }
                         if (notOpened.isNotEmpty() || collection.unresolvedLegacy.isNotEmpty()) {
@@ -585,12 +847,14 @@ private fun ChannelSummary(
     catalog: AssetCatalog,
     detailed: Boolean = false,
     onAddFunds: (() -> Unit)? = null,
+    onCloseChannel: (() -> Unit)? = null,
+    closeDisabledReason: String? = null,
 ) {
-    val status = channelStateLabel(snapshot.state)
+    val status = channelProgressLabel(snapshot)
     FerretCard(Modifier.fillMaxWidth().semantics { stateDescription = status }) {
         FerretDataBlock("Channel", shortKeytag)
         FerretDataBlock("Asset", assetName(snapshot.asset, catalog))
-        FerretDataBlock("Spendable capacity", formatAsset(snapshot.spendableBalance, catalog))
+        ChannelHeldFunds(snapshot, catalog)
         FerretDataBlock("Status", status)
         snapshot.pending?.let {
             FerretDataBlock("Pending operation", it.operationId)
@@ -610,6 +874,21 @@ private fun ChannelSummary(
             }
         }
         onAddFunds?.let { FerretSecondaryButton("Add funds", it) }
+        onCloseChannel?.let { close ->
+            FerretSecondaryButton(
+                when {
+                    snapshot.state is ChannelState.Open -> "Close channel"
+                    snapshot.state is ChannelState.FundsReturned -> "View returned funds"
+                    channelReadyToReturn(snapshot) -> "Return funds"
+                    else -> "View close progress"
+                },
+                close,
+                enabled = closeDisabledReason == null && snapshot.state != ChannelState.Absent &&
+                    snapshot.state !is ChannelState.Opening,
+                modifier = Modifier.semantics { closeDisabledReason?.let { stateDescription = it } },
+            )
+            closeDisabledReason?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        }
     }
 
 }
@@ -618,7 +897,8 @@ internal fun channelDisplayOrder(channels: Collection<ChannelSnapshot>): List<Ch
         compareBy<ChannelSnapshot> {
             when (it.state) {
                 is ChannelState.Open -> 0
-                ChannelState.Absent -> 2
+                is ChannelState.FundsReturned -> 2
+                ChannelState.Absent -> 3
                 else -> 1
             }
         }.thenBy { it.keytag.value },
@@ -627,7 +907,9 @@ internal fun channelDisplayOrder(channels: Collection<ChannelSnapshot>): List<Ch
 internal fun channelBalance(asset: ChannelAsset, channels: Collection<ChannelSnapshot>): AssetAmount? {
     var total: AssetAmount? = null
     channels.forEach { channel ->
-        if (channel.asset == asset) total = (total ?: AssetAmount(asset, 0)) + channel.spendableBalance
+        if (channel.asset == asset && channel.state !is ChannelState.FundsReturned) {
+            total = (total ?: AssetAmount(asset, 0)) + channel.spendableBalance
+        }
     }
     return total
 }

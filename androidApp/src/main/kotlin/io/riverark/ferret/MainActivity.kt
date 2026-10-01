@@ -23,6 +23,7 @@ import androidx.lifecycle.Lifecycle
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.android.Android
 import io.riverark.ferret.core.cardano.androidCardanoTransactionEngine
+import io.riverark.ferret.core.cardano.androidChannelReturnAfterEpochMillis
 import io.riverark.ferret.core.cardano.AndroidProtocolCrypto
 import io.riverark.ferret.core.cardano.AndroidProtocolSigner
 import io.riverark.ferret.core.backup.AndroidGoogleOAuthTokenProvider
@@ -32,6 +33,8 @@ import io.riverark.ferret.core.backup.WalletBackupCoordinator
 import io.riverark.ferret.core.backup.BackupCheckpointV1
 import io.riverark.ferret.core.cardano.deriveAndroidWallet
 import io.riverark.ferret.core.model.CardanoNetwork
+import io.riverark.ferret.core.model.ChannelState
+import io.riverark.ferret.core.model.OperationState
 import io.riverark.ferret.core.model.WalletManager
 import io.riverark.ferret.core.model.AppState
 import io.riverark.ferret.core.model.DiagnosticCode
@@ -207,6 +210,12 @@ class MainActivity : FragmentActivity() {
             availability = ::requireChannelFundingAvailable,
             newTag = { random.bytes(32) },
             nowEpochMillis = System::currentTimeMillis,
+            loadTransaction = { profile, transactionId ->
+                connectors.getValue(profile.network).transaction(transactionId)
+            },
+            closeReturnAfterEpochMillis = { encoded ->
+                androidChannelReturnAfterEpochMillis(encoded, assetCatalog)
+            },
         )
         channelRepository = ChannelRepository(
             wallets,
@@ -319,9 +328,31 @@ class MainActivity : FragmentActivity() {
                     copyAddress = ::copyAddress,
                     l1WalletRepository = l1WalletRepository,
                     loadChannels = { walletId ->
-                        channelRepository.reconcileAll(walletId)
-                        channelRepository.load(walletId)
-                        channelRepository.snapshots.value.getValue(walletId)
+                        val profile = currentProfile(walletId)
+                        coordinators.getValue(profile.network).refresh {
+                            val previous = channelRepository.snapshots.value[walletId]
+                            l1WalletRepository.reconcilePending(walletId)
+                            channelRepository.reconcileAll(walletId)
+                            channelRepository.load(walletId)
+                            val collection = channelRepository.snapshots.value.getValue(walletId)
+                            if (collection.channels.values.any { channel ->
+                                    val prior = previous?.channels?.get(channel.keytag.value)
+                                    (channel.state is ChannelState.FundsReturned && prior?.state != channel.state) ||
+                                        channel.history.any { result ->
+                                            result.closeStep != null && result.status == OperationState.FAILED &&
+                                                (result.confirmationDepth ?: 0) >= 5 &&
+                                                prior?.history?.any {
+                                                    it.operationId == result.operationId &&
+                                                        it.status == OperationState.FAILED &&
+                                                        (it.confirmationDepth ?: 0) >= 5
+                                                } != true
+                                        }
+                                }) {
+                                l1WalletRepository.balance(walletId)
+                                l1WalletRepository.history(walletId)
+                            }
+                            collection
+                        }
                     },
                     cleanupInactiveChannels = channelRepository::cleanupInactive,
                     paymentViewModelFactory = { walletId ->
@@ -356,6 +387,18 @@ class MainActivity : FragmentActivity() {
                         val profile = currentProfile(walletId)
                         coordinators.getValue(profile.network).refresh {
                             channelRepository.previewAdd(walletId, keytag, amount)
+                        }
+                    },
+                    previewCloseChannel = { walletId, keytag ->
+                        val profile = currentProfile(walletId)
+                        coordinators.getValue(profile.network).refresh {
+                            channelRepository.previewClose(walletId, keytag)
+                        }
+                    },
+                    previewReturnChannelFunds = { walletId, keytag ->
+                        val profile = currentProfile(walletId)
+                        coordinators.getValue(profile.network).refresh {
+                            channelRepository.previewReturnFunds(walletId, keytag)
                         }
                     },
                     submitChannel = { walletId, preview ->

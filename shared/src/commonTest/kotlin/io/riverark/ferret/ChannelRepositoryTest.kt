@@ -186,6 +186,32 @@ class ChannelRepositoryTest {
         assertEquals(original, stored)
     }
 
+    @Test fun settlementStagesRejectPaymentsBeforePreparation() = runBlocking {
+        for (state in listOf(ChannelState.Closed, ChannelState.Responded, ChannelState.Ending,
+            ChannelState.FundsReturned("a".repeat(64)))) {
+            val original = collection()
+            var stored = original.copy(channels = original.channels + (
+                first.value to original.channels.getValue(first.value).copy(state = state)
+            ))
+            val before = stored
+            var preparations = 0
+            val repository = repository({ stored }, { stored = it }) { error("must not submit") }
+            repository.load(walletId)
+            assertFailsWith<IllegalArgumentException> {
+                repository.submitPayment(walletId, first, "ln-invoice", quote(first),
+                    gateway(first) { preparations++ }, 1)
+            }
+            assertEquals(0, preparations)
+            assertEquals(before, stored)
+        }
+    }
+
+    @Test fun returnFundsCannotStartClosing() {
+        assertFailsWith<IllegalArgumentException> {
+            ChannelAction.ReturnFunds(io.riverark.ferret.core.cardano.CloseChannelStep.CLOSE)
+        }
+    }
+
     private fun collection(): ChannelCollectionV4 {
         val entries = listOf(
             ChannelSnapshot(first, ada, ChannelState.Open("first"), spendableBalance = AssetAmount(ada, 20_000)),

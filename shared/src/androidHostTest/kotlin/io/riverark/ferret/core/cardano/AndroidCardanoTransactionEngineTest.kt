@@ -420,9 +420,252 @@ class AndroidCardanoTransactionEngineTest {
         }
     }
 
+    @Test fun closeRetainsAdaAndEveryReviewedNativeAssetIncludingEmptyChannels() = runBlocking<Unit> {
+        val entropy = ByteArray(32) { it.toByte() }
+        val engine = AndroidCardanoTransactionEngine(processor { cbor ->
+            @Suppress("UNCHECKED_CAST")
+            Result.success("fixture").withValue(exactEvaluation(cbor)) as Result<List<EvaluationResult>>
+        }, assetCatalog)
+        try {
+            val source = engine.deriveWallet(entropy, CardanoNetwork.MAINNET)
+            val reference = fixtureReference()
+            val deadline = 1_596_059_271_000L
+            for (asset in listOf("ada", "usda", "usdcx", "usdm").map { requireNotNull(assetCatalog.asset(it)) }) {
+                for (quantity in listOf(0L, 40L)) {
+                    for (cost in listOf(4_310L, 8_620L)) {
+                        val current = channelDatum(ChannelDatumStage.Opened(0, listOf(USED_EVIDENCE)), walletAddKey(entropy)).let {
+                            it.copy(constants = it.constants.copy(asset = asset, closePeriodMillis = 60_000))
+                        }
+                        val resulting = current.copy(stage = ChannelDatumStage.Closed(0, current.stage.evidenceCborHex, deadline))
+                        val assets = if (asset.policyId == null || quantity == 0L) emptyMap() else mapOf(asset.connectorUnit to quantity)
+                        val channel = LedgerUtxo(
+                            "22".repeat(32), 0, MAINNET.validatorAddress,
+                            Lovelace(if (asset.policyId == null && quantity != 0L) 5_000_000 else 2_000_000),
+                            assets, datumHex = current.plutus().serializeToHex(),
+                        )
+                        val fundingAssets = if (asset.policyId == null) emptyMap() else mapOf(
+                            asset.connectorUnit to 7L, "4".repeat(56) to 13L,
+                        )
+                        val parameters = JsonObject(
+                            Json.parseToJsonElement(channelProtocolParameters).jsonObject +
+                                ("coins_per_utxo_size" to JsonPrimitive(cost.toString())),
+                        ).toString()
+                        val ledger = LedgerSnapshot(
+                            CardanoNetwork.MAINNET,
+                            listOf(
+                                LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000), fundingAssets),
+                                LedgerUtxo("33".repeat(32), 0, source.paymentAddress, Lovelace(5_000_000)),
+                                reference, channel,
+                            ),
+                            parameters, 4_492_800,
+                        )
+                        val intent = CardanoIntent.CloseChannel(
+                            source.paymentAddress, channel, reference, current, CloseChannelStep.CLOSE, resulting,
+                            channel.lovelace, "00000000-0000-4000-8000-000000000040", 4_492_800, 4_492_920,
+                        )
+                        val unsigned = engine.build(intent, ledger)
+                        val summary = engine.inspect(unsigned.cbor)
+                        val index = summary.outputs.indexOfFirst { it.address == MAINNET.validatorAddress }
+                        val retained = summary.outputs[index]
+                        assertEquals(assets, retained.assets)
+                        assertEquals(TransactionDatum.Inline(resulting.plutus().serializeToHex()), retained.datum)
+                        val minimum = engine.minimumAdaForOutput(unsigned.cbor, parameters, index)
+                        assertEquals(Lovelace(maxOf(channel.lovelace.value, 2_000_000, minimum.value)), retained.lovelace)
+                        if (cost == 8_620L && channel.lovelace.value == 2_000_000L) {
+                            assertTrue(retained.lovelace.value > channel.lovelace.value)
+                        }
+                        val consumed = summary.inputs.map { input ->
+                            ledger.utxos.single { it.transactionId == input.transactionId && it.index == input.index }
+                        }
+                        assertEquals(consumed.sumOf { it.lovelace.value }, summary.outputs.sumOf { it.lovelace.value } + summary.fee.value)
+                        (fundingAssets.keys + assets.keys).forEach { unit ->
+                            assertEquals(consumed.sumOf { it.assets[unit] ?: 0L }, summary.outputs.sumOf { it.assets[unit] ?: 0L })
+                        }
+                        val signed = engine.sign(unsigned, entropy, intent, ledger.copy(currentSlot = 4_492_801))
+                        try {
+                            assertEquals(engine.transactionId(unsigned.cbor), engine.transactionId(signed.cbor))
+                        } finally {
+                            signed.cbor.fill(0)
+                        }
+                        assertFailsWith<IllegalArgumentException> {
+                            engine.requireAuthorized(unsigned, intent, ledger.copy(currentSlot = intent.validUntil))
+                        }
+                    }
+                }
+            }
+        } finally {
+            entropy.fill(0)
+        }
+    }
+
+    @Test fun terminalCloseReturnsGrossValueAndPreservesWalletTokensWithoutDiversion() = runBlocking<Unit> {
+        val entropy = ByteArray(32) { it.toByte() }
+        val engine = AndroidCardanoTransactionEngine(processor { cbor ->
+            @Suppress("UNCHECKED_CAST")
+            Result.success("fixture").withValue(exactEvaluation(cbor)) as Result<List<EvaluationResult>>
+        }, assetCatalog)
+        try {
+            val source = engine.deriveWallet(entropy, CardanoNetwork.MAINNET)
+            val other = engine.deriveWallet(ByteArray(32) { (it + 1).toByte() }, CardanoNetwork.MAINNET)
+            val reference = fixtureReference()
+            for (asset in listOf("ada", "usda", "usdcx", "usdm").map { requireNotNull(assetCatalog.asset(it)) }) {
+                for (quantity in listOf(0L, 40L)) {
+                    for (step in listOf(CloseChannelStep.ELAPSE, CloseChannelStep.END)) {
+                        val stage = if (step == CloseChannelStep.ELAPSE) {
+                            ChannelDatumStage.Closed(0, emptyList(), 1_596_059_271_000)
+                        } else {
+                            ChannelDatumStage.Responded(0, listOf(pendingEvidence(1_596_059_271_000)))
+                        }
+                        val datum = channelDatum(stage, walletAddKey(entropy)).let {
+                            it.copy(constants = it.constants.copy(asset = asset))
+                        }
+                        val channelAssets = if (asset.policyId == null || quantity == 0L) emptyMap() else mapOf(asset.connectorUnit to quantity)
+                        val channel = LedgerUtxo(
+                            "22".repeat(32), 0, MAINNET.validatorAddress,
+                            Lovelace(if (asset.policyId == null && quantity != 0L) 5_000_000 else 2_000_000),
+                            channelAssets, datumHex = datum.plutus().serializeToHex(),
+                        )
+                        val walletAssets = if (asset.policyId == null) emptyMap() else mapOf(
+                            requireNotNull(assetCatalog.asset("usda")).connectorUnit to 7L,
+                            requireNotNull(assetCatalog.asset("usdcx")).connectorUnit to 9L,
+                            requireNotNull(assetCatalog.asset("usdm")).connectorUnit to 11L,
+                            "4".repeat(56) to 13L,
+                        )
+                        val fuel = LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(10_000_000), walletAssets)
+                        val collateral = LedgerUtxo("33".repeat(32), 0, source.paymentAddress, Lovelace(5_000_000))
+                        val ledger = LedgerSnapshot(
+                            CardanoNetwork.MAINNET, listOf(fuel, collateral, reference, channel),
+                            channelProtocolParameters, 4_492_980,
+                        )
+                        val intent = CardanoIntent.CloseChannel(
+                            source.paymentAddress, channel, reference, datum, step, null, channel.lovelace,
+                            "00000000-0000-4000-8000-000000000041", 4_492_980, 4_493_100,
+                        )
+                        val unsigned = engine.build(intent, ledger)
+                        val summary = engine.inspect(unsigned.cbor)
+                        assertTrue(summary.outputs.size in 1..2)
+                        assertTrue(summary.outputs.all {
+                            it.address == source.paymentAddress && it.datum == TransactionDatum.Absent && it.scriptReference == null
+                        })
+                        val consumed = summary.inputs.map { input ->
+                            ledger.utxos.single { it.transactionId == input.transactionId && it.index == input.index }
+                        }
+                        assertTrue(channel in consumed)
+                        assertTrue(consumed.any { it.address == source.paymentAddress && it.assets == walletAssets })
+                        assertEquals(consumed.sumOf { it.lovelace.value }, summary.outputs.sumOf { it.lovelace.value } + summary.fee.value)
+                        assertTrue(summary.outputs.sumOf { it.lovelace.value } >= channel.lovelace.value)
+                        val units = (walletAssets.keys + channelAssets.keys).toSet()
+                        units.forEach { unit ->
+                            assertEquals(consumed.sumOf { it.assets[unit] ?: 0L }, summary.outputs.sumOf { it.assets[unit] ?: 0L })
+                        }
+                        summary.requireChannelFunding(intent, ledger)
+                        engine.requireMinimumAda(unsigned.cbor, ledger.protocolParametersJson)
+                        val signed = engine.sign(unsigned, entropy, intent, ledger.copy(currentSlot = intent.validFrom + 1))
+                        try {
+                            val signedSummary = engine.inspect(signed.cbor)
+                            signedSummary.requireChannelFunding(intent, ledger)
+                            signedSummary.requireL1Witnesses(source.paymentCredentialHex, signed = true)
+                            assertEquals(engine.transactionId(unsigned.cbor), engine.transactionId(signed.cbor))
+                        } finally {
+                            signed.cbor.fill(0)
+                        }
+                        fun reject(transaction: Transaction, changedLedger: LedgerSnapshot = ledger) {
+                            assertFailsWith<IllegalArgumentException> {
+                                engine.requireAuthorized(
+                                    UnsignedTransaction(transaction.serialize(), unsigned.operationId, unsigned.feeBound), intent, changedLedger,
+                                )
+                            }
+                        }
+                        reject(Transaction.deserialize(unsigned.cbor).also { it.body.outputs.first().address = other.paymentAddress })
+                        reject(Transaction.deserialize(unsigned.cbor).also { it.body.outputs.first().inlineDatum = datum.plutus() })
+                        reject(Transaction.deserialize(unsigned.cbor).also {
+                            it.body.outputs.first().value.coin = it.body.outputs.first().value.coin.subtract(BigInteger.ONE)
+                        })
+                        val tokenCollateral = collateral.copy(assets = mapOf(requireNotNull(assetCatalog.asset("usda")).connectorUnit to 1L))
+                        reject(Transaction.deserialize(unsigned.cbor), ledger.copy(utxos = listOf(fuel, tokenCollateral, reference, channel)))
+                        if (asset.policyId != null) {
+                            reject(Transaction.deserialize(unsigned.cbor).also {
+                                val tokens = it.body.outputs.first { output -> output.value.multiAssets.isNotEmpty() }.value.multiAssets
+                                tokens.first().assets.first().value = tokens.first().assets.first().value.subtract(BigInteger.ONE)
+                            })
+                        }
+                        val early = intent.copy(validFrom = 4_492_979, validUntil = 4_493_099)
+                        assertFailsWith<IllegalArgumentException> { engine.build(early, ledger.copy(currentSlot = early.validFrom)) }
+                        if (step == CloseChannelStep.END) {
+                            val emptyDatum = datum.copy(stage = ChannelDatumStage.Responded(0))
+                            val emptyChannel = channel.copy(datumHex = emptyDatum.plutus().serializeToHex())
+                            val immediate = intent.copy(
+                                channelInput = emptyChannel, currentDatum = emptyDatum, validFrom = 4_492_800, validUntil = 4_492_920,
+                            )
+                            engine.build(immediate, ledger.copy(
+                                currentSlot = immediate.validFrom, utxos = listOf(fuel, collateral, reference, emptyChannel),
+                            ))
+                        }
+                        val wrongUnit = channel.copy(assets = channelAssets + ("5".repeat(56) to 40L))
+                        assertFailsWith<IllegalArgumentException> {
+                            engine.build(intent.copy(channelInput = wrongUnit), ledger.copy(utxos = listOf(fuel, collateral, reference, wrongUnit)))
+                        }
+                    }
+                }
+            }
+        } finally {
+            entropy.fill(0)
+        }
+    }
+
+    private fun pendingEvidence(timeout: Long) = ListPlutusData.of(
+        BigIntPlutusData.of(1), BigIntPlutusData.of(timeout), BytesPlutusData.of(ByteArray(32) { 4 }),
+    ).serializeToHex()
+
+    @Test fun returnTimingStrictlyDecodesStagesAndLatestPendingTimeout() {
+        fun encoded(stage: ChannelDatumStage) = channelDatum(stage).plutus().serializeToHex()
+        assertNull(androidChannelReturnAfterEpochMillis(encoded(ChannelDatumStage.Opened(0)), assetCatalog))
+        assertEquals(1_596_059_271_000L, androidChannelReturnAfterEpochMillis(
+            encoded(ChannelDatumStage.Closed(0, emptyList(), 1_596_059_271_000)), assetCatalog,
+        ))
+        assertEquals(0L, androidChannelReturnAfterEpochMillis(encoded(ChannelDatumStage.Responded(0)), assetCatalog))
+        val latest = pendingEvidence(1_596_059_271_000)
+        val responded = encoded(ChannelDatumStage.Responded(0, listOf(latest, pendingEvidence(1_596_059_211_000))))
+        assertEquals(1_596_059_271_000L, androidChannelReturnAfterEpochMillis(responded, assetCatalog))
+        val malformed = listOf(
+            responded + "00", responded.uppercase(), "00",
+            responded.replace(latest, pendingEvidence(-1)),
+            responded.replace(latest, ListPlutusData.of(BigIntPlutusData.of(1)).serializeToHex()),
+            responded.replace(latest, ListPlutusData.of(
+                BigIntPlutusData.of(1), BigIntPlutusData.of(BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.ONE)),
+                BytesPlutusData.of(ByteArray(32)),
+            ).serializeToHex()),
+        )
+        malformed.forEach { invalid ->
+            assertFailsWith<IllegalArgumentException> { androidChannelReturnAfterEpochMillis(invalid, assetCatalog) }
+        }
+    }
+
+    @Test fun slotEpochConversionChecksBothNetworksAndArithmeticBoundaries() {
+        for ((network, zeroSlot, zeroTime) in listOf(
+            Triple(CardanoNetwork.MAINNET, 4_492_800L, 1_596_059_091_000L),
+            Triple(CardanoNetwork.PREPROD, 86_400L, 1_655_769_600_000L),
+        )) {
+            assertEquals(zeroTime, cardanoSlotEpochMillis(network, zeroSlot))
+            assertEquals(zeroTime + 120_000, cardanoSlotEpochMillis(network, zeroSlot + 120))
+            val maximumDelta = (Long.MAX_VALUE - zeroTime) / 1_000
+            assertEquals(zeroTime + maximumDelta * 1_000, cardanoSlotEpochMillis(network, zeroSlot + maximumDelta))
+            for (invalid in listOf(-1L, zeroSlot - 1, zeroSlot + maximumDelta + 1, Long.MAX_VALUE)) {
+                assertFailsWith<IllegalArgumentException> { cardanoSlotEpochMillis(network, invalid) }
+            }
+        }
+    }
+
     @Test fun channelSemanticsBindWalletLedgerStagesAndSlotTimes() = runBlocking {
         val entropy = ByteArray(32) { it.toByte() }
         val engine = AndroidCardanoTransactionEngine(processor { cbor ->
+            val transaction = Transaction.deserialize(cbor)
+            val params = protocolParams(channelProtocolParameters)
+            val calculator = feeCalculator(params)
+            val minimumFee = calculator.calculateFee(cbor, params)
+                .add(calculator.calculateScriptFee(transaction.witnessSet.redeemers.map { it.exUnits }, params))
+                .add(calculator.tierRefScriptFee(fixture("reference_script").length.toLong() / 2))
+            assertTrue(transaction.body.fee >= minimumFee, "Evaluation must satisfy phase-one minimum fee.")
             @Suppress("UNCHECKED_CAST")
             (Result.success("fixture").withValue(exactEvaluation(cbor)) as Result<List<EvaluationResult>>)
         }, assetCatalog)

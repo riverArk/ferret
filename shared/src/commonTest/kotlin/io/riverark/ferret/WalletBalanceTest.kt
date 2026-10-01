@@ -22,7 +22,6 @@ import io.riverark.ferret.feature.wallet.AssetBalance
 import io.riverark.ferret.feature.wallet.HomeViewModel
 import io.riverark.ferret.feature.wallet.WalletBalance
 import io.riverark.ferret.feature.wallet.channelRouteAvailable
-import io.riverark.ferret.feature.wallet.channelStateLabel
 import io.riverark.ferret.feature.wallet.formatAsset
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
@@ -36,16 +35,15 @@ class WalletBalanceTest {
         assertEquals("2.5 USDCx", formatAsset(AssetAmount(USDCX, 2_500_000), CATALOG))
     }
 
-    @Test fun channelCollectionAvailabilityAndLabelsIncludeEveryLifecycle() {
+    @Test fun channelCollectionAvailabilityIncludesEveryLifecycle() {
         val profile = profile()
         assertEquals(false, channelRouteAvailable(collection(profile)))
-        entriesForTest().forEachIndexed { index, (state, label) ->
+        entriesForTest().forEachIndexed { index, state ->
             val keytag = ProtocolKeytag(index.toString(16).padStart(2, '0').repeat(33))
             assertEquals(
                 true,
                 channelRouteAvailable(collection(profile, mapOf(keytag.value to ChannelSnapshot(keytag, ADA, state)))),
             )
-            assertEquals(label, channelStateLabel(state))
         }
         assertEquals(true, channelRouteAvailable(collection(profile).copy(unresolvedLegacy = byteArrayOf(1))))
     }
@@ -109,6 +107,28 @@ class WalletBalanceTest {
         assertEquals(ChannelState.Open("channel"), viewModel.state.value.channels?.channels?.get(keytag.value)?.state)
     }
 
+    @Test fun settlementPollingIsEnabledOnlyForConfiguredHosts() = runBlocking {
+        val profile = profile()
+        val keytag = ProtocolKeytag("bb".repeat(33))
+        for (enabled in listOf(false, true)) {
+            var loads = 0
+            var waits = 0
+            val viewModel = HomeViewModel(
+                profile,
+                { walletBalance(1_000_000) },
+                { emptyList() },
+                {
+                    val state = if (loads++ == 0) ChannelState.Closed else ChannelState.FundsReturned("returned")
+                    collection(profile, mapOf(keytag.value to ChannelSnapshot(keytag, ADA, state)))
+                },
+                channelCloseEnabled = enabled,
+            )
+            viewModel.refreshWhilePending { waits++ }
+            assertEquals(if (enabled) 2 else 1, loads)
+            assertEquals(if (enabled) 1 else 0, waits)
+        }
+    }
+
     private fun walletBalance(units: Long) = WalletBalance(
         listOf(AssetBalance(AssetAmount(ADA, units), AssetAmount(ADA, units), AssetAmount(ADA, 0))),
         emptyMap(),
@@ -135,12 +155,13 @@ class WalletBalanceTest {
         ChannelCollectionV4(walletId = profile.id, catalogDigest = DIGEST, channels = channels)
 
     private fun entriesForTest() = listOf(
-        ChannelState.Opening("opening") to "Opening",
-        ChannelState.Open("channel") to "Open",
-        ChannelState.Closing("closing") to "Closing",
-        ChannelState.Closed to "Closed",
-        ChannelState.Responded to "Responded",
-        ChannelState.Ending to "Ending",
+        ChannelState.Opening("opening"),
+        ChannelState.Open("channel"),
+        ChannelState.Closing("closing"),
+        ChannelState.Closed,
+        ChannelState.Responded,
+        ChannelState.Ending,
+        ChannelState.FundsReturned("f".repeat(64)),
     )
 
     private companion object {

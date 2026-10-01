@@ -43,6 +43,7 @@ import io.riverark.ferret.core.model.AppState
 import io.riverark.ferret.core.model.AssetAmount
 import io.riverark.ferret.core.model.AssetCatalog
 import io.riverark.ferret.core.model.CardanoNetwork
+import io.riverark.ferret.core.model.ChannelState
 import io.riverark.ferret.core.model.WalletId
 import io.riverark.ferret.core.model.WalletManager
 import io.riverark.ferret.core.model.WalletRemovalManager
@@ -57,6 +58,8 @@ import io.riverark.ferret.feature.wallet.ChannelScreen
 import io.riverark.ferret.feature.wallet.HomeScreen
 import io.riverark.ferret.feature.wallet.ChannelFundingScreen
 import io.riverark.ferret.feature.wallet.ChannelFundingViewModel
+import io.riverark.ferret.feature.wallet.ChannelCloseScreen
+import io.riverark.ferret.feature.wallet.ChannelCloseViewModel
 import io.riverark.ferret.feature.wallet.QrCode
 import io.riverark.ferret.feature.wallet.HomeViewModel
 import io.riverark.ferret.feature.wallet.HistoryScreen
@@ -115,6 +118,8 @@ data class FerretDependencies(
     val restoreBackup: (suspend (WalletId) -> Long)? = null,
     val takeoverBackup: (suspend (WalletId) -> Long)? = null,
     val walletRemovalManager: WalletRemovalManager? = null,
+    val previewCloseChannel: (suspend (WalletId, ProtocolKeytag) -> ChannelPreview)? = null,
+    val previewReturnChannelFunds: (suspend (WalletId, ProtocolKeytag) -> ChannelPreview)? = null,
 )
 
 @Composable
@@ -158,6 +163,8 @@ fun FerretApp(
             onUnlock,
             onSensitiveContentChanged,
             unlockError,
+            dependencies.previewCloseChannel,
+            dependencies.previewReturnChannelFunds,
         )
     }
 }
@@ -191,6 +198,8 @@ private fun WalletNavigation(
     onUnlock: (() -> Unit)?,
     onSensitiveContentChanged: (Boolean) -> Unit,
     unlockError: String?,
+    previewCloseChannel: (suspend (WalletId, ProtocolKeytag) -> ChannelPreview)?,
+    previewReturnChannelFunds: (suspend (WalletId, ProtocolKeytag) -> ChannelPreview)?,
 ) {
     val state by repository.state.collectAsState()
     val navController = rememberNavController()
@@ -199,6 +208,7 @@ private fun WalletNavigation(
     val walletViewModel = viewModel { WalletPickerViewModel(manager) }
     val pickerState by walletViewModel.state.collectAsState()
     val activeWalletId = (state as? AppState.Ready)?.activeWalletId
+    val channelCloseEnabled = previewCloseChannel != null && previewReturnChannelFunds != null
     val paymentViewModel = if (
         activeWalletId != null && paymentViewModelFactory != null &&
         (state as? AppState.Ready)?.wallets?.singleOrNull { it.id == activeWalletId }?.network == CardanoNetwork.MAINNET
@@ -384,6 +394,7 @@ private fun WalletNavigation(
                         loadHistory,
                         checkNotNull(loadChannels) { "Channel collection loader is unavailable." },
                         nowEpochMillis ?: { 0L },
+                        channelCloseEnabled = channelCloseEnabled,
                     )
                 }
                 val homeState by homeViewModel.state.collectAsState()
@@ -559,6 +570,72 @@ private fun WalletNavigation(
                 }
             }
         }
+        composable<Route.CloseChannel> { backStackEntry ->
+            SensitiveContent(onSensitiveContentChanged) {
+                val route = backStackEntry.toRoute<Route.CloseChannel>()
+                val ready = state as? AppState.Ready
+                val profile = ready?.wallets?.singleOrNull {
+                    it.id.value == route.walletId && it.id == ready.activeWalletId
+                }
+                val keytag = remember(route.channelKeytag) {
+                    runCatching { ProtocolKeytag(route.channelKeytag) }.getOrNull()
+                }
+                if (
+                    profile != null && profile.network == CardanoNetwork.MAINNET && keytag != null &&
+                    loadChannels != null && previewCloseChannel != null &&
+                    previewReturnChannelFunds != null && submitChannel != null
+                ) {
+                    val closeViewModel = viewModel(key = "close-${profile.id.value}-${keytag.value}") {
+                        ChannelCloseViewModel(
+                            profile.id,
+                            keytag,
+                            { walletId ->
+                                val collection = loadChannels(walletId)
+                                require(collection.walletId == walletId &&
+                                    collection.channels[keytag.value]?.keytag == keytag) {
+                                    "Selected channel is unavailable."
+                                }
+                                collection
+                            },
+                            previewCloseChannel,
+                            previewReturnChannelFunds,
+                            submitChannel,
+                            nowEpochMillis ?: { 0L },
+                        )
+                    }
+                    val closeState by closeViewModel.state.collectAsState()
+                    LifecycleStartEffect(closeViewModel) {
+                        closeViewModel.startRefreshing()
+                        onStopOrDispose { closeViewModel.stopRefreshing() }
+                    }
+                    ChannelCloseScreen(
+                        profile,
+                        assetCatalog,
+                        closeState,
+                        closeViewModel::previewCloseAsync,
+                        closeViewModel::previewReturnFundsAsync,
+                        closeViewModel::submitAsync,
+                        closeViewModel::clearPreview,
+                        closeViewModel::refresh,
+                        { navController.navigate(Route.TopUp(profile.id.value)) },
+                        { navController.navigate(Route.Settings(profile.id.value)) },
+                        {
+                            navController.navigate(Route.Home(profile.id.value)) {
+                                launchSingleTop = true
+                                popUpTo(navController.graph.startDestinationId) { inclusive = true }
+                            }
+                        },
+                    )
+                } else {
+                    FerretScreen {
+                        FerretTopBar("Close channel", navigation = {
+                            io.riverark.ferret.ui.FerretTextButton("Back", navController::popBackStack)
+                        })
+                        FerretErrorState("Channel closing is unavailable for this wallet or channel.")
+                    }
+                }
+            }
+        }
         composable<Route.Channel> { backStackEntry ->
             val route = backStackEntry.toRoute<Route.Channel>()
             val profile = (state as? AppState.Ready)?.wallets?.firstOrNull { it.id.value == route.walletId }
@@ -568,7 +645,7 @@ private fun WalletNavigation(
                 var error by remember(profile.id) { mutableStateOf<String?>(null) }
                 var cleaning by remember(profile.id) { mutableStateOf(false) }
                 var reload by remember(profile.id) { mutableStateOf(0) }
-                LaunchedEffect(profile.id, reload) {
+                suspend fun refreshCollection() {
                     try {
                         error = null
                         collection = loadChannels(profile.id)
@@ -577,6 +654,28 @@ private fun WalletNavigation(
                     } catch (_: Exception) {
                         error = "Channel state is unavailable."
                     }
+                }
+                if (channelCloseEnabled) {
+                    LifecycleStartEffect(profile.id, reload, cleaning) {
+                        val refreshJob = scope.launch {
+                            if (!cleaning) {
+                                do {
+                                    refreshCollection()
+                                    val settling = collection?.channels?.values?.any {
+                                        it.pending != null || it.payments.pending != null ||
+                                            it.confirmedReturnOperation != null ||
+                                            it.state is ChannelState.Closing || it.state == ChannelState.Closed ||
+                                            it.state == ChannelState.Responded || it.state == ChannelState.Ending
+                                    } == true
+                                    if (!settling || error != null) break
+                                    delay(20_000L)
+                                } while (true)
+                            }
+                        }
+                        onStopOrDispose { refreshJob.cancel() }
+                    }
+                } else {
+                    LaunchedEffect(profile.id, reload) { refreshCollection() }
                 }
                 SensitiveContent(onSensitiveContentChanged) {
                     ChannelScreen(
@@ -611,6 +710,11 @@ private fun WalletNavigation(
                         },
                         { reload++ },
                         navController::popBackStack,
+                        if (profile.network == CardanoNetwork.MAINNET && channelCloseEnabled && submitChannel != null) {
+                            { keytag -> navController.navigate(Route.CloseChannel(profile.id.value, keytag.value)) }
+                        } else {
+                            null
+                        },
                     )
                 }
             }

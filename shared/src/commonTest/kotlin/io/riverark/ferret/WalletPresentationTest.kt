@@ -9,6 +9,7 @@ import io.riverark.ferret.core.model.ChannelState
 import io.riverark.ferret.feature.wallet.channelBalance
 import io.riverark.ferret.feature.wallet.channelDisplayOrder
 import io.riverark.ferret.feature.wallet.distinctKeytagSuffixes
+import io.riverark.ferret.feature.wallet.settlementWait
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -45,6 +46,27 @@ class WalletPresentationTest {
         val open = channel("03", ada, 1, ChannelState.Open("open"))
 
         assertEquals(listOf(open, closing, notOpened), channelDisplayOrder(listOf(notOpened, closing, open)))
+    }
+
+    @Test fun returnedChannelsDoNotContributeLockedFundsAndKeepTheirHistoryGroup() {
+        val ada = ChannelAsset("ada", null, null, 6, AssetPricing.ADA, "00".repeat(32))
+        val open = channel("01", ada, 3, ChannelState.Open("open"))
+        val closing = channel("02", ada, 4, ChannelState.Closed)
+        val returned = channel("03", ada, 99, ChannelState.FundsReturned("return"))
+        val failed = channel("04", ada, 0)
+
+        assertEquals(AssetAmount(ada, 7), channelBalance(ada, listOf(returned, closing, open)))
+        assertEquals(listOf(open, closing, returned, failed), channelDisplayOrder(listOf(failed, returned, closing, open)))
+    }
+
+    @Test fun remainingWaitRoundsUpWithoutUsingTimeAsReturnAuthorization() {
+        assertEquals("1 minute", settlementWait(60_001, 60_000))
+        assertEquals("2 minutes", settlementWait(120_001, 60_000))
+        assertEquals("1 hour", settlementWait(3_600_000, 0))
+        assertEquals("2 hours", settlementWait(3_600_001, 0))
+        assertEquals("1 day", settlementWait(86_400_000, 0))
+        assertEquals("2 days", settlementWait(86_400_001, 0))
+        assertEquals("Waiting for a refreshed status", settlementWait(60_000, 60_000))
     }
 
     private fun channel(

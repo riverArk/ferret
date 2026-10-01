@@ -4,6 +4,14 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import io.riverark.ferret.core.channel.ChannelCollectionV4
 import io.riverark.ferret.core.channel.ChannelPreview
+import io.riverark.ferret.core.channel.ChannelSnapshot
+import io.riverark.ferret.core.channel.ProtocolKeytag
+import io.riverark.ferret.core.channel.ChannelStateChangedException
+import io.riverark.ferret.core.channel.ChannelReturnNotReadyException
+import io.riverark.ferret.core.backup.MissingBackupException
+import io.riverark.ferret.core.backup.StaleBackupWriterException
+import io.riverark.ferret.core.model.ChannelState
+import io.riverark.ferret.core.model.OperationState
 import io.riverark.ferret.core.cardano.CardanoIntent
 import io.riverark.ferret.core.cardano.UnsignedTransaction
 import io.riverark.ferret.core.cardano.InsufficientFundsException
@@ -153,6 +161,7 @@ class HomeViewModel(
     private val loadHistory: suspend (WalletProfile) -> List<TransactionRecord>,
     private val loadChannels: suspend (WalletId) -> ChannelCollectionV4,
     private val nowEpochMillis: () -> Long = { 0 },
+    private val channelCloseEnabled: Boolean = false,
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(HomeUiState(profile))
     private var automaticRefresh: Job? = null
@@ -187,7 +196,12 @@ class HomeViewModel(
             val history = mergeTransactionRecords(loadHistory(profile), emptyList())
             val channels = loadChannels(profile.id)
             hasPendingActivity = history.any { it.state == io.riverark.ferret.core.model.TransactionState.PENDING } ||
-                channels.channels.values.any { it.pending != null || it.payments.pending != null }
+                channels.channels.values.any {
+                    it.pending != null || it.payments.pending != null ||
+                        (channelCloseEnabled && (it.state is ChannelState.Closing ||
+                            it.state == ChannelState.Closed || it.state == ChannelState.Responded ||
+                            it.state == ChannelState.Ending || it.confirmedReturnOperation != null))
+                }
             mutableState.value = mutableState.value.copy(
                 balance = balance,
                 channels = channels,
@@ -375,5 +389,228 @@ class ChannelFundingViewModel(
 
     fun clearPreview() {
         if (!mutableState.value.busy) mutableState.value = ChannelFundingUiState()
+    }
+}
+
+data class ChannelCloseUiState(
+    val collection: ChannelCollectionV4? = null,
+    val channel: ChannelSnapshot? = null,
+    val preview: ChannelPreview? = null,
+    val busy: Boolean = false,
+    val operationId: String? = null,
+    val error: String? = null,
+    val lastRefreshEpochMillis: Long? = null,
+)
+
+class ChannelCloseViewModel(
+    private val walletId: WalletId,
+    private val keytag: ProtocolKeytag,
+    private val loadChannels: suspend (WalletId) -> ChannelCollectionV4,
+    private val previewClose: suspend (WalletId, ProtocolKeytag) -> ChannelPreview,
+    private val previewReturnFunds: suspend (WalletId, ProtocolKeytag) -> ChannelPreview,
+    private val submitter: suspend (WalletId, ChannelPreview) -> String,
+    private val nowEpochMillis: () -> Long,
+) : ViewModel() {
+    private val mutableState = MutableStateFlow(ChannelCloseUiState())
+    private var automaticRefresh: Job? = null
+    private var refreshing = false
+    val state = mutableState.asStateFlow()
+
+    fun refresh() {
+        if (!begin()) return
+        viewModelScope.launch {
+            try { reload() } finally {
+                finish()
+                if (refreshing && shouldPoll()) startRefreshing()
+            }
+        }
+    }
+
+    internal suspend fun refreshNow() {
+        if (!begin()) return
+        try { reload() } finally { finish() }
+    }
+
+    fun previewCloseAsync() = previewAsync(true)
+    fun previewReturnFundsAsync() = previewAsync(false)
+
+    private fun previewAsync(close: Boolean) {
+        if (!beginPreview(close)) return
+        viewModelScope.launch { prepare(close) }
+    }
+
+    internal suspend fun previewNow(close: Boolean) {
+        if (beginPreview(close)) prepare(close)
+    }
+
+    private fun beginPreview(close: Boolean): Boolean {
+        val current = mutableState.value
+        val channel = current.channel ?: return false
+        val collection = current.collection ?: return false
+        if (current.error != null || current.operationId != null || current.preview != null ||
+            channel.pending != null || channel.payments.pending != null ||
+            collection.channels.values.any { it.pending?.payload is io.riverark.ferret.core.channel.ChannelPayload.Transaction } ||
+            (if (close) channel.state !is ChannelState.Open else
+                channel.state !in listOf(ChannelState.Closed, ChannelState.Responded) ||
+                    channel.chainObservation?.canReturn != true)
+        ) return false
+        return begin()
+    }
+
+    private suspend fun prepare(close: Boolean) {
+        try {
+            val preview = if (close) previewClose(walletId, keytag) else previewReturnFunds(walletId, keytag)
+            require(preview.operation.keytag == keytag)
+            mutableState.value = mutableState.value.copy(preview = preview, error = null)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: ChannelStateChangedException) {
+            reload()
+            mutableState.value = mutableState.value.copy(
+                preview = null,
+                error = "This channel changed. Review the updated transaction before confirming.",
+            )
+        } catch (_: ChannelReturnNotReadyException) {
+            reload()
+        } catch (_: InsufficientCollateralException) {
+            mutableState.value = mutableState.value.copy(error =
+                "Insufficient ADA-only wallet funds for collateral. Keep at least 5 ADA in separate plain wallet outputs; only the displayed collateral is at risk.")
+        } catch (_: InsufficientFundsException) {
+            mutableState.value = mutableState.value.copy(error = "ADA in your L1 wallet is needed for transaction fees and any extra channel ADA.")
+        } catch (_: MissingBackupException) {
+            backupError()
+        } catch (_: StaleBackupWriterException) {
+            backupError()
+        } catch (_: Exception) {
+            mutableState.value = mutableState.value.copy(error = "Unable to prepare this transaction. Refresh and try again.")
+        } finally {
+            finish()
+            if (refreshing && shouldPoll()) startRefreshing()
+        }
+    }
+
+    fun submitAsync() {
+        val preview = beginSubmission() ?: return
+        viewModelScope.launch { submit(preview) }
+    }
+
+    internal suspend fun submitNow() {
+        val preview = beginSubmission() ?: return
+        submit(preview)
+    }
+
+    private fun beginSubmission(): ChannelPreview? {
+        val current = mutableState.value
+        if (current.busy || current.error != null || current.operationId != null) return null
+        val preview = current.preview ?: return null
+        mutableState.value = current.copy(busy = true, preview = null, operationId = preview.operation.operationId)
+        return preview
+    }
+
+    private suspend fun submit(preview: ChannelPreview) {
+        try {
+            require(submitter(walletId, preview) == preview.operation.operationId)
+            reload()
+        } catch (cancelled: CancellationException) {
+            mutableState.value = mutableState.value.copy(error = "Checking transaction status. Refresh status before continuing.")
+            throw cancelled
+        } catch (_: Exception) {
+            // The write-ahead or submission may already have succeeded. Only a later durable reload resolves this ID.
+            mutableState.value = mutableState.value.copy(error = "Checking transaction status. Refresh status before continuing.")
+        } finally {
+            finish()
+            if (refreshing) startRefreshing()
+        }
+    }
+
+    fun clearPreview() {
+        if (!mutableState.value.busy) mutableState.value = mutableState.value.copy(preview = null)
+    }
+
+    fun startRefreshing() {
+        refreshing = true
+        if (automaticRefresh?.isActive == true) return
+        automaticRefresh = viewModelScope.launch { refreshWhilePending() }
+    }
+
+    fun stopRefreshing() {
+        refreshing = false
+        automaticRefresh?.cancel()
+        automaticRefresh = null
+    }
+
+    internal suspend fun refreshWhilePending(wait: suspend (Long) -> Unit = { delay(it) }) {
+        do {
+            refreshNow()
+            if (!shouldPoll()) return
+            wait(20_000L)
+        } while (true)
+    }
+
+    private fun shouldPoll(): Boolean {
+        val current = mutableState.value
+        val channel = current.channel ?: return false
+        return current.busy || current.operationId != null ||
+            current.collection?.channels?.values?.any { it.pending != null || it.payments.pending != null } == true ||
+            channel.confirmedReturnOperation != null || channel.state is ChannelState.Closing ||
+            channel.state == ChannelState.Ending ||
+            ((channel.state == ChannelState.Closed || channel.state == ChannelState.Responded) &&
+                (channel.chainObservation?.canReturn != true || current.error != null))
+    }
+
+    private fun begin(): Boolean {
+        if (mutableState.value.busy) return false
+        mutableState.value = mutableState.value.copy(busy = true)
+        return true
+    }
+
+    private fun finish() {
+        mutableState.value = mutableState.value.copy(busy = false)
+    }
+
+    private suspend fun reload() {
+        try {
+            val collection = loadChannels(walletId)
+            require(collection.walletId == walletId)
+            val channel = collection.channels.values.singleOrNull { it.keytag == keytag }
+                ?: error("Selected channel is unavailable")
+            val previous = mutableState.value
+            val operationId = previous.operationId
+            val pending = collection.channels.values.any { it.pending?.operationId == operationId }
+            val result = collection.channels.values.asSequence().flatMap { it.history.asSequence() }
+                .lastOrNull { it.operationId == operationId }
+            val unresolved = operationId != null && (pending ||
+                (result != null && result.status != OperationState.COMPLETED && result.status != OperationState.FAILED))
+            val changed = previous.channel?.let {
+                it.state != channel.state || it.pending != channel.pending ||
+                    it.payments.pending != channel.payments.pending ||
+                    it.chainObservation?.output != channel.chainObservation?.output ||
+                    it.chainObservation?.datum != channel.chainObservation?.datum ||
+                    it.spendableBalance != channel.spendableBalance
+            } ?: true
+            mutableState.value = previous.copy(
+                collection = collection,
+                channel = channel,
+                preview = previous.preview.takeUnless { changed || unresolved },
+                operationId = operationId.takeIf { unresolved },
+                error = null,
+                lastRefreshEpochMillis = nowEpochMillis(),
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: MissingBackupException) {
+            backupError()
+        } catch (_: StaleBackupWriterException) {
+            backupError()
+        } catch (_: Exception) {
+            mutableState.value = mutableState.value.copy(
+                preview = null,
+                error = "Unable to check channel status. Refresh before continuing.",
+            )
+        }
+    }
+
+    private fun backupError() {
+        mutableState.value = mutableState.value.copy(preview = null, error = "Channel backup is unavailable. Resolve backup in Settings before continuing.")
     }
 }

@@ -2,6 +2,13 @@ package io.riverark.ferret.core.channel
 
 import io.riverark.ferret.core.backup.BackupCheckpointV1
 import io.riverark.ferret.core.backup.WalletBackupCoordinator
+import io.riverark.ferret.core.cardano.CardanoIntent
+import io.riverark.ferret.core.cardano.ChannelDatum
+import io.riverark.ferret.core.cardano.ChannelDatumStage
+import io.riverark.ferret.core.cardano.CloseChannelStep
+import io.riverark.ferret.core.cardano.LedgerUtxo
+import io.riverark.ferret.core.model.ChannelState
+import io.riverark.ferret.core.network.MAINNET
 import io.riverark.ferret.core.model.AssetAmount
 import io.riverark.ferret.core.model.AssetCatalog
 import io.riverark.ferret.core.model.ChannelAsset
@@ -530,6 +537,7 @@ class VaultChannelJournal(
             val identity = keytag to intentHash
             require(ids[operationId].let { it == null || it == identity })
             ids[operationId] = identity
+            require(ids.size <= MAX_FINANCIAL_RECORDS)
         }
         val receiptIds = mutableSetOf<String>()
         var receipts = 0
@@ -538,10 +546,22 @@ class VaultChannelJournal(
             catalog.requireAsset(entry.asset)
             require(entry.spendableBalance.asset == entry.asset)
             entry.pending?.let { operation -> validateOperation(entry, operation); record(operation.operationId, entry.keytag, operation.intentHash) }
+            entry.confirmedReturnOperation?.let { record(it.operationId, entry.keytag, it.intentHash) }
+            require(entry.history.map { it.operationId }.toSet().size == entry.history.size)
             entry.history.forEach { result ->
                 require(result.keytag == entry.keytag && result.asset == entry.asset)
                 record(result.operationId, entry.keytag, result.intentHash)
+                result.confirmationDepth?.let { require(it >= 0) }
+                result.closeStep?.let {
+                    require(SHA256.matches(result.intentHash))
+                    result.transactionId?.let { id -> require(SHA256.matches(id)) }
+                    if (result.status == OperationState.COMPLETED) {
+                        require(result.transactionId == result.intentHash)
+                        require(requireNotNull(result.confirmationDepth) >= 5)
+                    }
+                }
             }
+            validateSettlement(entry)
             entry.payments.pending?.let { pending ->
                 val operation = requireNotNull(entry.pending).also { require(it.operationId == pending.operationId) }
                 val payload = operation.payload as? ChannelPayload.Payment
@@ -576,6 +596,15 @@ class VaultChannelJournal(
             else -> Unit
         }
         operation.resultingSpendableBalance?.let { require(it.asset == entry.asset) }
+        if (operation.action == ChannelAction.Close || operation.action is ChannelAction.ReturnFunds) {
+            require((operation.payload as? ChannelPayload.Transaction)?.intent is CardanoIntent.CloseChannel)
+        }
+        operation.priorSpendableBalance?.let { require(it.asset == entry.asset) }
+        if (operation.action == ChannelAction.Close || operation.action is ChannelAction.ReturnFunds) {
+            require(operation.payload is ChannelPayload.Transaction)
+            require(operation.preparedAtEpochMillis >= 0)
+            require(Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}").matches(operation.operationId))
+        }
         (operation.payload as? ChannelPayload.Payment)?.let {
             require(it.quote.keytag == entry.keytag && it.quote.amount.asset == entry.asset)
             require(it.invoiceHash == it.quote.invoiceHash)
@@ -611,8 +640,165 @@ class VaultChannelJournal(
                     require(operation.priorChannelIdentity == (entry.state as? io.riverark.ferret.core.model.ChannelState.Open)?.channelId)
                     require(operation.resultingSpendableBalance == entry.spendableBalance + action.amount)
                 }
+                is CardanoIntent.CloseChannel -> {
+                    require(intent.operationId == operation.operationId)
+                    require(operation.intentHash == payload.expectedTransactionId && SHA256.matches(operation.intentHash))
+                    require(payload.unsignedBody.isNotEmpty())
+                    require(intent.sourceAddress.startsWith("addr1"))
+                    require(intent.validFrom >= 0 && intent.validFrom < intent.validUntil)
+                    validateChannelValue(entry, intent.channelInput, intent.currentDatum)
+                    require(intent.amount == intent.channelInput.lovelace)
+                    require(intent.referenceInput.index >= 0)
+                    require(intent.referenceInput.address == MAINNET.scriptDeploymentAddress)
+                    require(intent.referenceInput.scriptRefVersion == 3 &&
+                        intent.referenceInput.scriptRefHashHex == MAINNET.validatorHashHex)
+                    require(intent.referenceInput.transactionId != intent.channelInput.transactionId ||
+                        intent.referenceInput.index != intent.channelInput.index)
+                    val priorBalance = requireNotNull(operation.priorSpendableBalance)
+                    when (val action = operation.action) {
+                        ChannelAction.Close -> {
+                            require(intent.step == CloseChannelStep.CLOSE)
+                            require(operation.priorChannelState is ChannelState.Open)
+                            require(intent.currentDatum.stage is ChannelDatumStage.Opened)
+                            val resulting = requireNotNull(intent.resultingDatum)
+                            validateDatum(entry, resulting)
+                            require(resulting.constants == intent.currentDatum.constants)
+                            require(resulting.validatorHashHex == intent.currentDatum.validatorHashHex)
+                            require(resulting.stage is ChannelDatumStage.Closed)
+                            require(resulting.stage.accountedAmount == intent.currentDatum.stage.accountedAmount &&
+                                resulting.stage.evidenceCborHex == intent.currentDatum.stage.evidenceCborHex)
+                            require(operation.resultingSpendableBalance == priorBalance)
+                        }
+                        is ChannelAction.ReturnFunds -> {
+                            require(intent.step == action.step && intent.step != CloseChannelStep.CLOSE)
+                            require(intent.resultingDatum == null)
+                            require(operation.resultingSpendableBalance == AssetAmount(entry.asset, 0))
+                            when (intent.step) {
+                                CloseChannelStep.ELAPSE -> require(operation.priorChannelState == ChannelState.Closed &&
+                                    intent.currentDatum.stage is ChannelDatumStage.Closed)
+                                CloseChannelStep.END -> require(operation.priorChannelState == ChannelState.Responded &&
+                                    intent.currentDatum.stage is ChannelDatumStage.Responded)
+                                CloseChannelStep.CLOSE -> error("invalid return step")
+                            }
+                        }
+                        else -> error("invalid close transaction action")
+                    }
+                }
                 else -> error("unsupported channel transaction intent")
             }
+        }
+    }
+
+    private fun validateDatum(entry: ChannelSnapshot, datum: ChannelDatum) {
+        require(datum.validatorHashHex == MAINNET.validatorHashHex)
+        require(datum.constants.asset == catalog.requireAsset(entry.asset))
+        require(datum.constants.adaptorVerificationKeyHex == MAINNET.adaptorIdentityHex)
+        require(entry.keytag == ProtocolKeytag.from(
+            datum.constants.addVerificationKeyHex, ProtocolTag(datum.constants.tagHex), 32,
+        ))
+        require(datum.stage.accountedAmount >= 0)
+        require(datum.stage.evidenceCborHex.size <= MAX_FINANCIAL_RECORDS)
+        (datum.stage as? ChannelDatumStage.Closed)?.let { require(it.elapseAtEpochMillis >= 0) }
+    }
+
+    private fun validateChannelValue(entry: ChannelSnapshot, output: LedgerUtxo, datum: ChannelDatum) {
+        validateDatum(entry, datum)
+        require(output.index >= 0 && output.address == MAINNET.validatorAddress)
+        require(!output.datumHex.isNullOrEmpty())
+        require(output.scriptRefHex == null && output.scriptRefHashHex == null && output.scriptRefVersion == null)
+        if (entry.asset == catalog.ada) require(output.assets.isEmpty())
+        else require(output.assets.isEmpty() ||
+            output.assets.size == 1 && (output.assets[entry.asset.connectorUnit] ?: 0) > 0)
+    }
+
+    private fun validateSettlement(entry: ChannelSnapshot) {
+        val datums = mutableListOf<ChannelDatum>()
+        entry.chainObservation?.let { observation ->
+            validateChannelValue(entry, observation.output, observation.datum)
+            datums += observation.datum
+            require(observation.confirmationDepth >= 0)
+            observation.returnAfterEpochMillis?.let { require(it >= 0) }
+            when (val stage = observation.datum.stage) {
+                is ChannelDatumStage.Opened -> require(observation.returnAfterEpochMillis == null && !observation.canReturn)
+                is ChannelDatumStage.Closed -> require(observation.returnAfterEpochMillis == stage.elapseAtEpochMillis)
+                is ChannelDatumStage.Responded -> require(observation.returnAfterEpochMillis != null)
+            }
+            if (observation.canReturn) require(observation.confirmationDepth >= 5 &&
+                observation.returnAfterEpochMillis != null && observation.datum.stage !is ChannelDatumStage.Opened)
+        }
+        val retained = entry.confirmedReturnOperation
+        retained?.let {
+            require(it.action is ChannelAction.ReturnFunds)
+            validateOperation(entry, it)
+            require((it.payload as ChannelPayload.Transaction).signedTransaction.isNotEmpty())
+            val result = entry.history.single { result -> result.operationId == it.operationId }
+            require(result.intentHash == it.intentHash && result.transactionId ==
+                (it.payload as ChannelPayload.Transaction).expectedTransactionId)
+            require(result.closeStep == (it.action as ChannelAction.ReturnFunds).step)
+            if ((entry.returnProof?.confirmationDepth ?: 0) < 5) require(result.status != OperationState.COMPLETED)
+        }
+        listOfNotNull(entry.pending, retained).forEach { operation ->
+            (operation.payload as? ChannelPayload.Transaction)?.intent?.let { intent ->
+                when (intent) {
+                    is CardanoIntent.OpenChannel -> datums += intent.datum
+                    is CardanoIntent.AddChannelFunds -> datums += intent.currentDatum
+                    is CardanoIntent.CloseChannel -> datums += intent.currentDatum
+                    else -> Unit
+                }
+            }
+        }
+        entry.returnProof?.let { proof ->
+            validateChannelValue(entry, proof.channelInput, proof.datum)
+            datums += proof.datum
+            require(SHA256.matches(proof.transactionId) && proof.sourceAddress.startsWith("addr1"))
+            require(proof.confirmationDepth >= 0)
+            require(proof.datum.stage !is ChannelDatumStage.Opened)
+            require(proof.returnedAmount.asset == entry.asset)
+            require(proof.releasedAda == proof.channelInput.lovelace)
+            require(proof.returnedAmount.baseUnits == if (entry.asset == catalog.ada) proof.channelInput.lovelace.value
+                else proof.channelInput.assets[entry.asset.connectorUnit] ?: 0)
+            val operation = retained ?: entry.pending
+            operation?.let {
+                require(it.action is ChannelAction.ReturnFunds)
+                val payload = it.payload as ChannelPayload.Transaction
+                val intent = payload.intent as CardanoIntent.CloseChannel
+                require(payload.signedTransaction.isNotEmpty() && payload.expectedTransactionId == proof.transactionId)
+                require(intent.channelInput == proof.channelInput && intent.currentDatum == proof.datum &&
+                    intent.sourceAddress == proof.sourceAddress)
+            }
+            if (proof.confirmationDepth < 5) require(entry.history.none {
+                it.transactionId == proof.transactionId && it.status == OperationState.COMPLETED
+            })
+            if (proof.confirmationDepth >= 5) {
+                val result = entry.history.single { it.transactionId == proof.transactionId && it.status == OperationState.COMPLETED }
+                require(result.intentHash == proof.transactionId && result.confirmationDepth == proof.confirmationDepth)
+                require(result.closeStep == if (proof.datum.stage is ChannelDatumStage.Closed)
+                    CloseChannelStep.ELAPSE else CloseChannelStep.END)
+                operation?.let { require(result.operationId == it.operationId) }
+            }
+        }
+        require(datums.all { it.constants == datums.first().constants && it.validatorHashHex == datums.first().validatorHashHex })
+        if (entry.state is ChannelState.FundsReturned) {
+            val proof = requireNotNull(entry.returnProof)
+            require(entry.state.transactionId == proof.transactionId && proof.confirmationDepth >= 5)
+            require(entry.pending == null && entry.payments.pending == null)
+            require(entry.spendableBalance.baseUnits == 0L && entry.chainObservation == null)
+            if (proof.confirmationDepth < 2_160) require(retained != null)
+            else require(retained == null)
+        } else if (entry.returnProof != null) {
+            require(entry.state == ChannelState.Ending && retained != null)
+            val pending = requireNotNull(entry.pending)
+            require(pending.operationId == retained.operationId)
+            if (entry.returnProof.confirmationDepth >= 5) require(pending.state == OperationState.COMPLETED)
+        }
+        if (retained != null && entry.state !is ChannelState.FundsReturned) {
+            require(entry.state == ChannelState.Ending && entry.pending?.operationId == retained.operationId)
+            val pending = requireNotNull(entry.pending)
+            require(pending.copy(payload = retained.payload, state = retained.state) == retained)
+            val payload = pending.payload as ChannelPayload.Transaction
+            val retainedPayload = retained.payload as ChannelPayload.Transaction
+            require(payload.unsignedBody.contentEquals(retainedPayload.unsignedBody) &&
+                payload.signedTransaction.contentEquals(retainedPayload.signedTransaction))
         }
     }
 
