@@ -180,7 +180,7 @@ class ChannelTransactions(
             priorChannelState = channel.state, priorSpendableBalance = channel.spendableBalance)
         return ChannelPreview(operation, exitAmount(intent), AssetAmount(assets.ada, summary.fee.value),
             AssetAmount(assets.ada, unsigned.feeBound.value),
-            summary.outputs.lastOrNull { it.address == profile.paymentAddress },
+            summary.outputs.filter { it.address == profile.paymentAddress },
             AssetAmount(assets.ada, engine.minimumAdaForOutput(unsigned.cbor, context.ledger.protocolParametersJson, index).value),
             AssetAmount(assets.ada, KONDUIT_MIN_ADA_BUFFER), capacity, profile.network,
             AssetAmount(assets.ada, if (closing) summary.outputs[index].lovelace.value else input.lovelace.value),
@@ -266,7 +266,7 @@ class ChannelTransactions(
             engine.minimumAdaForOutput(unsigned.cbor, context.ledger.protocolParametersJson, index).value))
         require(preview.outputAda == AssetAmount(assets.ada,
             if (intent.step == CloseChannelStep.CLOSE) summary.outputs[index].lovelace.value else intent.channelInput.lovelace.value))
-        require(preview.sourceChange == summary.outputs.lastOrNull { it.address == profile.paymentAddress })
+        require(preview.sourceChangeOutputs == summary.outputs.filter { it.address == profile.paymentAddress })
     }
 
     internal suspend fun expiredAndUnspent(walletId: WalletId, operation: PreparedChannelOperation): Boolean {
@@ -454,7 +454,7 @@ class ChannelTransactions(
         engine.requireAuthorized(unsigned, intent, context.ledger)
         val summary = engine.inspect(unsigned.cbor)
         val channelIndex = channelOutputIndex(summary.outputs, intent)
-        val change = summary.outputs.singleOrNull { it.address == profile.paymentAddress }
+        val change = summary.outputs.filter { it.address == profile.paymentAddress }
         val reserve = Lovelace(KONDUIT_MIN_ADA_BUFFER)
         val channelOutput = summary.outputs[channelIndex]
         val capacity = if (selected == assets.ada) {
@@ -560,7 +560,7 @@ class ChannelTransactions(
             amount,
             AssetAmount(assets.ada, summary.fee.value),
             AssetAmount(assets.ada, unsigned.feeBound.value),
-            summary.outputs.singleOrNull { it.address == profile.paymentAddress },
+            summary.outputs.filter { it.address == profile.paymentAddress },
             AssetAmount(
                 assets.ada,
                 engine.minimumAdaForOutput(unsigned.cbor, context.ledger.protocolParametersJson, channelIndex).value,
@@ -674,7 +674,7 @@ class ChannelTransactions(
         val channelIndex = channelOutputIndex(summary.outputs, intent)
         require(engine.minimumAdaForOutput(unsigned.cbor, context.ledger.protocolParametersJson, channelIndex).value == preview.ledgerMinAda.baseUnits)
         require(preview.outputAda.baseUnits >= preview.ledgerMinAda.baseUnits)
-        require(summary.outputs.singleOrNull { it.address == profile.paymentAddress } == preview.sourceChange)
+        require(summary.outputs.filter { it.address == profile.paymentAddress } == preview.sourceChangeOutputs)
         require(summary.outputs[channelIndex].lovelace.value == preview.outputAda.baseUnits)
     }
 
@@ -715,7 +715,7 @@ class ChannelTransactions(
             channelIndex,
         ).value == preview.ledgerMinAda.baseUnits)
         require(preview.outputAda.baseUnits >= preview.ledgerMinAda.baseUnits)
-        require(summary.outputs.singleOrNull { it.address == profile.paymentAddress } == preview.sourceChange)
+        require(summary.outputs.filter { it.address == profile.paymentAddress } == preview.sourceChangeOutputs)
         require(summary.outputs[channelIndex].lovelace.value == preview.outputAda.baseUnits)
     }
 

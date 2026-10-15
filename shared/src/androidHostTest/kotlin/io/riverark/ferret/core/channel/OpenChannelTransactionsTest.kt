@@ -319,7 +319,7 @@ class OpenChannelTransactionsTest {
         assertEquals(AssetAmount(ada, 3_000_000), preview.resultingSpendableBalance)
         assertEquals(
             100_000_000L - preview.amount.baseUnits - preview.actualFee.baseUnits,
-            preview.sourceChange?.lovelace?.value,
+            preview.sourceChangeOutputs.single().lovelace.value,
         )
         assertTrue(preview.ledgerMinAda.baseUnits > 0)
         assertEquals(1, vault.seedRequests)
@@ -427,10 +427,7 @@ class OpenChannelTransactionsTest {
         val trace = mutableListOf<String>()
         val vault = TestVault(profile, entropy, trace)
         val usdm = requireNotNull(catalog.asset("usdm"))
-        val nativeLedger = ledger.copy(utxos = listOf(
-            ledger.utxos.first().copy(assets = mapOf(usdm.connectorUnit to 10_000_000)),
-            reference,
-        ))
+        val nativeLedger = mixedLedger(usdm)
         val transactions = transactions(vault, nativeLedger)
         val preview = transactions.previewOpen(
             profile.id,
@@ -552,6 +549,77 @@ class OpenChannelTransactionsTest {
         assertEquals(mapOf(duplicate.keytag.value to duplicate), stored.channels)
     }
 
+    private fun mixedLedger(asset: ChannelAsset): LedgerSnapshot = ledger.copy(utxos =
+        (0..1).map { input ->
+            LedgerUtxo(
+                (if (input == 0) "00" else "22").repeat(32), 0, profile.paymentAddress, Lovelace(60_000_000),
+                buildMap {
+                    if (asset.policyId != null) put(asset.connectorUnit, 750_000L)
+                    repeat(80) { offset ->
+                        put("6".repeat(56) + (input * 80 + offset).toString(16).padStart(64, '0'), 1L)
+                    }
+                },
+            )
+        } + reference)
+
+    @Test fun mixedOpenPreviewContainsEveryChangeOutput() = runBlocking {
+        catalog.assets.forEach { selected ->
+            val currentLedger = mixedLedger(selected)
+            val vault = TestVault(profile, entropy, mutableListOf())
+            val transactions = transactions(vault, currentLedger)
+            val preview = transactions.previewOpen(
+                profile.id, AssetAmount(selected, if (selected == ada) 90_000_000 else 1_250_000),
+                "00000000-0000-4000-8000-000000000018",
+            )
+            val payload = preview.operation.payload as ChannelPayload.Transaction
+            val summary = engine.inspect(payload.unsignedBody)
+            val changes = summary.outputs.filter { it.address == profile.paymentAddress }
+            assertTrue(changes.size >= 2)
+            assertEquals(changes, preview.sourceChangeOutputs)
+            val signed = transactions.sign(profile.id, preview.operation)
+            val signedPayload = signed.payload as ChannelPayload.Transaction
+            val signedBytes = requireNotNull(signedPayload.signedTransaction)
+            val signedSummary = engine.inspect(signedBytes)
+            signedSummary.requireL1Witnesses(derived.paymentCredentialHex, signed = true)
+            assertEquals(engine.transactionId(payload.unsignedBody), engine.transactionId(signedBytes))
+            assertEquals(summary.outputs, signedSummary.outputs)
+            val consumed = currentLedger.utxos.filter { input ->
+                summary.inputs.any { it.transactionId == input.transactionId && it.index == input.index }
+            }
+            assertEquals(consumed.sumOf { it.lovelace.value }, summary.outputs.sumOf { it.lovelace.value } + summary.fee.value)
+            fun units(values: List<Map<String, Long>>) = buildMap<String, Long> {
+                values.forEach { value -> value.forEach { (unit, quantity) -> put(unit, (get(unit) ?: 0L) + quantity) } }
+            }
+            assertEquals(units(consumed.map { it.assets }), units(summary.outputs.map { it.assets }))
+        }
+    }
+
+    @Test fun loweredValueLimitRejectsSavedPreviewBeforeJournalSeedOrSubmission() = runBlocking {
+        val vault = TestVault(profile, entropy, mutableListOf())
+        val currentLedger = mixedLedger(requireNotNull(catalog.asset("usdm")))
+        val preview = transactions(vault, currentLedger).previewOpen(
+            profile.id, AssetAmount(requireNotNull(catalog.asset("usdm")), 1_250_000),
+            "00000000-0000-4000-8000-000000000018",
+        )
+        val reducedParameters = kotlinx.serialization.json.JsonObject(
+            Json.parseToJsonElement(currentLedger.protocolParametersJson).jsonObject +
+                ("max_val_size" to kotlinx.serialization.json.JsonPrimitive("100")),
+        ).toString()
+        val reducedTransactions = transactions(vault, currentLedger.copy(protocolParametersJson = reducedParameters))
+        val seedRequests = vault.seedRequests
+        var journalWrites = 0
+        var submissions = 0
+        val repository = recoveryRepository(
+            reducedTransactions, { emptyCollection() }, { journalWrites++ },
+            reconcileCall = { _, _, _ -> error("lookup not expected") },
+            mutateCall = { _, operation, _ -> submissions++; completed(operation) },
+        )
+        assertFailsWith<IllegalArgumentException> { repository.submit(profile.id, preview) }
+        assertEquals(seedRequests, vault.seedRequests)
+        assertEquals(0, journalWrites)
+        assertEquals(0, submissions)
+    }
+
     @Test fun nativePreviewCarriesAdaAndPreservesOtherAssets() = runBlocking {
         val vault = TestVault(profile, entropy, mutableListOf())
         val usdm = requireNotNull(catalog.asset("usdm"))
@@ -570,8 +638,8 @@ class OpenChannelTransactionsTest {
         )
 
         assertEquals(AssetAmount(usdm, 1_250_000), preview.resultingSpendableBalance)
-        assertEquals(8_750_000L, preview.sourceChange?.assets?.get(usdm.connectorUnit))
-        assertEquals(3_000_000L, preview.sourceChange?.assets?.get(usdcx.connectorUnit))
+        assertEquals(8_750_000L, preview.sourceChangeOutputs.single().assets[usdm.connectorUnit])
+        assertEquals(3_000_000L, preview.sourceChangeOutputs.single().assets[usdcx.connectorUnit])
         assertTrue(preview.outputAda.baseUnits >= 2_000_000)
         assertEquals(usdm, (preview.operation.payload as ChannelPayload.Transaction)
             .let { it.intent as CardanoIntent.OpenChannel }.datum.constants.asset)

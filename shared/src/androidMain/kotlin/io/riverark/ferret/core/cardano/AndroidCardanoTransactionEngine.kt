@@ -51,6 +51,7 @@ import com.bloxbean.cardano.client.transaction.spec.Value
 import com.bloxbean.cardano.client.transaction.util.TransactionUtil
 import com.bloxbean.cardano.client.util.HexUtil
 import com.bloxbean.cardano.client.transaction.spec.TransactionWitnessSet
+import com.bloxbean.cardano.client.transaction.TransactionSigner
 import com.bloxbean.cardano.client.transaction.spec.VkeyWitness
 import com.fasterxml.jackson.databind.ObjectMapper
 import io.riverark.ferret.core.model.AssetCatalog
@@ -151,13 +152,16 @@ class AndroidCardanoTransactionEngine(
         val channelIntent = intent is CardanoIntent.OpenChannel ||
             intent is CardanoIntent.AddChannelFunds ||
             intent is CardanoIntent.CloseChannel
-        val (params, coinsPerUtxoByte) = try {
+        val (params, coinsPerUtxoByte, maxValueSize) = try {
             parseProtocolParameters(ledger.protocolParametersJson)
         } catch (error: IllegalArgumentException) {
             if (channelIntent) throw IllegalArgumentException("invalid channel protocol parameters")
             throw error
         }
         if (channelIntent) requireChannelProtocolParameters(params)
+        if (intent is CardanoIntent.OpenChannel) {
+            require(maxValueSize != null) { "invalid channel protocol parameters" }
+        }
         val selectedAsset = when (intent) {
             is CardanoIntent.Transfer -> assets.requireAsset(intent.amount.asset)
             is CardanoIntent.OpenChannel -> assets.requireAsset(intent.amount.asset)
@@ -269,31 +273,9 @@ class AndroidCardanoTransactionEngine(
             is CardanoIntent.SweepWallet -> builder.compose(
                 Tx().payToAddress(intent.destinationAddress, intent.amount.amount()).from(intent.sourceAddress),
             ).validFrom(intent.validFrom).validTo(intent.validUntil).build()
-            is CardanoIntent.OpenChannel -> try {
-                val selected = requireNotNull(selectedAsset)
-                val tx = if (selected.policyId == null) {
-                    Tx().payToContract(
-                        intent.validatorAddress,
-                        Lovelace(intent.amount.baseUnits).amount(),
-                        intent.datum.plutus(),
-                    )
-                } else {
-                    val outputAda = minimumOutputLovelace(
-                        nativeOutput(intent.validatorAddress, selected, intent.amount.baseUnits, intent.datum.plutus()),
-                        coinsPerUtxoByte,
-                        KONDUIT_MIN_ADA_BUFFER,
-                    )
-                    Tx().payToContract(
-                        intent.validatorAddress,
-                        nativeAmounts(selected, intent.amount.baseUnits, outputAda.value),
-                        intent.datum.plutus(),
-                    )
-                }
-                builder.compose(tx.from(intent.sourceAddress)).additionalSignersCount(1)
-                    .validFrom(intent.validFrom).validTo(intent.validUntil).build()
-            } catch (_: com.bloxbean.cardano.client.api.exception.InsufficientBalanceException) {
-                throw InsufficientFundsException()
-            }
+            is CardanoIntent.OpenChannel -> buildOpenChannel(
+                intent, ledger, params, coinsPerUtxoByte, requireNotNull(maxValueSize),
+            )
             is CardanoIntent.AddChannelFunds -> try {
                 val selected = requireNotNull(selectedAsset)
                 val collateral = selectCollateralInputs(intent, ledger, params)
@@ -431,6 +413,11 @@ class AndroidCardanoTransactionEngine(
         val cbor = transaction.serialize().let { serialized ->
             if (intent is CardanoIntent.AddChannelFunds || intent is CardanoIntent.CloseChannel) {
                 withLedgerScriptDataHash(serialized, params)
+            } else if (intent is CardanoIntent.OpenChannel) {
+                // Bloxbean's SortedMap asset comparator compares signed bytes.
+                // Decode to ordinary maps so its canonical encoder applies the
+                // correct unsigned CBOR key order (notably names ending 80..ff).
+                CborSerializationUtil.serialize(CborDecoder(ByteArrayInputStream(serialized)).decode().single())
             } else {
                 serialized
             }
@@ -467,7 +454,13 @@ class AndroidCardanoTransactionEngine(
 
     override fun decodeChannelDatum(cborHex: String): ChannelDatum = decodeChannelDatumStrict(cborHex, assets)
 
-    private fun parseProtocolParameters(json: String): Pair<ProtocolParams, Long> {
+    private data class ParsedProtocolParameters(
+        val params: ProtocolParams,
+        val coinsPerUtxoByte: Long,
+        val maxValueSize: Int?,
+    )
+
+    private fun parseProtocolParameters(json: String): ParsedProtocolParameters {
         val tree = try {
             objectMapper.readTree(json)
         } catch (_: Exception) {
@@ -480,12 +473,18 @@ class AndroidCardanoTransactionEngine(
             ?.toLongOrNull()
             ?.takeIf { it > 0 }
             ?: throw IllegalArgumentException("invalid coins_per_utxo_size")
+        val maxValueSize = tree.get("max_val_size")?.takeIf { it.isTextual }?.textValue()
+            ?.takeIf { POSITIVE_DECIMAL.matches(it) }?.toIntOrNull()
         val params = try {
-            objectMapper.treeToValue(tree, ProtocolParams::class.java)
+            // Do not let Jackson's scalar coercion turn an invalid optional Open field
+            // into a requirement for existing Transfer/Add/Close operations.
+            val protocolTree = tree.deepCopy<com.fasterxml.jackson.databind.node.ObjectNode>()
+            protocolTree.remove("max_val_size")
+            objectMapper.treeToValue(protocolTree, ProtocolParams::class.java)
         } catch (_: Exception) {
             throw IllegalArgumentException("invalid protocol parameters")
         }
-        return params to cost
+        return ParsedProtocolParameters(params, cost, maxValueSize)
     }
 
     private fun requireChannelProtocolParameters(params: ProtocolParams) {
@@ -604,8 +603,8 @@ class AndroidCardanoTransactionEngine(
             (outputs + listOfNotNull(collateralReturn)).all { output ->
                 TransactionOutput.deserialize(output).value.coin.longValueExact() >= minimumAda(output, coinsPerUtxoByte)
             }
-        } catch (_: Exception) {
-            throw IllegalArgumentException("invalid transaction CBOR")
+        } catch (error: Exception) {
+            throw IllegalArgumentException("invalid transaction CBOR", error)
         }
         require(sufficient) { "output below minimum ADA" }
     }
@@ -629,8 +628,8 @@ class AndroidCardanoTransactionEngine(
             ?.takeIf { it.isNotEmpty() }
             ?: error("invalid outputs")
         outputs to body[UnsignedInteger(16)]
-    } catch (_: Exception) {
-        throw IllegalArgumentException("invalid transaction CBOR")
+    } catch (error: Exception) {
+        throw IllegalArgumentException("invalid transaction CBOR", error)
     }
 
     private fun requireChannelSemantics(intent: CardanoIntent, ledger: LedgerSnapshot): PlutusV3Script? {
@@ -808,7 +807,19 @@ class AndroidCardanoTransactionEngine(
         }
         try {
             val script = requireNotNull(requireChannelSemantics(intent, ledger))
-            val params = parseProtocolParameters(ledger.protocolParametersJson).first
+            val parsed = parseProtocolParameters(ledger.protocolParametersJson)
+            val params = parsed.params
+            if (intent is CardanoIntent.OpenChannel) {
+                val limit = requireNotNull(parsed.maxValueSize) { "invalid channel protocol parameters" }
+                for (output in transactionOutputs(cbor).first) {
+                    val value = when (output) {
+                        is CborMap -> output[UnsignedInteger(1)]
+                        is CborArray -> output.dataItems.getOrNull(1)
+                        else -> null
+                    }
+                    require(value != null && CborSerializationUtil.serialize(value).size <= limit)
+                }
+            }
             requireChannelProtocolParameters(params)
             val summary = inspect(cbor)
             summary.requireChannelFunding(intent, ledger)
@@ -920,7 +931,7 @@ class AndroidCardanoTransactionEngine(
             }
             if (expectedChannelOutput != null) {
                 require(summary.outputs.count { it == expectedChannelOutput } == 1)
-                require(summary.outputs.size in 1..2)
+                if (intent !is CardanoIntent.OpenChannel) require(summary.outputs.size in 1..2)
                 require(summary.outputs.all {
                     it == expectedChannelOutput || it.address == intent.sourceAddress &&
                         it.datum == TransactionDatum.Absent && it.scriptReference == null
@@ -1062,7 +1073,12 @@ class AndroidCardanoTransactionEngine(
         require(Blake2bUtil.blake2bHash224(account.publicKeyBytes()).contentEquals(sourceCredential))
         var signedBytes: ByteArray? = null
         try {
-            signedBytes = account.sign(Transaction.deserialize(unsigned.cbor)).serialize()
+            signedBytes = if (intent is CardanoIntent.OpenChannel) {
+                // Keep the reviewed canonical body out of the signed-byte asset comparator.
+                TransactionSigner.INSTANCE.sign(unsigned.cbor, account.hdKeyPair())
+            } else {
+                account.sign(Transaction.deserialize(unsigned.cbor)).serialize()
+            }
             require(TransactionUtil.getTxHash(signedBytes) == TransactionUtil.getTxHash(unsigned.cbor))
             val unsignedWitnesses = rawTransactionMaps(unsigned.cbor).second
             val signedWitnesses = rawTransactionMaps(signedBytes).second
@@ -1335,6 +1351,101 @@ class AndroidCardanoTransactionEngine(
         }
     }
 
+    private fun buildOpenChannel(
+        intent: CardanoIntent.OpenChannel,
+        ledger: LedgerSnapshot,
+        params: ProtocolParams,
+        coinsPerUtxoByte: Long,
+        maxValueSize: Int,
+    ): Transaction {
+        val byAda = compareByDescending<LedgerUtxo> { it.lovelace.value }
+            .thenBy { it.transactionId }.thenBy { it.index }
+        val candidates = ledger.utxos.filter {
+            it.isSpendableBy(intent.sourceAddress, allowNativeAssets = true)
+        }.sortedWith(byAda)
+        val selected = mutableListOf<LedgerUtxo>()
+        val unit = intent.amount.asset.connectorUnit
+        val native = intent.amount.asset.policyId != null
+        if (native) {
+            var quantity = 0L
+            for (candidate in candidates.filter { (it.assets[unit] ?: 0) > 0 }
+                .sortedWith(compareByDescending<LedgerUtxo> { it.assets.getValue(unit) }.then(byAda))) {
+                selected += candidate
+                quantity = Math.addExact(quantity, candidate.assets.getValue(unit))
+                if (quantity >= intent.amount.baseUnits) break
+            }
+            if (quantity < intent.amount.baseUnits) throw InsufficientFundsException()
+        } else {
+            selected += candidates.firstOrNull() ?: throw InsufficientFundsException()
+        }
+        val channelOutput = if (native) {
+            nativeOutput(intent.validatorAddress, intent.amount.asset, intent.amount.baseUnits, intent.datum.plutus())
+                .also { minimumOutputLovelace(it, coinsPerUtxoByte, KONDUIT_MIN_ADA_BUFFER) }
+        } else {
+            TransactionOutput(intent.validatorAddress, Value.fromCoin(BigInteger.valueOf(intent.amount.baseUnits)))
+                .also { it.inlineDatum = intent.datum.plutus() }
+        }
+        require(CborSerializationUtil.serialize(channelOutput.value.serialize()).size <= maxValueSize) {
+            "Open channel output exceeds maximum Value size."
+        }
+        val calculator = FeeCalculationServiceImpl(
+            SnapshotUtxoSupplier(candidates.map(::toBloxbean)), ProtocolParamsSupplier { params },
+        )
+        fun transaction(outputs: List<TransactionOutput>, fee: Long): Transaction =
+            Transaction.builder().body(TransactionBody.builder()
+                .inputs(selected.sortedWith(compareBy({ it.transactionId }, { it.index }))
+                    .map { TransactionInput(it.transactionId, it.index) })
+                .outputs(outputs).fee(BigInteger.valueOf(fee))
+                .validityStartInterval(intent.validFrom).ttl(intent.validUntil).build())
+                .witnessSet(TransactionWitnessSet()).build()
+        fun price(transaction: Transaction): Long {
+            transaction.witnessSet = TransactionWitnessSet().also {
+                it.vkeyWitnesses = mutableListOf(
+                    VkeyWitness.builder().vkey(ByteArray(32)).signature(ByteArray(64)).build(),
+                )
+            }
+            val bytes = transaction.serialize()
+            transaction.witnessSet = TransactionWitnessSet()
+            require(bytes.size <= requireNotNull(params.maxTxSize)) { "Open channel transaction exceeds maximum size." }
+            return calculator.calculateFee(bytes, params).longValueExact()
+        }
+        while (true) {
+            val totalAda = selected.fold(0L) { sum, input -> Math.addExact(sum, input.lovelace.value) }
+            val residualAssets = mutableMapOf<String, Long>()
+            for (input in selected) for ((asset, quantity) in input.assets) {
+                residualAssets[asset] = Math.addExact(residualAssets[asset] ?: 0, quantity)
+            }
+            if (native) residualAssets[unit] = Math.subtractExact(residualAssets.getValue(unit), intent.amount.baseUnits)
+            val availableAda = Math.subtractExact(totalAda, channelOutput.value.coin.longValueExact())
+            var fee = 0L
+            try {
+                repeat(12) {
+                    val residualAda = Math.subtractExact(availableAda, fee)
+                    if (residualAda < 0) throw InsufficientFundsException()
+                    val change = try {
+                        packOpenChange(intent.sourceAddress, residualAda, residualAssets, coinsPerUtxoByte, maxValueSize)
+                    } catch (error: InsufficientFundsException) {
+                        // Exact no-change funding must be priced without inventing a
+                        // dust output, but a remainder must never be donated to fees.
+                        if (residualAssets.values.any { it > 0 } || availableAda < fee) throw error
+                        val exact = transaction(listOf(channelOutput), availableAda)
+                        if (price(exact) == availableAda) return exact
+                        throw error
+                    }
+                    val built = transaction(listOf(channelOutput) + change, fee)
+                    val required = price(built)
+                    // At a fixed fee deterministic packing yields the same outputs.
+                    // Retain an overestimate to avoid coin-width oscillation.
+                    if (required <= fee) return built
+                    fee = required
+                }
+                throw IllegalArgumentException("Open channel fee did not converge.")
+            } catch (_: InsufficientFundsException) {
+                selected += candidates.firstOrNull { it !in selected } ?: throw InsufficientFundsException()
+            }
+        }
+    }
+
     private fun nativeAmounts(asset: ChannelAsset, quantity: Long, lovelace: Long) = listOf(
         Amount.lovelace(BigInteger.valueOf(lovelace)),
         Amount.asset(asset.connectorUnit, BigInteger.valueOf(quantity)),
@@ -1349,10 +1460,61 @@ class AndroidCardanoTransactionEngine(
         address,
         Value.fromCoin(BigInteger.ZERO).add(
             requireNotNull(asset.policyId),
-            requireNotNull(asset.assetName),
+            "0x" + requireNotNull(asset.assetName),
             BigInteger.valueOf(quantity),
         ),
     ).also { it.inlineDatum = datum }
+
+    private fun packOpenChange(
+        sourceAddress: String,
+        changeAda: Long,
+        changeAssets: Map<String, Long>,
+        coinsPerUtxoByte: Long,
+        maxValueSize: Int,
+    ): List<TransactionOutput> {
+        require(changeAda >= 0 && coinsPerUtxoByte > 0 && maxValueSize > 0)
+        val coinBound = BigInteger.valueOf(changeAda)
+        fun fits(value: Value) = CborSerializationUtil.serialize(value.serialize()).size <= maxValueSize
+
+        val outputs = mutableListOf<TransactionOutput>()
+        var bucket = Value.fromCoin(coinBound)
+        // Reserve the full residual coin width before assigning each bucket its minimum.
+        for ((unit, quantity) in changeAssets.toSortedMap()) {
+            if (quantity <= 0) continue
+            var candidate = bucket.add(unit.take(56), "0x" + unit.drop(56), BigInteger.valueOf(quantity))
+            if (!fits(candidate)) {
+                require(bucket.multiAssets.isNotEmpty()) { "Open change asset exceeds maximum Value size." }
+                outputs += TransactionOutput(sourceAddress, bucket)
+                candidate = Value.fromCoin(coinBound).add(unit.take(56), "0x" + unit.drop(56), BigInteger.valueOf(quantity))
+                require(fits(candidate)) { "Open change asset exceeds maximum Value size." }
+            }
+            bucket = candidate
+        }
+        if (bucket.multiAssets.isNotEmpty() || changeAda > 0) {
+            outputs += TransactionOutput(sourceAddress, bucket)
+        }
+        if (outputs.isEmpty()) return emptyList()
+
+        var totalMinimum = 0L
+        for (output in outputs) {
+            val minimum = minimumOutputLovelace(output, coinsPerUtxoByte, floor = 0).value
+            totalMinimum = try {
+                Math.addExact(totalMinimum, minimum)
+            } catch (_: ArithmeticException) {
+                throw InsufficientFundsException()
+            }
+        }
+        if (totalMinimum > changeAda) throw InsufficientFundsException()
+        val last = outputs.last()
+        last.value.coin = last.value.coin.add(BigInteger.valueOf(Math.subtractExact(changeAda, totalMinimum)))
+        for (output in outputs) {
+            if (output.value.coin.longValueExact() < minimumAda(output.serialize(), coinsPerUtxoByte)) {
+                throw InsufficientFundsException()
+            }
+            require(fits(output.value)) { "Open change exceeds maximum Value size." }
+        }
+        return outputs
+    }
 
     private fun minimumOutputLovelace(
         output: TransactionOutput,

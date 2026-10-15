@@ -14,6 +14,12 @@ Android repository-contained wallet flows include:
 
 Controlled Mainnet ADA channel opening and Lightning payment have passed on an Android device against the owned `crustypants.com` services. The shared app exposes reviewed ADA/USDA/USDCx/USDM transfer, channel Open/Add, eligible-channel BOLT11 payment, and guarded wallet removal on Android and iOS. Channel close/squash controls remain unexposed until their complete flows exist. Native-asset Add and settlement, funded L1 finality, Drive takeover, and removal require additional controlled Mainnet acceptance; iOS physical-device and ledger parity checks are manual through TestFlight. Preprod and `ferret.channel` are unsupported test or release targets. See [`NATIVE_MIGRATION_PLAN.md`](NATIVE_MIGRATION_PLAN.md) and [`IOS_FOLLOW_UP.md`](IOS_FOLLOW_UP.md) for outstanding acceptance.
 
+## Channel Open funding
+
+ADA, USDA, USDCx, and USDM channels can open directly from wallet-owned outputs containing any mixture of native assets, including tokens outside the reviewed catalog. Only the selected deposit enters the channel; every remaining native quantity returns to ordered wallet-owned change outputs in the same transaction. Open needs no collateral or preparatory split. ADA must still cover the channel output, fee, and each change output's serialized minimum; ledger Value and transaction-size limits still apply.
+
+Open requires the controlled connector's live `payload.max_val_size` as a canonical positive decimal string (for example, `"5000"`), sourced from the node's protocol parameters. Missing or invalid limits fail closed at preview and authorization; there is no client-side fallback. The adjacent Konduit connector projection must be deployed by the operator before networked Open acceptance. Transfer/Add/Close keep their existing input and collateral policies; Home's Open availability uses total ADA rather than ADA-transfer availability.
+
 ## Prerequisites
 
 - JDK 17
@@ -21,6 +27,8 @@ Controlled Mainnet ADA channel opening and Lightning payment have passed on an A
 - An API 36 Android device or emulator for installation and manual verification
 
 Use the checked-in Gradle wrapper. Dependency locks are authoritative.
+
+The checked-in `gradle/gradle-daemon-jvm.properties` selects an installed JDK 17 for Gradle builds, taking precedence over `JAVA_HOME` and the shell's default Java version. Install JDK 17 locally; no machine-specific JDK path or automatic JDK download is configured. `./gradlew --version` shows the daemon JVM criteria separately from the launcher JVM.
 
 ## Build and verify
 

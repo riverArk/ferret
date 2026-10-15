@@ -179,7 +179,7 @@ data class ConnectorUtxoDto(
     fun ledger(): LedgerUtxo {
         require(HEX_64.matches(transactionId))
         require(outputIndex >= 0 && address.length in 1..256)
-        require(value.size in 1..100 && value.map(ConnectorAssetDto::unit).distinct().size == value.size)
+        require(value.isNotEmpty() && value.map(ConnectorAssetDto::unit).distinct().size == value.size)
         require(consumedBy == null || HEX_64.matches(consumedBy))
         require(datumHash == null || HEX_64.matches(datumHash))
         require(datumInline == null || datumInline.isBoundedHex(131_072))
@@ -379,7 +379,7 @@ internal fun ConnectorTransactionDto.requireValid() {
         outputs.map { Triple(it.address, it.value, listOfNotNull(it.datumHash, it.datumInline, it.referenceScriptHash, it.consumedBy)) })
         .forEach { (outputAddress, value, hexFields) ->
             require(outputAddress.length in 1..256)
-            require(value.size in 1..100 && value.map(ConnectorAssetDto::unit).distinct().size == value.size)
+            require(value.isNotEmpty() && value.map(ConnectorAssetDto::unit).distinct().size == value.size)
             require(hexFields.all { it.length in 2..2_097_152 && it.length % 2 == 0 && it.all { char -> char in "0123456789abcdef" } })
         }
 }

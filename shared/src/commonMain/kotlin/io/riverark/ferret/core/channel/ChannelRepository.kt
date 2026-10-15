@@ -98,7 +98,7 @@ data class ChannelPreview(
     val amount: AssetAmount,
     val actualFee: AssetAmount,
     val feeBound: AssetAmount,
-    val sourceChange: io.riverark.ferret.core.cardano.TransactionOutputSummary?,
+    val sourceChangeOutputs: List<io.riverark.ferret.core.cardano.TransactionOutputSummary>,
     val ledgerMinAda: AssetAmount,
     val protocolReserve: AssetAmount,
     val resultingSpendableBalance: AssetAmount,

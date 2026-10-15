@@ -260,7 +260,7 @@ class ChannelRepositoryTest {
             )
             val fee = quote.routingFee + quote.adaptorFee
             val zero = AssetAmount(entry.asset, 0)
-            return ChannelPreview(operation, quote.amount, fee, fee, null, zero, zero, operation.resultingSpendableBalance!!, CardanoNetwork.MAINNET, zero)
+            return ChannelPreview(operation, quote.amount, fee, fee, emptyList(), zero, zero, operation.resultingSpendableBalance!!, CardanoNetwork.MAINNET, zero)
         }
     }
 

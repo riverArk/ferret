@@ -241,6 +241,142 @@ fn fixed_minimum(address:&csl::Address,units:&std::collections::BTreeMap<String,
  }
  Err(Failure::Invalid)
 }
+fn pack_open_change(address:&csl::Address,residual_ada:u64,assets:&std::collections::BTreeMap<String,u64>,coins_per_byte:u64,max_value_size:usize)->Result<Vec<csl::TransactionOutput>,Failure>{
+ let mut buckets=Vec::new();
+ let mut bucket=std::collections::BTreeMap::new();
+ for (unit,quantity) in assets.iter().filter(|(_,quantity)|**quantity>0){
+  bucket.insert(unit.clone(),*quantity);
+  // Reserve the largest coin encoding any bucket can receive, not its minimum ADA.
+  if output(address,residual_ada,&bucket,None)?.amount().to_bytes().len()>max_value_size{
+   bucket.remove(unit);
+   if bucket.is_empty(){return Err(Failure::Invalid)}
+   buckets.push(std::mem::take(&mut bucket));
+   bucket.insert(unit.clone(),*quantity);
+   if output(address,residual_ada,&bucket,None)?.amount().to_bytes().len()>max_value_size{return Err(Failure::Invalid)}
+  }
+ }
+ if !bucket.is_empty(){buckets.push(bucket);}
+ if buckets.is_empty(){
+  if residual_ada==0{return Ok(Vec::new())}
+  buckets.push(std::collections::BTreeMap::new());
+ }
+ let mut minima=Vec::with_capacity(buckets.len());
+ let mut total_minimum=0_u64;
+ for bucket in &buckets{
+  let coin=fixed_minimum(address,bucket,None,coins_per_byte,0)?;
+  total_minimum=total_minimum.checked_add(coin).ok_or(Failure::Invalid)?;
+  minima.push(coin);
+ }
+ let extra=residual_ada.checked_sub(total_minimum).ok_or(Failure::Funds)?;
+ let last=minima.last_mut().ok_or(Failure::Internal)?;
+ *last=last.checked_add(extra).ok_or(Failure::Invalid)?;
+ let mut outputs=Vec::with_capacity(buckets.len());
+ for (bucket,coin) in buckets.iter().zip(minima){
+  let change=output(address,coin,bucket,None)?;
+  if change.amount().to_bytes().len()>max_value_size{return Err(Failure::Invalid)}
+  if coin<minimum(&change,coins_per_byte)?{return Err(Failure::Funds)}
+  outputs.push(change);
+ }
+ Ok(outputs)
+}
+pub(crate) fn open_value_limit(params:&Value)->Result<usize,Failure>{
+ let value=params.get("max_val_size").and_then(Value::as_str).ok_or(Failure::Invalid)?;
+ if value.is_empty()||value.starts_with('0')||!value.bytes().all(|b|b.is_ascii_digit()){return Err(Failure::Invalid)}
+ let limit=value.parse::<i32>().map_err(|_|Failure::Invalid)?;
+ if limit<=0{return Err(Failure::Invalid)}
+ Ok(limit as usize)
+}
+fn build_open(request:&Value)->Result<(csl::Transaction,u64),Failure>{
+ let intent=field(request,"intent")?;let ledger=field(request,"ledger")?;
+ let (linear,per_byte,max_size,params)=parameters(ledger)?;
+ let limit=open_value_limit(&params)?;
+ let (network,_,_,_,_)=network(ledger)?;
+ let source=text(intent,"sourceAddress")?;
+ let source_address=address(source,network)?;
+ let selected=asset_unit(field(field(intent,"amount")?,"asset")?)?;
+ let quantity=number(field(intent,"amount")?,"baseUnits")?;
+ let mut candidates:Vec<_>=field(ledger,"utxos")?.as_array().ok_or(Failure::Invalid)?.iter().filter(|u|owned(u,source,true)).collect();
+ let reference_order=|a:&&Value,b:&&Value|(text(a,"transactionId").unwrap_or_default(),number(a,"index").unwrap_or_default()).cmp(&(text(b,"transactionId").unwrap_or_default(),number(b,"index").unwrap_or_default()));
+ candidates.sort_by(|a,b|number(b,"lovelace").unwrap_or_default().cmp(&number(a,"lovelace").unwrap_or_default()).then_with(||reference_order(a,b)));
+ let mut selected_inputs=Vec::new();
+ if let Some(unit)=&selected{
+  let selected_quantity=|u:&Value|u.get("assets").and_then(|a|a.get(unit)).and_then(Value::as_u64).unwrap_or(0);
+  // Stable sorting preserves the ADA/reference tie order established above.
+  let mut token_candidates:Vec<_>=candidates.iter().copied().filter_map(|u|{let n=selected_quantity(u);(n>0).then_some((n,u))}).collect();
+  token_candidates.sort_by(|a,b|b.0.cmp(&a.0));
+  let mut covered=0_u64;
+  for (amount,entry) in token_candidates{
+   if covered>=quantity{break}
+   covered=covered.checked_add(amount).filter(|n|*n<=i64::MAX as u64).ok_or(Failure::Invalid)?;
+   selected_inputs.push(entry);
+  }
+  if covered<quantity{return Err(Failure::Funds)}
+ }else{selected_inputs.push(*candidates.first().ok_or(Failure::Funds)?);}
+ candidates.retain(|u|!selected_inputs.contains(u));
+ let channel_address=address(text(intent,"validatorAddress")?,network)?;
+ let inline=datum(field(intent,"datum")?)?;
+ let channel_assets=selected.as_ref().map(|u|std::collections::BTreeMap::from([(u.clone(),quantity)])).unwrap_or_default();
+ let channel_ada=if selected.is_some(){fixed_minimum(&channel_address,&channel_assets,Some(&inline),per_byte,2_000_000)?}else{quantity};
+ let fixed=output(&channel_address,channel_ada,&channel_assets,Some(&inline))?;
+ if channel_ada<minimum(&fixed,per_byte)?{return Err(Failure::Funds)}
+ if fixed.amount().to_bytes().len()>limit{return Err(Failure::Invalid)}
+ loop{
+  let mut ada=0_u64;let mut assets=std::collections::BTreeMap::new();
+  for input in &selected_inputs{
+   ada=ada.checked_add(number(input,"lovelace")?).filter(|n|*n<=i64::MAX as u64).ok_or(Failure::Invalid)?;
+   add_balances(&mut assets,&balances(input)?)?;
+  }
+  for (unit,amount) in &channel_assets{
+   let balance=assets.get_mut(unit).ok_or(Failure::Funds)?;
+   *balance=balance.checked_sub(*amount).ok_or(Failure::Funds)?;
+  }
+  assets.retain(|_,n|*n>0);
+  let mut sorted=selected_inputs.clone();
+  sorted.sort_by(|a,b|{
+   let a=tx_input(a).map(|v|v.to_bytes()).unwrap_or_default();let b=tx_input(b).map(|v|v.to_bytes()).unwrap_or_default();
+   a.len().cmp(&b.len()).then(a.cmp(&b))
+  });
+  let mut inputs=csl::TransactionInputs::new();
+  for entry in sorted{inputs.add(&tx_input(entry)?);}
+  let mut fee=0_u64;
+  let mut needs_funds=false;
+  for _ in 0..12{
+   let Some(change)=ada.checked_sub(channel_ada).and_then(|v|v.checked_sub(fee))else{needs_funds=true;break};
+   let changes=match pack_open_change(&source_address,change,&assets,per_byte,limit){
+    Ok(value)=>value,Err(Failure::Funds)=>{
+     // Dust is never donated to fees. An exactly funded no-change vector is
+     // valid only when its entire residual equals its actual witness-priced fee.
+     if assets.is_empty(){
+      let exact_fee=ada.checked_sub(channel_ada).ok_or(Failure::Funds)?;
+      let mut outputs=csl::TransactionOutputs::new();outputs.add(&fixed);
+      let mut body=csl::TransactionBody::new_tx_body(&inputs,&outputs,&csl::BigNum::from(exact_fee));
+      body.set_validity_start_interval_bignum(&csl::BigNum::from(number(intent,"validFrom")?));
+      body.set_ttl(&csl::BigNum::from(number(intent,"validUntil")?));
+      let priced=csl::Transaction::new(&body,&dummy_witness()?,None);
+      let required:u64=csl::min_fee(&priced,&linear).map_err(|_|Failure::Invalid)?.into();
+      if exact_fee==required&&priced.to_bytes().len()<=max_size{
+       return Ok((csl::Transaction::new(&body,&csl::TransactionWitnessSet::new(),None),exact_fee))
+      }
+     }
+     needs_funds=true;break
+    },Err(error)=>return Err(error)
+   };
+   let mut outputs=csl::TransactionOutputs::new();outputs.add(&fixed);
+   for change in changes{outputs.add(&change);}
+   let mut body=csl::TransactionBody::new_tx_body(&inputs,&outputs,&csl::BigNum::from(fee));
+   body.set_validity_start_interval_bignum(&csl::BigNum::from(number(intent,"validFrom")?));
+   body.set_ttl(&csl::BigNum::from(number(intent,"validUntil")?));
+   let priced=csl::Transaction::new(&body,&dummy_witness()?,None);
+   if priced.to_bytes().len()>max_size{return Err(Failure::Invalid)}
+   let required:u64=csl::min_fee(&priced,&linear).map_err(|_|Failure::Invalid)?.into();
+   if fee>=required{return Ok((csl::Transaction::new(&body,&csl::TransactionWitnessSet::new(),None),fee))}
+   fee=fee.max(required);
+  }
+  if !needs_funds{return Err(Failure::Invalid)}
+  if candidates.is_empty(){return Err(Failure::Funds)}
+  selected_inputs.push(candidates.remove(0));
+ }
+}
 fn parameters(ledger:&Value)->Result<(csl::LinearFee,u64,usize,Value),Failure>{
  let params:Value=serde_json::from_str(text(ledger,"protocolParametersJson")?).map_err(|_|Failure::Invalid)?;
  let positive=|name:&str|params.get(name).and_then(Value::as_u64).filter(|n|*n>0).ok_or(Failure::Invalid);
@@ -410,15 +546,16 @@ fn build_candidate(request:&Value,budget:Option<(u64,u64)>)->Result<(csl::Transa
  let intent=field(request,"intent")?;let ledger=field(request,"ledger")?;
  validate_intent(intent,ledger,field(request,"assets")?)?;
  let kind=text(intent,"type")?.rsplit('.').next().ok_or(Failure::Invalid)?;
+ if kind=="OpenChannel"{return build_open(request)}
  let (network,_,_,_,_)=network(ledger)?;
  let source=text(intent,"sourceAddress")?;
  let source_address=address(source,network)?;
  let source_cred=source_address.payment_cred().and_then(|c|c.to_keyhash()).ok_or(Failure::Invalid)?;
  let (linear,per_byte,max_size,params)=parameters(ledger)?;
- let channel=if kind=="OpenChannel"{None}else{Some(field(intent,"channelInput")?)};
+ let channel=Some(field(intent,"channelInput")?);
  let spending=channel.is_some();
  let reference=field(intent,"referenceInput")?;
- let ref_script=reference_script(reference,text(if spending{field(intent,"currentDatum")?}else{field(intent,"datum")?},"validatorHashHex")?)?;
+ let ref_script=reference_script(reference,text(field(intent,"currentDatum")?,"validatorHashHex")?)?;
  let quantity=if kind=="CloseChannel"{0}else{number(field(intent,"amount")?,"baseUnits")?};
  let selected=if kind=="CloseChannel"{None}else{asset_unit(field(field(intent,"amount")?,"asset")?)?};
  let native=selected.is_some();
@@ -461,14 +598,11 @@ fn build_candidate(request:&Value,budget:Option<(u64,u64)>)->Result<(csl::Transa
  for entry in &inputs{transaction_inputs.add(&tx_input(entry)?);}
  let channel_index=channel.map(|c|inputs.iter().position(|entry|*entry==c).ok_or(Failure::Invalid)).transpose()?;
  let mut channel_assets=std::collections::BTreeMap::<String,u64>::new();
- let inline=if kind=="CloseChannel"{intent.get("resultingDatum").filter(|v|!v.is_null())}else if kind=="OpenChannel"{Some(field(intent,"datum")?)}else{Some(field(intent,"resultingDatum")?)};
+ let inline=if kind=="CloseChannel"{intent.get("resultingDatum").filter(|v|!v.is_null())}else{Some(field(intent,"resultingDatum")?)};
  let plutus=inline.map(datum).transpose()?;
- let channel_address=if kind=="OpenChannel"{address(text(intent,"validatorAddress")?,network)?}
- else{address(text(channel.ok_or(Failure::Invalid)?,"address")?,network)?};
+ let channel_address=address(text(channel.ok_or(Failure::Invalid)?,"address")?,network)?;
  let destination=if kind=="CloseChannel"&&inline.is_none(){&source_address}else{&channel_address};
- let recipient_ada=if kind=="OpenChannel"{
-  if let Some(unit)=&selected{channel_assets.insert(unit.clone(),quantity);fixed_minimum(destination,&channel_assets,plutus.as_ref(),per_byte,2_000_000)?}else{quantity}
- }else if kind=="AddChannelFunds"{
+ let recipient_ada=if kind=="AddChannelFunds"{
   let c=channel.ok_or(Failure::Invalid)?;
   if let Some(unit)=&selected{
    let base=balances(c)?.get(unit).copied().ok_or(Failure::Invalid)?;
@@ -549,6 +683,345 @@ fn build_candidate(request:&Value,budget:Option<(u64,u64)>)->Result<(csl::Transa
 #[cfg(test)]
 mod tests{
  use super::*;
+ fn change_address()->csl::Address{
+  let source:Value=serde_json::from_slice(&crate::derived(&(0..32).collect::<Vec<u8>>(),1).unwrap()).unwrap();
+  csl::Address::from_bech32(source["paymentAddress"].as_str().unwrap()).unwrap()
+ }
+ fn change_units(change:&csl::TransactionOutput)->std::collections::BTreeMap<String,u64>{
+  let mut units=std::collections::BTreeMap::new();
+  if let Some(multi)=change.amount().multiasset(){
+   let policies=multi.keys();
+   for i in 0..policies.len(){
+    let policy=policies.get(i);
+    let entries=multi.get(&policy).unwrap();
+    let names=entries.keys();
+    for j in 0..names.len(){
+     let name=names.get(j);
+     units.insert(format!("{}{}",policy.to_hex(),hex::encode(name.name())),entries.get(&name).unwrap().into());
+    }
+   }
+  }
+  units
+ }
+ #[test]
+ fn open_change_packs_160_units_greedily_and_preserves_every_quantity(){
+  let address=change_address();
+  let assets:std::collections::BTreeMap<String,u64>=(0..160).map(|i|(format!("{}{:064x}","6".repeat(56),i),1)).collect();
+  let ada=120_000_000;
+  let per_byte=4310;
+  assert!(output(&address,ada,&assets,None).unwrap().amount().to_bytes().len()>5000);
+  for start in [0,80]{
+   let input_assets=assets.iter().skip(start).take(80).map(|(unit,quantity)|(unit.clone(),*quantity)).collect();
+   assert!(output(&address,60_000_000,&input_assets,None).unwrap().amount().to_bytes().len()<=5000);
+  }
+  let changes=pack_open_change(&address,ada,&assets,per_byte,5000).unwrap();
+  assert!(changes.len()>=2);
+  let mut total_ada=0_u64;
+  let mut returned=std::collections::BTreeMap::new();
+  let mut ordered_units=Vec::new();
+  let mut minima=0_u64;
+  for (index,change) in changes.iter().enumerate(){
+   let coin:u64=change.amount().coin().into();
+   let units=change_units(change);
+   let required=fixed_minimum(&address,&units,None,per_byte,0).unwrap();
+   minima=minima.checked_add(required).unwrap();
+   assert_eq!(change.address().to_bytes(),address.to_bytes());
+   assert!(change.plutus_data().is_none());
+   assert!(change.data_hash().is_none());
+   assert!(change.script_ref().is_none());
+   assert!(change.amount().to_bytes().len()<=5000);
+   assert!(coin>=minimum(change,per_byte).unwrap());
+   if index+1<changes.len(){
+    assert_eq!(coin,required);
+    let mut candidate=units.clone();
+    let next=change_units(&changes[index+1]).into_iter().next().unwrap();
+    candidate.insert(next.0,next.1);
+    assert!(output(&address,ada,&candidate,None).unwrap().amount().to_bytes().len()>5000);
+   }
+   total_ada=total_ada.checked_add(coin).unwrap();
+   ordered_units.extend(units.keys().cloned());
+   for (unit,quantity) in units{assert!(returned.insert(unit,quantity).is_none());}
+  }
+  assert_eq!(total_ada,ada);
+  assert_eq!(returned,assets);
+  assert_eq!(ordered_units,assets.keys().cloned().collect::<Vec<_>>());
+  let last=changes.last().unwrap();
+  let last_coin:u64=last.amount().coin().into();
+  assert_eq!(last_coin,fixed_minimum(&address,&change_units(last),None,per_byte,0).unwrap()+ada-minima);
+  assert!(matches!(pack_open_change(&address,minima-1,&assets,per_byte,5000),Err(Failure::Funds)));
+  let repeated=pack_open_change(&address,ada,&assets,per_byte,5000).unwrap();
+  assert_eq!(changes.iter().map(|change|change.to_bytes()).collect::<Vec<_>>(),repeated.iter().map(|change|change.to_bytes()).collect::<Vec<_>>());
+ }
+ #[test]
+ fn open_change_reserves_coin_width_at_two_to_the_32(){
+  let address=change_address();
+  let assets:std::collections::BTreeMap<String,u64>=(0..2).map(|i|(format!("{}{:064x}","6".repeat(56),i),7)).collect();
+  let below=(1_u64<<32)-1;
+  let limit=output(&address,below,&assets,None).unwrap().amount().to_bytes().len();
+  assert_eq!(output(&address,1_u64<<32,&assets,None).unwrap().amount().to_bytes().len(),limit+4);
+  for ada in [below,1_u64<<32,(1_u64<<32)+1]{
+   let changes=pack_open_change(&address,ada,&assets,4310,limit).unwrap();
+   assert_eq!(changes.len(),if ada==below{1}else{2});
+   let mut total=0_u64;
+   let mut returned=std::collections::BTreeMap::new();
+   for change in changes{
+    let coin:u64=change.amount().coin().into();
+    total+=coin;
+    assert!(change.amount().to_bytes().len()<=limit);
+    assert!(coin>=minimum(&change,4310).unwrap());
+    returned.extend(change_units(&change));
+   }
+   assert_eq!(total,ada);
+   assert_eq!(returned,assets);
+  }
+ }
+ #[test]
+ fn open_change_handles_empty_plain_ada_and_singleton_limits(){
+  let address=change_address();
+  let empty=std::collections::BTreeMap::new();
+  assert!(pack_open_change(&address,0,&empty,4310,5000).unwrap().is_empty());
+  let required=fixed_minimum(&address,&empty,None,4310,0).unwrap();
+  for ada in [required,required+1,1_u64<<32]{
+   let changes=pack_open_change(&address,ada,&empty,4310,5000).unwrap();
+   assert_eq!(changes.len(),1);
+   let coin:u64=changes[0].amount().coin().into();
+   assert_eq!(coin,ada);
+   assert!(change_units(&changes[0]).is_empty());
+   assert!(coin>=minimum(&changes[0],4310).unwrap());
+  }
+  assert!(matches!(pack_open_change(&address,required-1,&empty,4310,5000),Err(Failure::Funds)));
+  assert!(matches!(pack_open_change(&address,required,&empty,4310,0),Err(Failure::Invalid)));
+  let assets=std::collections::BTreeMap::from([(format!("{}{}","4".repeat(56),"ff".repeat(32)),11)]);
+  let ada=10_000_000;
+  let limit=output(&address,ada,&assets,None).unwrap().amount().to_bytes().len();
+  let changes=pack_open_change(&address,ada,&assets,4310,limit).unwrap();
+  assert_eq!(changes.len(),1);
+  assert_eq!(change_units(&changes[0]),assets);
+  assert!(matches!(pack_open_change(&address,ada,&assets,4310,limit-1),Err(Failure::Invalid)));
+  assert!(matches!(pack_open_change(&address,0,&assets,4310,limit),Err(Failure::Funds)));
+  assert!(matches!(pack_open_change(&address,ada,&assets,u64::MAX,limit),Err(Failure::Invalid)));
+  let zero_assets=std::collections::BTreeMap::from([(format!("{}","5".repeat(56)),0)]);
+  assert!(pack_open_change(&address,0,&zero_assets,4310,5000).unwrap().is_empty());
+ }
+ fn reviewed_assets()->Vec<Value>{
+  let mut assets=vec![json!({"alias":"ada","policyId":null,"assetName":null,"decimals":6,"pricing":"ADA","catalogDigest":"a".repeat(64)})];
+  for (alias,policy,name) in [
+   ("usda","fe7c786ab321f41c654ef6c1af7b3250a613c24e4213e0425a7ae456","55534441"),
+   ("usdcx","1f3aec8bfe7ea4fe14c5f121e2a92e301afe414147860d557cac7e34","5553444378"),
+   ("usdm","c48cbb3d5e57ed56e276bc45f99ab39abe94e6cd7ac39fb402da47ad","0014df105553444d")
+  ]{assets.push(json!({"alias":alias,"policyId":policy,"assetName":name,"decimals":6,"pricing":"USD_PEG","catalogDigest":"a".repeat(64)}));}
+  assets
+ }
+ fn mixed_request(selected:usize,quantity:u64,coins:&[u64],maps:&[std::collections::BTreeMap<String,u64>])->Value{
+  let fixture:Value=serde_json::from_str(include_str!("../../../shared/src/androidHostTest/resources/konduit/channel-conformance.json")).unwrap();
+  let entropy:Vec<u8>=(0..32).collect();
+  let derived:Value=serde_json::from_slice(&crate::derived(&entropy,1).unwrap()).unwrap();
+  let source=derived["paymentAddress"].as_str().unwrap();
+  let assets=reviewed_assets();
+  let mut inline:Value=serde_json::from_slice(&decode(fixture["datum_opened_empty"].as_str().unwrap().as_bytes(),&serde_json::to_vec(&assets).unwrap()).unwrap()).unwrap();
+  inline["constants"]["asset"]=assets[selected].clone();
+  inline["constants"]["addVerificationKeyHex"]=json!(hex::encode(crate::payment_public(&entropy).unwrap().as_bytes()));
+  let validator="addr1wxcrrmk4g6ta93942evluyw6c2ffy2xanpl6lc43tyzvupqswlfa5";
+  let reference=json!({"transactionId":"11".repeat(32),"index":0,"address":validator,"lovelace":2_000_000,
+   "scriptRefHex":fixture["reference_script"],"scriptRefVersion":3,"scriptRefHashHex":fixture["validator_hash"]});
+  let mut utxos=vec![reference.clone()];
+  for (index,coin) in coins.iter().enumerate(){utxos.push(json!({"transactionId":format!("{:064x}",index+32),"index":0,"address":source,"lovelace":coin,"assets":maps[index]}));}
+  json!({"intent":{"type":"io.riverark.ferret.core.cardano.CardanoIntent.OpenChannel","sourceAddress":source,
+   "validatorAddress":validator,"referenceInput":reference,"datum":inline,"amount":{"asset":assets[selected],"baseUnits":quantity},
+   "operationId":"00000000-0000-4000-8000-000000000018","validFrom":4_492_800,"validUntil":4_492_900},
+   "assets":assets,"ledger":{"network":"MAINNET","utxos":utxos,"currentSlot":4_492_800,"protocolParametersJson":fixture["protocol_parameters_fixture"].to_string()}})
+ }
+ fn auth_json(request:&Value,fee:u64)->Vec<u8>{
+  serde_json::to_vec(&json!({"intent":request["intent"],"ledger":request["ledger"],"assets":request["assets"],
+   "operationId":request["intent"]["operationId"],"feeBound":fee})).unwrap()
+ }
+ fn completed_open(request:&Value)->(csl::Transaction,u64){
+  let mut session=begin(&serde_json::to_vec(request).unwrap()).unwrap();
+  let result:Value=serde_json::from_slice(&next(&mut session,&[],&[]).unwrap()).unwrap();
+  assert_eq!(result["kind"],"complete");
+  let tx=csl::Transaction::from_bytes(hex::decode(result["cborHex"].as_str().unwrap()).unwrap()).unwrap();
+  let fee=result["feeBound"].as_u64().unwrap();
+  let report:Value=serde_json::from_slice(&crate::authorization::inspect(&tx.to_bytes()).unwrap()).unwrap();
+  let mut ada=0;let mut tokens=std::collections::BTreeMap::new();
+  for input in report["inputs"].as_array().unwrap(){
+   let utxo=request["ledger"]["utxos"].as_array().unwrap().iter().find(|u|u["transactionId"]==input["transactionId"]&&u["index"]==input["index"]).unwrap();
+   assert!(owned(utxo,request["intent"]["sourceAddress"].as_str().unwrap(),true));
+   ada+=number(utxo,"lovelace").unwrap();add_balances(&mut tokens,&balances(utxo).unwrap()).unwrap();
+  }
+  let mut paid=fee;let mut returned=std::collections::BTreeMap::new();
+  let expected=asset_unit(&request["intent"]["amount"]["asset"]).unwrap().map(|u|std::collections::BTreeMap::from([(u,number(&request["intent"]["amount"],"baseUnits").unwrap())])).unwrap_or_default();
+  assert_eq!(change_units(&tx.body().outputs().get(0)),expected);
+  assert_eq!(tx.body().outputs().get(0).plutus_data().unwrap().to_bytes(),datum(&request["intent"]["datum"]).unwrap().to_bytes());
+  if expected.is_empty(){assert_eq!(u64::from(tx.body().outputs().get(0).amount().coin()),number(&request["intent"]["amount"],"baseUnits").unwrap());}
+  for i in 0..tx.body().outputs().len(){
+   let out=tx.body().outputs().get(i);let coin:u64=out.amount().coin().into();
+   paid+=coin;add_balances(&mut returned,&change_units(&out)).unwrap();
+   assert!(coin>=minimum(&out,4310).unwrap());assert!(out.amount().to_bytes().len()<=5000);
+   if i>0{assert_eq!(out.address().to_bech32(None).unwrap(),request["intent"]["sourceAddress"].as_str().unwrap());assert!(out.plutus_data().is_none());assert!(out.data_hash().is_none());assert!(out.script_ref().is_none());}
+  }
+  assert_eq!(ada,paid);assert_eq!(tokens,returned);
+  assert!(tx.body().mint().is_none());assert!(tx.body().collateral().is_none());assert!(tx.witness_set().redeemers().is_none());
+  let signed=crate::authorization::sign(&tx.to_bytes(),&(0..32).collect::<Vec<u8>>(),&auth_json(request,fee)).unwrap();
+  assert!(signed.len()<=16384);
+  let signed_tx=csl::Transaction::from_bytes(signed.clone()).unwrap();assert_eq!(txid(&tx).unwrap(),txid(&signed_tx).unwrap());
+  crate::authorization::authorize_signed(&signed,&auth_json(request,fee)).unwrap();
+  (tx,fee)
+ }
+ fn unknowns()->std::collections::BTreeMap<String,u64>{
+  std::collections::BTreeMap::from([("4".repeat(56),7),(format!("{}{}","4".repeat(56),"ff".repeat(32)),11),(format!("{}5553444d","5".repeat(56)),13)])
+ }
+ #[test]
+ fn open_every_reviewed_subset_and_unknown_only_preserves_exact_units(){
+  let assets=reviewed_assets();
+  for subset in 0..8{for unknown in [false,true]{
+   let mut units=if unknown{unknowns()}else{Default::default()};
+   for i in 1..4{if subset&(1<<(i-1))!=0{units.insert(asset_unit(&assets[i]).unwrap().unwrap(),10_000_000);}}
+   for selected in 0..4{
+    if selected>0&&subset&(1<<(selected-1))==0{continue}
+    completed_open(&mixed_request(selected,if selected==0{5_000_000}else{1_250_000},&[100_000_000],&[units.clone()]));
+   }
+  }}
+ }
+ #[test]
+ fn open_multiple_inputs_exact_deposits_and_ledger_order(){
+  let assets=reviewed_assets();let mut maps=vec![std::collections::BTreeMap::new();3];
+  for map in &mut maps{for asset in &assets[1..]{map.insert(asset_unit(asset).unwrap().unwrap(),4_000_000);}}
+  for (i,(unit,n)) in unknowns().into_iter().enumerate(){maps[i].insert(unit,n);}maps[1].insert("4".repeat(56),3);
+  for selected in 0..4{
+   for quantity in if selected==0{vec![90_000_000]}else{vec![9_000_000,12_000_000]}{
+    let request=mixed_request(selected,quantity,&[40_000_000;3],&maps);
+    let (tx,_)=completed_open(&request);assert_eq!(tx.body().inputs().len(),3);
+    if selected>0&&quantity==12_000_000{let unit=asset_unit(&assets[selected]).unwrap().unwrap();for i in 1..tx.body().outputs().len(){assert!(!change_units(&tx.body().outputs().get(i)).contains_key(&unit));}}
+    let mut reversed=request.clone();reversed["ledger"]["utxos"].as_array_mut().unwrap().reverse();
+    let (reverse_tx,_)=completed_open(&reversed);assert_eq!(tx.to_bytes(),reverse_tx.to_bytes());
+   }
+   if selected>0{assert!(build_candidate(&mixed_request(selected,12_000_001,&[40_000_000;3],&maps),None).is_err());}
+  }
+ }
+ fn multi_change_request(selected:usize)->Value{
+  let assets=reviewed_assets();let mut maps=vec![std::collections::BTreeMap::new();2];
+  for i in 0..2{
+   if selected>0{maps[i].insert(asset_unit(&assets[selected]).unwrap().unwrap(),750_000);}
+   for n in i*80..(i+1)*80{maps[i].insert(format!("{}{:064x}","6".repeat(56),n),1);}
+  }
+  mixed_request(selected,if selected==0{90_000_000}else{1_250_000},&[60_000_000;2],&maps)
+ }
+ #[test]
+ fn open_real_multi_change_for_every_selected_asset(){
+  for selected in 0..4{
+   let request=multi_change_request(selected);let (tx,_)=completed_open(&request);assert!(tx.body().outputs().len()>=3);
+   for utxo in request["ledger"]["utxos"].as_array().unwrap().iter().skip(1){
+    assert!(output(&address(utxo["address"].as_str().unwrap(),1).unwrap(),number(utxo,"lovelace").unwrap(),&balances(utxo).unwrap(),None).unwrap().amount().to_bytes().len()<=5000);
+   }
+  }
+ }
+ fn replace_outputs(tx:&csl::Transaction,outputs:&[csl::TransactionOutput])->csl::Transaction{
+  let mut list=csl::TransactionOutputs::new();for out in outputs{list.add(out);}
+  let old=tx.body();let mut body=csl::TransactionBody::new_tx_body(&old.inputs(),&list,&old.fee());
+  body.set_validity_start_interval_bignum(&old.validity_start_interval_bignum().unwrap());body.set_ttl(&old.ttl_bignum().unwrap());
+  csl::Transaction::new(&body,&csl::TransactionWitnessSet::new(),None)
+ }
+ fn locally_signed(tx:&csl::Transaction)->Vec<u8>{
+  let entropy:Vec<u8>=(0..32).collect();let public=crate::payment_public(&entropy).unwrap();
+  let fixed=csl::FixedTransaction::from_bytes(tx.to_bytes()).unwrap();
+  let signature=csl::Ed25519Signature::from_bytes(crate::sign_payment(&entropy,&fixed.transaction_hash().to_bytes()).unwrap()).unwrap();
+  let mut keys=csl::Vkeywitnesses::new();keys.add(&csl::Vkeywitness::new(&csl::Vkey::new(&public),&signature));
+  let mut witnesses=csl::TransactionWitnessSet::new();witnesses.set_vkeys(&keys);
+  csl::Transaction::new(&tx.body(),&witnesses,None).to_bytes()
+ }
+ fn rejects_both(tx:&csl::Transaction,request:&Value,fee:u64){
+  let auth=auth_json(request,fee);
+  assert!(crate::authorization::authorize(&tx.to_bytes(),&auth).is_err());
+  // Sign the altered body itself: rejection cannot be explained by a stale
+  // transaction identifier, signature, or preview metadata.
+  assert!(crate::authorization::authorize_signed(&locally_signed(tx),&auth).is_err());
+ }
+ fn update_params(request:&mut Value,f:impl FnOnce(&mut Value)){
+  let mut params:Value=serde_json::from_str(request["ledger"]["protocolParametersJson"].as_str().unwrap()).unwrap();
+  f(&mut params);request["ledger"]["protocolParametersJson"]=json!(params.to_string());
+ }
+ #[test]
+ fn open_multi_change_authorization_rejects_value_and_output_attacks(){
+  let mut request=multi_change_request(3);
+  let unselected=asset_unit(&reviewed_assets()[1]).unwrap().unwrap();
+  request["ledger"]["utxos"][1]["assets"][&unselected]=json!(10);
+  let decremented_unit=format!("{}{:064x}","6".repeat(56),0);
+  request["ledger"]["utxos"][1]["assets"][&decremented_unit]=json!(2);
+  let (tx,fee)=completed_open(&request);
+  let originals:Vec<_>=(0..tx.body().outputs().len()).map(|i|tx.body().outputs().get(i)).collect();
+  let unknown=change_units(&originals[1]).keys().find(|u|u.starts_with(&"6".repeat(56))).unwrap().clone();
+  let source=originals[1].address();
+  for attack in 0..9{
+   let mut outs=originals.clone();
+   let mut units=change_units(&outs[1]);let coin:u64=outs[1].amount().coin().into();
+   match attack{
+    0=>{units.remove(&unknown);outs[1]=output(&source,coin,&units,None).unwrap();},
+    1=>{let unit=decremented_unit.clone();let i=(1..outs.len()).find(|i|change_units(&outs[*i]).contains_key(&unit)).unwrap();let mut units=change_units(&outs[i]);units.insert(unit,1);outs[i]=output(&source,outs[i].amount().coin().into(),&units,None).unwrap();},
+    2=>{let i=(1..outs.len()).find(|i|change_units(&outs[*i]).contains_key(&unselected)).unwrap();let mut units=change_units(&outs[i]);units.insert(unselected.clone(),9);outs[i]=output(&source,outs[i].amount().coin().into(),&units,None).unwrap();},
+    3=>{let mut units=change_units(&outs[2]);units.insert(unknown.clone(),1);outs[2]=output(&source,outs[2].amount().coin().into(),&units,None).unwrap();},
+    4=>{outs[2]=output(&outs[0].address(),outs[2].amount().coin().into(),&change_units(&outs[2]),None).unwrap();},
+    5=>{outs[2].set_plutus_data(&csl::PlutusData::new_integer(&csl::BigInt::from_str("0").unwrap()));},
+    6=>{let script=reference_script(&request["intent"]["referenceInput"],request["intent"]["datum"]["validatorHashHex"].as_str().unwrap()).unwrap();outs[2].set_script_ref(&csl::ScriptRef::new_plutus_script(&script));},
+    7=>{let mut units=change_units(&outs[0]);units.insert(unknown.clone(),1);outs[0]=output(&outs[0].address(),outs[0].amount().coin().into(),&units,outs[0].plutus_data().as_ref()).unwrap();},
+    _=>{let coin:u64=outs[2].amount().coin().into();outs[2]=output(&source,1,&change_units(&outs[2]),None).unwrap();outs[1]=output(&source,u64::from(outs[1].amount().coin())+coin-1,&change_units(&outs[1]),None).unwrap();}
+   }
+   rejects_both(&replace_outputs(&tx,&outs),&request,fee);
+  }
+  // A coherent transaction with one large Value, well below the transaction
+  // byte bound, must still fail its independent per-Value ledger limit.
+  let mut all=std::collections::BTreeMap::new();let mut coin=0;
+  for out in &originals[1..]{add_balances(&mut all,&change_units(out)).unwrap();coin+=u64::from(out.amount().coin());}
+  let merged=output(&source,coin,&all,None).unwrap();assert!(merged.amount().to_bytes().len()>5000);
+  let oversized=replace_outputs(&tx,&[originals[0].clone(),merged]);assert!(locally_signed(&oversized).len()<16384);
+  rejects_both(&oversized,&request,fee);
+ }
+ #[test]
+ fn open_live_value_parameters_are_strict_at_every_boundary(){
+  let request=multi_change_request(3);let (tx,fee)=completed_open(&request);
+  for value in [None,Some(json!(5000)),Some(Value::Null),Some(json!("0")),Some(json!("-1")),Some(json!("5.0")),Some(json!("05000")),Some(json!("2147483648")),Some(json!("")),Some(json!("+5000"))]{
+   let mut bad=request.clone();update_params(&mut bad,|p|{if let Some(v)=value{p["max_val_size"]=v;}else{p.as_object_mut().unwrap().remove("max_val_size");}});
+   assert!(build_candidate(&bad,None).is_err());rejects_both(&tx,&bad,fee);
+  }
+  let mut lowered=request.clone();update_params(&mut lowered,|p|p["max_val_size"]=json!("1000"));rejects_both(&tx,&lowered,fee);
+  let mut tx_limit=request.clone();update_params(&mut tx_limit,|p|p["max_tx_size"]=json!(1000));
+  assert!(build_candidate(&tx_limit,None).is_err());rejects_both(&tx,&tx_limit,fee);
+  assert_eq!(open_value_limit(&json!({"max_val_size":"2147483647"})).unwrap(),i32::MAX as usize);
+ }
+ #[test]
+ fn open_funding_boundaries_and_exact_no_change(){
+  let maps=vec![unknowns()];
+  assert!(build_candidate(&mixed_request(1,1,&[100_000_000],&maps),None).is_err());
+  let mut units=unknowns();units.insert(asset_unit(&reviewed_assets()[3]).unwrap().unwrap(),10_000_000);
+  assert!(build_candidate(&mixed_request(0,5_000_000,&[5_200_000],&[units]),None).is_err());
+  let plain=mixed_request(0,5_000_000,&[100_000_000],&[Default::default()]);
+  let (tx,_)=completed_open(&plain);assert_eq!(tx.body().outputs().len(),2);
+  // Price the actual one-output vector, including its final fee encoding width.
+  let mut fee=0;
+  for _ in 0..12{
+   let old=tx.body();let mut outputs=csl::TransactionOutputs::new();outputs.add(&old.outputs().get(0));
+   let mut body=csl::TransactionBody::new_tx_body(&old.inputs(),&outputs,&csl::BigNum::from(fee));
+   body.set_validity_start_interval_bignum(&old.validity_start_interval_bignum().unwrap());body.set_ttl(&old.ttl_bignum().unwrap());
+   let priced=csl::Transaction::new(&body,&dummy_witness().unwrap(),None);
+   let linear=parameters(&plain["ledger"]).unwrap().0;
+   let required:u64=csl::min_fee(&priced,&linear).unwrap().into();if required==fee{break}fee=required;
+  }
+  let exact=mixed_request(0,5_000_000,&[5_000_000+fee],&[Default::default()]);
+  let (tx,actual)=completed_open(&exact);assert_eq!(actual,fee);assert_eq!(tx.body().outputs().len(),1);
+  let dust=mixed_request(0,5_000_000,&[5_000_001+fee],&[Default::default()]);assert!(build_candidate(&dust,None).is_err());
+  for coin in [(1_u64<<32)-1,1_u64<<32,(1_u64<<32)+1]{completed_open(&mixed_request(0,5_000_000,&[coin],&[unknowns()]));}
+  // Additional ADA is selected only when the token-bearing input cannot fund
+  // the channel and all residual token minima.
+  let mut token=std::collections::BTreeMap::new();token.insert(asset_unit(&reviewed_assets()[3]).unwrap().unwrap(),2_000_000);
+  let extended=mixed_request(3,1_250_000,&[2_000_000,10_000_000],&[token,unknowns()]);
+  assert_eq!(completed_open(&extended).0.body().inputs().len(),2);
+  let mut singleton=plain.clone();
+  singleton["ledger"]["utxos"][1]["assets"]=json!({format!("{}{}","4".repeat(56),"ff".repeat(32)):1});
+  update_params(&mut singleton,|p|p["max_val_size"]=json!("1"));assert!(build_candidate(&singleton,None).is_err());
+  for field in ["datumHex","datumHashHex","scriptRefHashHex"]{
+   let mut bad=plain.clone();bad["ledger"]["utxos"][1][field]=json!("00".repeat(32));assert!(build_candidate(&bad,None).is_err());
+  }
+  let mut foreign=plain.clone();foreign["ledger"]["utxos"][1]["address"]=foreign["intent"]["validatorAddress"].clone();assert!(build_candidate(&foreign,None).is_err());
+ }
  #[test]
  fn datum_and_redeemer_match_android_fixture(){
   let fixture:Value=serde_json::from_str(include_str!("../../../shared/src/androidHostTest/resources/konduit/channel-conformance.json")).unwrap();
@@ -614,14 +1087,17 @@ mod tests{
   let complete:Value=serde_json::from_slice(&next(&mut build,&[],&[]).unwrap()).unwrap();
   assert_eq!(complete["kind"],"complete");
   let summary=inspect(complete["cborHex"].as_str().unwrap());
-  assert_eq!(summary["inputs"],json!([identity(&collateral),identity(&funding)]));
+  let consumed=|summary:&Value,utxos:&Value|summary["inputs"].as_array().unwrap().iter().map(|input|
+   utxos.as_array().unwrap().iter().find(|u|identity(u)==*input).unwrap()["lovelace"].as_u64().unwrap()).sum::<u64>();
+  let open_inputs=json!([collateral,funding]);
+  let open_total=consumed(&summary,&open_inputs);
   assert_eq!(summary["referenceInputs"],json!([]));
   assert_eq!(summary["collateralInputs"],json!([]));
   assert_eq!(summary["outputs"][0]["address"],validator);
   assert_eq!(summary["outputs"][0]["lovelace"],5_000_000);
   assert_eq!(summary["outputs"][0]["datum"]["cborHex"],hex::encode(datum(&opened).unwrap().to_bytes()));
   assert_eq!(summary["outputs"][1]["address"],source);
-  assert_eq!(summary["outputs"][1]["lovelace"].as_u64().unwrap()+summary["fee"].as_u64().unwrap(),100_000_000);
+  assert_eq!(summary["outputs"].as_array().unwrap().iter().map(|out|out["lovelace"].as_u64().unwrap()).sum::<u64>()+summary["fee"].as_u64().unwrap(),open_total);
   assert_eq!(summary["validityStart"],from);
   assert_eq!(summary["validityEnd"],from+100);
   assert_eq!(complete["feeBound"],summary["fee"]);
@@ -653,7 +1129,7 @@ mod tests{
   assert_eq!(token_summary["outputs"][0]["datum"]["cborHex"],hex::encode(datum(&token_datum).unwrap().to_bytes()));
   assert_eq!(token_summary["outputs"][0]["lovelace"].as_u64().unwrap()+
    token_summary["outputs"][1]["lovelace"].as_u64().unwrap()+
-   token_summary["fee"].as_u64().unwrap(),105_000_000);
+   token_summary["fee"].as_u64().unwrap(),consumed(&token_summary,&token_request["ledger"]["utxos"]));
 
   for (step,current,result,slot) in [
    ("ADD",&opened,Some(&opened),from),

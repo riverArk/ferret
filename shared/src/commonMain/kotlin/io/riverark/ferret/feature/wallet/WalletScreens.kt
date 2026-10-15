@@ -234,7 +234,7 @@ fun ChannelCloseScreen(
                             if (preview.amount.asset != catalog.ada) {
                                 FerretDataBlock("Gross ADA released · reserve included", formatAsset(preview.outputAda, catalog))
                             } else Text("The gross returned ADA already includes the channel reserve.")
-                            TransactionChange("Wallet change", preview.sourceChange, catalog)
+                            TransactionChange("Wallet change", preview.sourceChangeOutputs, catalog)
                         }
                         FerretDataBlock("Network fee · separate", formatAsset(preview.actualFee, catalog))
                         if (preview.feeBound != preview.actualFee) FerretDataBlock("Fee bound", formatAsset(preview.feeBound, catalog))
@@ -655,7 +655,7 @@ fun HomeScreen(
                 }
                 if (
                     state.channels?.unresolvedLegacy?.isEmpty() == true &&
-                    adaBalance?.spendable?.baseUnits?.let { it > 0 } == true &&
+                    adaBalance?.total?.baseUnits?.let { it > 0 } == true &&
                     onOpenChannel != null
                 ) {
                     HomeMenuItem("Open channel", Res.drawable.bolt) { select(onOpenChannel) }
@@ -930,14 +930,20 @@ internal fun assetName(asset: ChannelAsset, catalog: AssetCatalog): String =
     if (catalog.requireAsset(asset) == catalog.ada) "Cardano" else requireNotNull(catalog.presentations[asset.alias]).name
 
 @Composable
-private fun TransactionChange(label: String, change: io.riverark.ferret.core.cardano.TransactionOutputSummary?, catalog: AssetCatalog) {
-    FerretDataBlock("$label · ADA", formatAsset(AssetAmount(catalog.ada, change?.lovelace?.value ?: 0), catalog))
-    change?.assets?.entries?.sortedBy { it.key }?.forEach { (unit, quantity) ->
-        val asset = catalog.assetForConnectorUnit(unit)
-        FerretDataBlock(
-            "$label · ${asset?.let { assetTicker(it, catalog) } ?: unit}",
-            asset?.let { formatAsset(AssetAmount(it, quantity), catalog) } ?: quantity.toString(),
-        )
+private fun TransactionChange(label: String, changes: List<io.riverark.ferret.core.cardano.TransactionOutputSummary>, catalog: AssetCatalog) {
+    if (changes.isEmpty()) {
+        FerretDataBlock("$label · ADA", formatAsset(AssetAmount(catalog.ada, 0), catalog))
+    }
+    changes.forEachIndexed { index, change ->
+        val outputLabel = if (changes.size == 1) label else "$label · output ${index + 1} of ${changes.size}"
+        FerretDataBlock("$outputLabel · ADA", formatAsset(AssetAmount(catalog.ada, change.lovelace.value), catalog))
+        change.assets.entries.sortedBy { it.key }.forEach { (unit, quantity) ->
+            val asset = catalog.assetForConnectorUnit(unit)
+            FerretDataBlock(
+                "$outputLabel · ${asset?.let { assetTicker(it, catalog) } ?: unit}",
+                asset?.let { formatAsset(AssetAmount(it, quantity), catalog) } ?: quantity.toString(),
+            )
+        }
     }
 }
 
@@ -1044,7 +1050,7 @@ fun TransferScreen(
                         FerretDataBlock("Fee", formatAsset(preview.feeBound, catalog))
                         FerretDataBlock("Recipient ADA", formatAsset(preview.recipientAda, catalog))
                         FerretDataBlock("Ledger minimum ADA", formatAsset(preview.ledgerMinAda, catalog))
-                        TransactionChange("Change", preview.change, catalog)
+                        TransactionChange("Change", listOfNotNull(preview.change), catalog)
                         preview.transactionId?.let { FerretDataBlock("Transaction ID", it) }
                     }
                 }
@@ -1186,7 +1192,7 @@ fun ChannelFundingScreen(
                             FerretDataBlock("Collateral at risk (ADA)", formatAsset(it, catalog))
                             Text("Collateral is not charged when the transaction succeeds.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        TransactionChange("Wallet change", preview.sourceChange, catalog)
+                        TransactionChange("Wallet change", preview.sourceChangeOutputs, catalog)
                     }
                 }
             }

@@ -13,6 +13,8 @@ import io.riverark.ferret.core.channel.ProtocolSquashStatus
 import io.riverark.ferret.core.channel.SignedChequeWire
 import io.riverark.ferret.core.channel.SignedSquashWire
 import io.riverark.ferret.core.channel.SquashBodyWire
+import io.riverark.ferret.core.network.ConnectorAssetDto
+import io.riverark.ferret.core.network.ConnectorUtxoDto
 import io.riverark.ferret.core.network.decodeBoundedJson
 import io.riverark.ferret.core.network.quoteRejectionMessage
 import kotlinx.serialization.SerializationException
@@ -20,10 +22,63 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFails
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
+import kotlin.test.assertTrue
 
 class ProtocolWireTest {
+    @Test fun tokenHeavyOwnedOutputRoundTripsThroughBoundedJsonAndLedger() {
+        val output = tokenHeavyOutput()
+        val decoded = decodeBoundedJson<ConnectorUtxoDto>(Json.encodeToString(output).encodeToByteArray())
+        val ledger = decoded.ledger()
+
+        assertEquals(output, decoded)
+        assertEquals(output.transactionId, ledger.transactionId)
+        assertEquals(output.outputIndex, ledger.index)
+        assertEquals(output.address, ledger.address)
+        assertEquals(100_000_000L, ledger.lovelace.value)
+        assertEquals(101, ledger.assets.size)
+        assertEquals(output.value.drop(1).associate { it.unit to it.quantity.toLong() }, ledger.assets)
+        assertTrue(ledger.isSpendableBy(output.address, allowNativeAssets = true))
+    }
+
+    @Test fun tokenHeavyOwnedOutputStillRejectsDuplicateUnitsAndInvalidQuantities() {
+        val output = tokenHeavyOutput()
+        listOf(emptyList(), output.value + output.value.last(), output.value + output.value.last().copy(quantity = "2"))
+            .forEach { values ->
+                val bytes = Json.encodeToString(output.copy(value = values)).encodeToByteArray()
+                assertFailsWith<IllegalArgumentException> { decodeBoundedJson<ConnectorUtxoDto>(bytes).ledger() }
+            }
+        listOf("", "-1", "01", "1.0", "9223372036854775808").forEach { quantity ->
+            val bytes = Json.encodeToString(output).replace(
+                "\"quantity\":\"1\"",
+                "\"quantity\":\"$quantity\"",
+            ).encodeToByteArray()
+            assertFails { decodeBoundedJson<ConnectorUtxoDto>(bytes).ledger() }
+        }
+    }
+
+    @Test fun tokenHeavyOwnedOutputKeepsBoundedResponseLimit() {
+        val output = tokenHeavyOutput()
+        val json = Json.encodeToString(output)
+        val bounded = json.padEnd(1_048_576, ' ').encodeToByteArray()
+        assertEquals(output, decodeBoundedJson<ConnectorUtxoDto>(bounded))
+        val failure = assertFailsWith<IllegalArgumentException> {
+            decodeBoundedJson<ConnectorUtxoDto>(bounded + byteArrayOf(32))
+        }
+        assertEquals("response too large", failure.message)
+    }
+
+    private fun tokenHeavyOutput() = ConnectorUtxoDto(
+        transactionId = "a".repeat(64),
+        outputIndex = 0,
+        address = "addr_test1wallet",
+        value = listOf(ConnectorAssetDto("lovelace", "100000000")) + List(101) { index ->
+            ConnectorAssetDto("4".repeat(56) + index.toString(16).padStart(2, '0'), "1")
+        },
+    )
+
     @Test fun chequeSignaturePayloadMatchesPinnedKonduitCbor() {
         val actual = ChequeBodyWire(
             1,

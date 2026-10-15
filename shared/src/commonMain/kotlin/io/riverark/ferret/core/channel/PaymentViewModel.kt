@@ -171,7 +171,7 @@ class DefaultPaymentGateway(
                 ChannelPayload.Squash(request),
                 entry.spendableBalance,
             ),
-            zero, zero, zero, null, adaZero, adaZero, entry.spendableBalance, network(walletId), adaZero,
+            zero, zero, zero, emptyList(), adaZero, adaZero, entry.spendableBalance, network(walletId), adaZero,
         )
     }
 
@@ -214,7 +214,7 @@ class DefaultPaymentGateway(
                 ChannelPayload.Payment(authorization, invoice, quote.invoiceHash, quote.id, request, quote),
                 entry.spendableBalance - total,
             ),
-            quote.amount, fee, fee, null, adaZero, adaZero, entry.spendableBalance - total, network(walletId), adaZero,
+            quote.amount, fee, fee, emptyList(), adaZero, adaZero, entry.spendableBalance - total, network(walletId), adaZero,
         )
     }
 

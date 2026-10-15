@@ -151,6 +151,575 @@ class AndroidCardanoTransactionEngineTest {
         override fun evaluateTx(cbor: ByteArray, inputUtxos: Set<Utxo>) = evaluate(cbor)
     }
 
+    @Suppress("UNCHECKED_CAST")
+    private fun packOpenChange(
+        engine: AndroidCardanoTransactionEngine,
+        address: String,
+        ada: Long,
+        assets: Map<String, Long>,
+        maxValueSize: Int = 5_000,
+        coinsPerByte: Long = 4_310,
+    ): List<TransactionOutput> {
+        val method = AndroidCardanoTransactionEngine::class.java.getDeclaredMethod(
+            "packOpenChange",
+            String::class.java,
+            Long::class.javaPrimitiveType,
+            Map::class.java,
+            Long::class.javaPrimitiveType,
+            Int::class.javaPrimitiveType,
+        ).also { it.isAccessible = true }
+        return try {
+            method.invoke(engine, address, ada, assets, coinsPerByte, maxValueSize) as List<TransactionOutput>
+        } catch (failure: java.lang.reflect.InvocationTargetException) {
+            throw requireNotNull(failure.cause)
+        }
+    }
+
+    private fun changeAssets(output: TransactionOutput): Map<String, Long> =
+        output.value.multiAssets.flatMap { policy ->
+            policy.assets.map { asset -> policy.policyId + asset.nameAsHex.lowercase().removePrefix("0x") to asset.value.longValueExact() }
+        }.toMap()
+
+    private fun valueSize(value: Value) = CborSerializationUtil.serialize(value.serialize()).size
+
+    private fun outputMinimum(output: TransactionOutput, coinsPerByte: Long = 4_310): Long =
+        Math.multiplyExact(160L + CborSerializationUtil.serialize(output.serialize()).size, coinsPerByte)
+
+    private fun assertPackedChange(
+        outputs: List<TransactionOutput>,
+        address: String,
+        ada: Long,
+        assets: Map<String, Long>,
+        maxValueSize: Int = 5_000,
+    ) {
+        assertEquals(ada, outputs.sumOf { it.value.coin.longValueExact() })
+        val actual = mutableMapOf<String, Long>()
+        outputs.forEach { output ->
+            assertEquals(address, output.address)
+            assertNull(output.inlineDatum)
+            assertNull(output.datumHash)
+            assertNull(output.scriptRef)
+            assertTrue(valueSize(output.value) <= maxValueSize)
+            assertTrue(output.value.coin.longValueExact() >= outputMinimum(output))
+            changeAssets(output).forEach { (unit, quantity) ->
+                assertTrue(unit !in actual, "A whole unit must not be split between buckets")
+                actual[unit] = quantity
+            }
+        }
+        assertEquals(assets.filterValues { it > 0 }, actual)
+        outputs.dropLast(1).forEach { output ->
+            assertEquals(outputMinimum(output), output.value.coin.longValueExact())
+        }
+    }
+
+    @Test fun packOpenChangeSplits160UnitsAndPreservesQuantities() = runBlocking {
+        val engine = AndroidCardanoTransactionEngine(processor, assetCatalog)
+        val address = engine.deriveWallet(ByteArray(32) { it.toByte() }, CardanoNetwork.MAINNET).paymentAddress
+        val unknown = (0 until 160).associate { index ->
+            "6".repeat(56) + index.toString(16).padStart(64, '0') to 1L
+        }
+        listOf("usda", "usdcx", "usdm").forEach { selected ->
+            val assets = unknown + (requireNotNull(assetCatalog.asset(selected)).connectorUnit to 250_000L)
+            val combined = assets.entries.fold(Value.fromCoin(BigInteger.valueOf(120_000_000))) { value, (unit, quantity) ->
+                value.add(unit.take(56), "0x" + unit.drop(56), BigInteger.valueOf(quantity))
+            }
+            assertTrue(valueSize(combined) > 5_000)
+            val outputs = packOpenChange(engine, address, 120_000_000, assets)
+            assertTrue(outputs.size >= 2)
+            assertPackedChange(outputs, address, 120_000_000, assets)
+            val reversed = packOpenChange(engine, address, 120_000_000, assets.entries.reversed().associate { it.toPair() })
+            assertEquals(
+                outputs.map { HexUtil.encodeHexString(CborSerializationUtil.serialize(it.serialize())) },
+                reversed.map { HexUtil.encodeHexString(CborSerializationUtil.serialize(it.serialize())) },
+            )
+            val orderedUnits = outputs.flatMap { changeAssets(it).keys.sorted() }
+            assertEquals(assets.keys.sorted(), orderedUnits)
+            outputs.zipWithNext().forEach { (first, next) ->
+                val nextUnit = changeAssets(next).keys.min()
+                val full = first.value.add(nextUnit.take(56), "0x" + nextUnit.drop(56), BigInteger.valueOf(assets.getValue(nextUnit)))
+                full.coin = BigInteger.valueOf(120_000_000)
+                assertTrue(valueSize(full) > 5_000, "Each greedy bucket must be full")
+            }
+            val minimumTotal = outputs.sumOf { outputMinimum(it) }
+            assertFailsWith<InsufficientFundsException> {
+                packOpenChange(engine, address, minimumTotal - 1, assets)
+            }
+        }
+    }
+
+    @Test fun packOpenChangeReservesResidualCoinWidthAtTwoToThe32() = runBlocking {
+        val engine = AndroidCardanoTransactionEngine(processor, assetCatalog)
+        val address = engine.deriveWallet(ByteArray(32) { it.toByte() }, CardanoNetwork.MAINNET).paymentAddress
+        val assets = mapOf("4".repeat(56) + "ee".repeat(32) to 7L, "4".repeat(56) + "ff".repeat(32) to 11L)
+        val below = (1L shl 32) - 1
+        val bound = assets.entries.fold(Value.fromCoin(BigInteger.valueOf(below))) { value, (unit, quantity) ->
+            value.add(unit.take(56), "0x" + unit.drop(56), BigInteger.valueOf(quantity))
+        }
+        val limit = valueSize(bound)
+        val one = packOpenChange(engine, address, below, assets, limit)
+        assertEquals(1, one.size)
+        assertPackedChange(one, address, below, assets, limit)
+        listOf(1L shl 32, (1L shl 32) + 10_000_000).forEach { ada ->
+            val outputs = packOpenChange(engine, address, ada, assets, limit)
+            assertEquals(2, outputs.size)
+            assertPackedChange(outputs, address, ada, assets, limit)
+        }
+    }
+
+    @Test fun packOpenChangeHandlesEmptyPlainAdaAndDust() = runBlocking<Unit> {
+        val engine = AndroidCardanoTransactionEngine(processor, assetCatalog)
+        val address = engine.deriveWallet(ByteArray(32) { it.toByte() }, CardanoNetwork.MAINNET).paymentAddress
+        assertTrue(packOpenChange(engine, address, 0, emptyMap()).isEmpty())
+        assertTrue(packOpenChange(engine, address, 0, mapOf("4".repeat(56) to 0)).isEmpty())
+        val outputs = packOpenChange(engine, address, 5_000_000, emptyMap())
+        assertEquals(1, outputs.size)
+        assertPackedChange(outputs, address, 5_000_000, emptyMap())
+        val minimum = outputMinimum(outputs.single())
+        assertPackedChange(packOpenChange(engine, address, minimum, emptyMap()), address, minimum, emptyMap())
+        listOf(1L, minimum - 1).forEach { dust ->
+            assertFailsWith<InsufficientFundsException> {
+                packOpenChange(engine, address, dust, emptyMap())
+            }
+        }
+        val singleton = mapOf("4".repeat(56) + "ff".repeat(32) to Long.MAX_VALUE)
+        assertPackedChange(packOpenChange(engine, address, 5_000_000, singleton), address, 5_000_000, singleton)
+        assertFailsWith<InsufficientFundsException> {
+            packOpenChange(engine, address, 0, singleton)
+        }
+    }
+
+    @Test fun packOpenChangeRejectsOversizedSingleton() = runBlocking<Unit> {
+        val engine = AndroidCardanoTransactionEngine(processor, assetCatalog)
+        val address = engine.deriveWallet(ByteArray(32) { it.toByte() }, CardanoNetwork.MAINNET).paymentAddress
+        val unit = "4".repeat(56) + "ff".repeat(32)
+        val value = Value.fromCoin(BigInteger.valueOf(5_000_000)).add(
+            unit.take(56), "0x" + unit.drop(56), BigInteger.valueOf(11),
+        )
+        val exact = valueSize(value)
+        val outputs = packOpenChange(engine, address, 5_000_000, mapOf(unit to 11L), exact)
+        assertPackedChange(outputs, address, 5_000_000, mapOf(unit to 11L), exact)
+        assertFailsWith<IllegalArgumentException> {
+            packOpenChange(engine, address, 5_000_000, mapOf(unit to 11L), exact - 1)
+        }
+    }
+
+    @Test fun openAdaFromMixedOwnedInputPreservesEveryUnit() = runBlocking {
+        val engine = AndroidCardanoTransactionEngine(processor, assetCatalog)
+        val entropy = ByteArray(32) { it.toByte() }
+        try {
+            val source = engine.deriveWallet(entropy, CardanoNetwork.MAINNET)
+            val reference = fixtureReference()
+            val assets = mapOf(
+                requireNotNull(assetCatalog.asset("usdm")).connectorUnit to 10_000_000L,
+                "4".repeat(56) to 7L,
+                "4".repeat(56) + "ff".repeat(32) to 11L,
+            )
+            val fuel = LedgerUtxo("00".repeat(32), 0, source.paymentAddress, Lovelace(100_000_000), assets)
+            val datum = channelDatum(ChannelDatumStage.Opened(0), walletAddKey(entropy))
+            val intent = CardanoIntent.OpenChannel(
+                source.paymentAddress, MAINNET.validatorAddress, reference, datum,
+                AssetAmount(assetCatalog.ada, 5_000_000), "00000000-0000-4000-8000-000000000048",
+                4_492_800, 4_492_900,
+            )
+            val ledger = LedgerSnapshot(
+                CardanoNetwork.MAINNET, listOf(fuel, reference), channelProtocolParameters, 4_492_800,
+            )
+            val unsigned = engine.build(intent, ledger)
+            engine.requireAuthorized(unsigned, intent, ledger)
+            val summary = engine.inspect(unsigned.cbor)
+            assertEquals(listOf(TransactionInputReference(fuel.transactionId, fuel.index)), summary.inputs)
+            summary.requireChannelFunding(intent, ledger)
+            summary.requireL1Witnesses(source.paymentCredentialHex, signed = false)
+            val channel = summary.outputs.single { it.address == MAINNET.validatorAddress }
+            assertEquals(Lovelace(5_000_000), channel.lovelace)
+            assertTrue(channel.assets.isEmpty())
+            assertEquals(TransactionDatum.Inline(datum.plutus().serializeToHex()), channel.datum)
+            val change = summary.outputs.filter { it.address == source.paymentAddress }
+            assertEquals(summary.outputs.size - 1, change.size)
+            change.forEach { assertEquals(TransactionDatum.Absent, it.datum); assertNull(it.scriptReference) }
+            assertEquals(fuel.lovelace.value, summary.outputs.sumOf { it.lovelace.value } + summary.fee.value)
+            assets.forEach { (unit, quantity) -> assertEquals(quantity, change.sumOf { it.assets[unit] ?: 0L }) }
+            assertEquals(assets.keys, summary.outputs.flatMap { it.assets.keys }.toSet())
+            assertTrue(summary.collateralInputs.isEmpty())
+            assertTrue(summary.redeemers.isEmpty())
+            engine.requireMinimumAda(unsigned.cbor, ledger.protocolParametersJson)
+            val signed = engine.sign(unsigned, entropy, intent, ledger)
+            try {
+                val signedSummary = engine.inspect(signed.cbor)
+                assertEquals(engine.transactionId(unsigned.cbor), engine.transactionId(signed.cbor))
+                assertEquals(summary.outputs, signedSummary.outputs)
+                assertEquals(summary.inputs, signedSummary.inputs)
+                signedSummary.requireL1Witnesses(source.paymentCredentialHex, signed = true)
+                engine.requireMinimumAda(signed.cbor, ledger.protocolParametersJson)
+            } finally {
+                signed.cbor.fill(0)
+            }
+        } finally {
+            entropy.fill(0)
+        }
+    }
+
+    private val reviewedOpenAssets get() = listOf("usda", "usdcx", "usdm").map { requireNotNull(assetCatalog.asset(it)) }
+    private val unknownOpenAssets get() = mapOf(
+        "4".repeat(56) to 7L,
+        "4".repeat(56) + "ff".repeat(32) to 11L,
+        "5".repeat(56) + "5553444d" to 13L,
+    )
+
+    private suspend fun openFixture(
+        asset: ChannelAsset,
+        quantity: Long,
+        holdings: List<Pair<Long, Map<String, Long>>>,
+    ): Triple<AndroidCardanoTransactionEngine, CardanoIntent.OpenChannel, LedgerSnapshot> {
+        val engine = AndroidCardanoTransactionEngine(processor, assetCatalog)
+        val entropy = ByteArray(32) { it.toByte() }
+        val source = engine.deriveWallet(entropy, CardanoNetwork.MAINNET)
+        val datum = channelDatum(ChannelDatumStage.Opened(0), walletAddKey(entropy)).let {
+            it.copy(constants = it.constants.copy(asset = asset))
+        }
+        entropy.fill(0)
+        val reference = fixtureReference()
+        val intent = CardanoIntent.OpenChannel(
+            source.paymentAddress, MAINNET.validatorAddress, reference, datum, AssetAmount(asset, quantity),
+            "00000000-0000-4000-8000-000000000049", 4_492_800, 4_492_900,
+        )
+        val inputs = holdings.mapIndexed { index, (ada, assets) ->
+            LedgerUtxo(index.toString(16).padStart(64, '0'), 0, source.paymentAddress, Lovelace(ada), assets)
+        }
+        return Triple(engine, intent, LedgerSnapshot(
+            CardanoNetwork.MAINNET, inputs + reference, channelProtocolParameters, 4_492_800,
+        ))
+    }
+
+    private suspend fun assertOpenRow(
+        engine: AndroidCardanoTransactionEngine,
+        intent: CardanoIntent.OpenChannel,
+        ledger: LedgerSnapshot,
+        multipleChange: Boolean = false,
+    ): UnsignedTransaction {
+        val unsigned = engine.build(intent, ledger)
+        engine.requireAuthorized(unsigned, intent, ledger)
+        val summary = engine.inspect(unsigned.cbor)
+        val consumed = summary.inputs.map { ref -> ledger.utxos.single { it.transactionId == ref.transactionId && it.index == ref.index } }
+        val expected = mutableMapOf<String, Long>()
+        consumed.forEach { input -> input.assets.forEach { (unit, amount) -> expected[unit] = Math.addExact(expected[unit] ?: 0, amount) } }
+        val actual = mutableMapOf<String, Long>()
+        summary.outputs.forEach { output -> output.assets.forEach { (unit, amount) -> actual[unit] = Math.addExact(actual[unit] ?: 0, amount) } }
+        assertEquals(expected, actual)
+        assertEquals(consumed.sumOf { it.lovelace.value }, summary.outputs.sumOf { it.lovelace.value } + summary.fee.value)
+        val channel = summary.outputs.single { it.address == intent.validatorAddress }
+        assertEquals(TransactionDatum.Inline(intent.datum.plutus().serializeToHex()), channel.datum)
+        assertNull(channel.scriptReference)
+        if (intent.amount.asset.policyId == null) {
+            assertEquals(intent.amount.baseUnits, channel.lovelace.value)
+            assertTrue(channel.assets.isEmpty())
+        } else {
+            assertEquals(mapOf(intent.amount.asset.connectorUnit to intent.amount.baseUnits), channel.assets)
+        }
+        val change = summary.outputs.filter { it != channel }
+        if (multipleChange) assertTrue(change.size >= 2)
+        change.forEach {
+            assertEquals(intent.sourceAddress, it.address)
+            assertEquals(TransactionDatum.Absent, it.datum)
+            assertNull(it.scriptReference)
+        }
+        assertTrue(summary.collateralInputs.isEmpty())
+        assertTrue(summary.redeemers.isEmpty())
+        assertTrue(summary.referenceInputs.isEmpty())
+        assertNull(summary.scriptDataHashHex)
+        Transaction.deserialize(unsigned.cbor).body.outputs.forEach {
+            assertTrue(valueSize(it.value) <= 5_000)
+            assertTrue(it.value.coin.longValueExact() >= outputMinimum(it))
+        }
+        val seed = ByteArray(32) { it.toByte() }
+        val signed = try { engine.sign(unsigned, seed, intent, ledger) } finally { seed.fill(0) }
+        try {
+            assertTrue(signed.cbor.size <= 16_384)
+            assertEquals(engine.transactionId(unsigned.cbor), engine.transactionId(signed.cbor))
+            val signedSummary = engine.inspect(signed.cbor)
+            assertEquals(summary.outputs, signedSummary.outputs)
+            signedSummary.requireL1Witnesses(
+                HexUtil.encodeHexString(Address(intent.sourceAddress).paymentCredentialHash.orElseThrow()), true,
+            )
+        } finally { signed.cbor.fill(0) }
+        return unsigned
+    }
+
+    @Test fun everySmallMixedOpenAssetSubsetConservesEveryUnit() = runBlocking {
+        for (mask in 0 until 8) for (unknown in listOf(false, true)) {
+            val present = reviewedOpenAssets.filterIndexed { index, _ -> mask and (1 shl index) != 0 }
+            val holdings = present.associate { it.connectorUnit to 10_000_000L } +
+                if (unknown) unknownOpenAssets else emptyMap()
+            for (asset in listOf(assetCatalog.ada) + present) {
+                val (engine, intent, ledger) = openFixture(
+                    asset, if (asset.policyId == null) 5_000_000 else 1_250_000,
+                    listOf(100_000_000L to holdings),
+                )
+                assertOpenRow(engine, intent, ledger)
+            }
+        }
+    }
+
+    @Test fun multipleMixedInputsReversedExactAndInsufficientQuantities() = runBlocking<Unit> {
+        val holdings = (0 until 3).map { index ->
+            40_000_000L to (reviewedOpenAssets.associate { it.connectorUnit to 4_000_000L } +
+                when (index) {
+                    0 -> unknownOpenAssets
+                    1 -> mapOf("4".repeat(56) to 17L)
+                    else -> mapOf("7".repeat(56) to 19L)
+                })
+        }
+        for (asset in listOf(assetCatalog.ada) + reviewedOpenAssets) {
+            for (quantity in if (asset.policyId == null) listOf(90_000_000L) else listOf(9_000_000L, 12_000_000L)) {
+                val (engine, intent, ledger) = openFixture(asset, quantity, holdings)
+                val forward = assertOpenRow(engine, intent, ledger)
+                val reversed = assertOpenRow(engine, intent, ledger.copy(utxos = ledger.utxos.reversed()))
+                assertContentEquals(forward.cbor, reversed.cbor)
+                assertEquals(3, engine.inspect(forward.cbor).inputs.size)
+                if (quantity == 12_000_000L) assertTrue(engine.inspect(forward.cbor).outputs
+                    .filter { it.address == intent.sourceAddress }.all { asset.connectorUnit !in it.assets })
+            }
+            if (asset.policyId != null) {
+                val (engine, intent, ledger) = openFixture(asset, 12_000_001, holdings)
+                assertFailsWith<InsufficientFundsException> { engine.build(intent, ledger) }
+            }
+        }
+    }
+
+    private fun largeOpenHoldings(asset: ChannelAsset) = (0 until 2).map { input ->
+        60_000_000L to ((input * 80 until (input + 1) * 80).associate {
+            "6".repeat(56) + it.toString(16).padStart(64, '0') to 1L
+        } + if (asset.policyId == null) emptyMap() else mapOf(asset.connectorUnit to 750_000L))
+    }
+
+    @Test fun allFourAssetsOpenAcrossReal160UnitChangeBoundary() = runBlocking {
+        for (asset in listOf(assetCatalog.ada) + reviewedOpenAssets) {
+            val (engine, intent, ledger) = openFixture(
+                asset, if (asset.policyId == null) 90_000_000 else 1_250_000, largeOpenHoldings(asset),
+            )
+            assertOpenRow(engine, intent, ledger, multipleChange = true)
+        }
+    }
+
+    private fun requireSignedOpen(
+        engine: AndroidCardanoTransactionEngine,
+        bytes: ByteArray,
+        intent: CardanoIntent.OpenChannel,
+        ledger: LedgerSnapshot,
+        bound: Lovelace,
+    ) {
+        val method = AndroidCardanoTransactionEngine::class.java.declaredMethods.single {
+            it.name.startsWith("requireTransactionAuthorization")
+        }
+        method.isAccessible = true
+        try { method.invoke(engine, bytes, intent, ledger, bound.value, true) }
+        catch (error: java.lang.reflect.InvocationTargetException) { throw error.targetException }
+    }
+
+    private fun rejectOpenBothBoundaries(
+        engine: AndroidCardanoTransactionEngine,
+        bytes: ByteArray,
+        intent: CardanoIntent.OpenChannel,
+        ledger: LedgerSnapshot,
+        fee: Lovelace,
+    ) {
+        val canonical = CborSerializationUtil.serialize(decode(bytes))
+        // Valid canonical encoding ensures rejection is about authorization,
+        // rather than the dependency's signed-byte native-name sorting bug.
+        engine.inspect(canonical)
+        assertFailsWith<IllegalArgumentException> {
+            engine.requireAuthorized(UnsignedTransaction(canonical, intent.operationId, fee), intent, ledger)
+        }
+        val entropy = ByteArray(32) { it.toByte() }
+        val account = Account.createFromMnemonic(Networks.mainnet(), MnemonicCode.INSTANCE.toMnemonic(entropy).joinToString(" "))
+        entropy.fill(0)
+        // Sign the mutated body itself, not the original transaction: authorization
+        // must reach output/value checks with a coherent body ID and valid wallet key.
+        val signed = com.bloxbean.cardano.client.transaction.TransactionSigner.INSTANCE.sign(canonical, account.hdKeyPair())
+        try {
+            assertEquals(engine.transactionId(canonical), engine.transactionId(signed))
+            engine.inspect(signed).requireL1Witnesses(
+                HexUtil.encodeHexString(Address(intent.sourceAddress).paymentCredentialHash.orElseThrow()), true,
+            )
+            assertFailsWith<IllegalArgumentException> { requireSignedOpen(engine, signed, intent, ledger, fee) }
+        } finally { signed.fill(0) }
+    }
+
+    @Test fun multiChangeOpenRejectsUnsignedAndCoherentlySignedOutputAttacks() = runBlocking {
+        val selected = reviewedOpenAssets.last()
+        val other = reviewedOpenAssets.first().connectorUnit
+        val holdings = largeOpenHoldings(selected).map { (ada, assets) ->
+            ada to (assets + mapOf(other to 23L)).mapValues { (unit, value) ->
+                if (unit == "6".repeat(56) + "0".repeat(64)) 7L else value
+            }
+        }
+        val (engine, intent, ledger) = openFixture(selected, 1_250_000, holdings)
+        val unsigned = assertOpenRow(engine, intent, ledger, true)
+        val unknown = "6".repeat(56) + "0".repeat(64)
+        fun changed(edit: (MutableList<TransactionOutput>) -> Unit) {
+            val tx = Transaction.deserialize(unsigned.cbor)
+            val outputs = tx.body.outputs.toMutableList()
+            edit(outputs)
+            tx.body.outputs = outputs
+            rejectOpenBothBoundaries(engine, tx.serialize(), intent, ledger, unsigned.feeBound)
+        }
+        fun replaceAssets(output: TransactionOutput, assets: Map<String, Long>) {
+            var value = Value.fromCoin(output.value.coin)
+            assets.filterValues { it > 0 }.forEach { (unit, amount) ->
+                value = value.add(unit.take(56), "0x" + unit.drop(56), BigInteger.valueOf(amount))
+            }
+            output.value = value
+        }
+        for (decrement in listOf(false, true)) changed { outputs ->
+            val target = outputs.first { unknown in changeAssets(it) }
+            val assets = changeAssets(target).toMutableMap()
+            if (decrement) assets[unknown] = assets.getValue(unknown) - 1 else assets.remove(unknown)
+            replaceAssets(target, assets)
+        }
+        changed { outputs ->
+            val target = outputs.first { it.address == intent.sourceAddress && other in changeAssets(it) }
+            replaceAssets(target, changeAssets(target) + (other to (changeAssets(target).getValue(other) - 1)))
+        }
+        changed { outputs ->
+            val target = outputs.last()
+            replaceAssets(target, changeAssets(target) + (unknown to 1L))
+        }
+        changed { outputs -> outputs.last().address = BASE_ADDRESS }
+        changed { outputs -> outputs.last().inlineDatum = BigIntPlutusData.of(0) }
+        changed { outputs ->
+            replaceAssets(outputs.first(), changeAssets(outputs.first()) + (unknown to 1L))
+        }
+        val scriptChange = mutate(unsigned.cbor) { envelope ->
+            val body = envelope.dataItems[0] as CborMap
+            val outputs = (body[UnsignedInteger(1)] as CborArray).dataItems
+            val last = outputs.last()
+            val mapped = if (last is CborMap) last else CborMap().apply {
+                val array = last as CborArray
+                put(UnsignedInteger(0), array.dataItems[0])
+                put(UnsignedInteger(1), array.dataItems[1])
+            }.also { outputs[outputs.lastIndex] = it }
+            val script = fixtureReference().requireChannelReferenceScript(fixture("validator_hash"))
+            mapped.put(UnsignedInteger(3), ByteString(script.scriptRefBytes()).apply { tag = Tag(24) })
+        }
+        rejectOpenBothBoundaries(engine, scriptChange, intent, ledger, unsigned.feeBound)
+        changed { outputs ->
+            val delta = outputs.last().value.coin.subtract(BigInteger.ONE)
+            outputs.last().value.coin = BigInteger.ONE
+            outputs[1].value.coin = outputs[1].value.coin.add(delta)
+        }
+    }
+
+    @Test fun openRequiresCanonicalLiveValueLimitAtBuildAndBothAuthorizationBoundaries() = runBlocking {
+        val asset = reviewedOpenAssets.last()
+        val (engine, intent, ledger) = openFixture(asset, 1_250_000, largeOpenHoldings(asset))
+        val unsigned = assertOpenRow(engine, intent, ledger, true)
+        val params = Json.parseToJsonElement(channelProtocolParameters).jsonObject
+        val invalid = listOf(
+            null, kotlinx.serialization.json.JsonNull, JsonPrimitive(5000), JsonPrimitive("0"),
+            JsonPrimitive("-1"), JsonPrimitive("5.0"), JsonPrimitive("05000"), JsonPrimitive("2147483648"),
+        )
+        for (value in invalid) {
+            val fields = params.toMutableMap()
+            if (value == null) fields.remove("max_val_size") else fields["max_val_size"] = value
+            val changed = ledger.copy(protocolParametersJson = JsonObject(fields).toString())
+            assertFailsWith<IllegalArgumentException> { engine.build(intent, changed) }
+            rejectOpenBothBoundaries(engine, unsigned.cbor, intent, changed, unsigned.feeBound)
+        }
+        val lowered = ledger.copy(protocolParametersJson = JsonObject(params + ("max_val_size" to JsonPrimitive("4000"))).toString())
+        rejectOpenBothBoundaries(engine, unsigned.cbor, intent, lowered, unsigned.feeBound)
+    }
+
+    @Test fun openSelectionKeepsUnneededInputsAndRejectsLedgerFundingBoundaries() = runBlocking<Unit> {
+        val usdm = reviewedOpenAssets.last()
+        val (engine, intent, ledger) = openFixture(assetCatalog.ada, 5_000_000, listOf(
+            100_000_000L to emptyMap(), 10_000_000L to mapOf(usdm.connectorUnit to 7L),
+        ))
+        val unsigned = assertOpenRow(engine, intent, ledger)
+        assertEquals(1, engine.inspect(unsigned.cbor).inputs.size)
+        val (poorEngine, poorIntent, poorLedger) = openFixture(
+            assetCatalog.ada, 5_000_000, listOf(5_200_000L to mapOf(usdm.connectorUnit to 1L)),
+        )
+        assertFailsWith<InsufficientFundsException> { poorEngine.build(poorIntent, poorLedger) }
+        val absent = intent.copy(amount = AssetAmount(usdm, 1), datum = intent.datum.copy(
+            constants = intent.datum.constants.copy(asset = usdm),
+        ))
+        assertFailsWith<InsufficientFundsException> {
+            engine.build(absent, ledger.copy(utxos = ledger.utxos.filter { it.assets.isEmpty() }))
+        }
+        val params = Json.parseToJsonElement(channelProtocolParameters).jsonObject
+        val smallTx = ledger.copy(protocolParametersJson = JsonObject(params + ("max_tx_size" to JsonPrimitive(200))).toString())
+        assertFailsWith<IllegalArgumentException> { engine.build(intent, smallTx) }
+        rejectOpenBothBoundaries(engine, unsigned.cbor, intent, smallTx, unsigned.feeBound)
+        val (largeEngine, largeIntent, largeLedger) = openFixture(usdm, 1_250_000, largeOpenHoldings(usdm))
+        val packed = assertOpenRow(largeEngine, largeIntent, largeLedger, true)
+        val oversized = Transaction.deserialize(packed.cbor)
+        val changes = oversized.body.outputs.drop(1)
+        var combined = Value.fromCoin(changes.fold(BigInteger.ZERO) { sum, out -> sum.add(out.value.coin) })
+        changes.forEach { output -> changeAssets(output).forEach { (unit, quantity) ->
+            combined = combined.add(unit.take(56), "0x" + unit.drop(56), BigInteger.valueOf(quantity))
+        } }
+        assertTrue(valueSize(combined) > 5_000)
+        oversized.body.outputs = listOf(oversized.body.outputs.first(), TransactionOutput(largeIntent.sourceAddress, combined))
+        assertTrue(oversized.serialize().size < 16_384)
+        rejectOpenBothBoundaries(largeEngine, oversized.serialize(), largeIntent, largeLedger, packed.feeBound)
+        val protected = ledger.copy(utxos = ledger.utxos.map { input ->
+            if (input.address == intent.sourceAddress) input.copy(datumHashHex = "aa".repeat(32)) else input
+        })
+        assertFailsWith<InsufficientFundsException> { engine.build(intent, protected) }
+    }
+
+    @Test fun nativeOpenSelectsTokenFirstThenAddsOnlyNecessaryAdaAndRejectsProtectedInputs() = runBlocking<Unit> {
+        val asset = reviewedOpenAssets.last()
+        val (engine, intent, ledger) = openFixture(asset, 1_250_000, listOf(
+            1_000_000L to mapOf(asset.connectorUnit to 2_000_000L),
+            20_000_000L to unknownOpenAssets,
+            10_000_000L to emptyMap(),
+            15_000_000L to mapOf(asset.connectorUnit to 1_000_000L),
+        ))
+        val built = assertOpenRow(engine, intent, ledger)
+        assertEquals(listOf("0".repeat(64), "0".repeat(63) + "1"),
+            engine.inspect(built.cbor).inputs.map { it.transactionId })
+        val needed = ledger.utxos.first()
+        val reference = fixtureReference()
+        val protected = listOf(
+            needed.copy(address = MAINNET.validatorAddress),
+            needed.copy(datumHashHex = "aa".repeat(32)),
+            needed.copy(datumHex = intent.datum.plutus().serializeToHex()),
+            needed.copy(scriptRefHex = reference.scriptRefHex, scriptRefVersion = reference.scriptRefVersion,
+                scriptRefHashHex = reference.scriptRefHashHex),
+        )
+        for (input in protected) {
+            assertFailsWith<InsufficientFundsException> {
+                engine.build(intent, ledger.copy(utxos = listOf(input, reference)))
+            }
+        }
+    }
+
+    @Test fun openExactlyFundedNoChangePricesActualWitnessWithoutDustDonation() = runBlocking<Unit> {
+        val (engine, intent, ledger) = openFixture(assetCatalog.ada, 5_000_000, listOf(100_000_000L to emptyMap()))
+        val baseline = engine.build(intent, ledger)
+        val template = Transaction.deserialize(baseline.cbor)
+        template.body.outputs = listOf(template.body.outputs.first())
+        var fee = 0L
+        repeat(8) {
+            template.body.fee = BigInteger.valueOf(fee)
+            val account = Account.createFromMnemonic(
+                Networks.mainnet(), MnemonicCode.INSTANCE.toMnemonic(ByteArray(32) { it.toByte() }).joinToString(" "),
+            )
+            fee = feeCalculator(protocolParams(channelProtocolParameters)).calculateFee(account.sign(template).serialize(),
+                protocolParams(channelProtocolParameters)).longValueExact()
+        }
+        val exact = ledger.copy(utxos = ledger.utxos.map {
+            if (it.address == intent.sourceAddress) it.copy(lovelace = Lovelace(5_000_000 + fee)) else it
+        })
+        val built = assertOpenRow(engine, intent, exact)
+        assertEquals(1, engine.inspect(built.cbor).outputs.size)
+        val dust = exact.copy(utxos = exact.utxos.map {
+            if (it.address == intent.sourceAddress) it.copy(lovelace = Lovelace(it.lovelace.value + 1)) else it
+        })
+        assertFailsWith<InsufficientFundsException> { engine.build(intent, dust) }
+    }
+
     @Test fun channelCodecMatchesPinnedKonduitVectors() {
         val datums = mapOf(
             "datum_opened_empty" to channelDatum(ChannelDatumStage.Opened(0)),

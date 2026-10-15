@@ -372,6 +372,11 @@ fn authorize_channel(tx: &csl::Transaction, report: &Summary, request: &Request,
     let ledger = serde_json::to_value(&request.ledger).map_err(|_| Failure::Internal)?;
     let assets = serde_json::to_value(&request.assets).map_err(|_| Failure::Internal)?;
     crate::channel::validate_intent(&intent, &ledger, &assets)?;
+    let open = matches!(&request.intent, Intent::OpenChannel { .. });
+    let value_limit = if open {
+        let params: serde_json::Value = serde_json::from_str(&request.ledger.parameters).map_err(|_| Failure::Invalid)?;
+        Some(crate::channel::open_value_limit(&params)?)
+    } else { None };
     let (source, reference, channel, from, until, operation_id, expected, selected) = match &request.intent {
         Intent::OpenChannel { source, reference, validator, datum, amount, from, until, operation_id } => {
             let selected = amount.asset.policy_id.as_ref().zip(amount.asset.asset_name.as_ref())
@@ -445,7 +450,7 @@ fn authorize_channel(tx: &csl::Transaction, report: &Summary, request: &Request,
             output.lovelace != match channel { Some(channel) => channel.lovelace.max(2_000_000).max(checked(minimum)?), None => 2_000_000_i64.max(checked(minimum)?) } {
             return Err(Failure::Invalid);
         }
-        if report.outputs.len() > 2 || report.outputs.iter().enumerate().any(|(i, out)| i != index &&
+        if (!open && report.outputs.len() > 2) || report.outputs.iter().enumerate().any(|(i, out)| i != index &&
             (out.address != *source || out.datum != serde_json::json!({"type":"io.riverark.ferret.core.cardano.TransactionDatum.Absent"}) || out.script_reference.is_some())) {
             return Err(Failure::Invalid);
         }
@@ -453,7 +458,7 @@ fn authorize_channel(tx: &csl::Transaction, report: &Summary, request: &Request,
         !report.outputs[0].assets.is_empty() ||
         report.outputs[0].datum != serde_json::json!({"type":"io.riverark.ferret.core.cardano.TransactionDatum.Absent"}) ||
         report.outputs[0].script_reference.is_some() { return Err(Failure::Invalid); }
-    if report.outputs.is_empty() || report.outputs.len() > 2 { return Err(Failure::Invalid); }
+    if report.outputs.is_empty() || (!open && report.outputs.len() > 2) { return Err(Failure::Invalid); }
     let mut available = BTreeMap::new();
     for utxo in &request.ledger.utxos {
         if utxo.index < 0 || utxo.transaction_id.len() != 64 || !utxo.transaction_id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) ||
@@ -469,7 +474,7 @@ fn authorize_channel(tx: &csl::Transaction, report: &Summary, request: &Request,
             if utxo.address != channel.ok_or(Failure::Invalid)?.address || utxo.lovelace != channel.ok_or(Failure::Invalid)?.lovelace ||
                 utxo.assets != channel.ok_or(Failure::Invalid)?.assets { return Err(Failure::Invalid); }
         } else if utxo.address != *source || utxo.datum_hex.is_some() || utxo.datum_hash_hex.is_some() ||
-            utxo.script_ref_hash_hex.is_some() || (selected.is_none() && !utxo.assets.is_empty()) { return Err(Failure::Invalid); }
+            utxo.script_ref_hash_hex.is_some() || (channel.is_some() && selected.is_none() && !utxo.assets.is_empty()) { return Err(Failure::Invalid); }
         ada = ada.checked_add(utxo.lovelace).ok_or(Failure::Invalid)?;
         for (unit, value) in &utxo.assets {
             if *value <= 0 || unit.len() < 56 || unit.len() > 120 || unit.len() % 2 != 0 ||
@@ -481,6 +486,7 @@ fn authorize_channel(tx: &csl::Transaction, report: &Summary, request: &Request,
     let mut paid = report.fee;
     let mut output_tokens = BTreeMap::<String, i64>::new();
     for (i, out) in report.outputs.iter().enumerate() {
+        if value_limit.is_some_and(|limit| tx.body().outputs().get(i).amount().to_bytes().len() > limit) { return Err(Failure::Invalid); }
         paid = paid.checked_add(out.lovelace).ok_or(Failure::Invalid)?;
         for (unit, value) in &out.assets {
             let entry = output_tokens.entry(unit.clone()).or_default();
@@ -713,6 +719,10 @@ fn authorize_with(cbor: &[u8], request_json: &[u8], signed: bool) -> Result<(), 
         return Err(Failure::Invalid);
     }
     Ok(())
+}
+#[cfg(test)]
+pub(crate) fn authorize_signed(cbor: &[u8], request_json: &[u8]) -> Result<(), Failure> {
+    authorize_with(cbor, request_json, true)
 }
 pub(crate) fn authorize(cbor: &[u8], request_json: &[u8]) -> Result<Vec<u8>, Failure> {
     authorize_with(cbor, request_json, false)?;

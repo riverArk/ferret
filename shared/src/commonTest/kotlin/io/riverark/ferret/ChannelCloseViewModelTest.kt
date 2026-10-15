@@ -275,7 +275,7 @@ class ChannelCloseViewModelTest {
         val amount = AssetAmount(ada, 3_000_000)
         val operation = PreparedChannelOperation("close-id", "hash", keytag, ada, ChannelAction.Close,
             preparedAtEpochMillis = 1, payload = ChannelPayload.Protocol(byteArrayOf(1)), priorChannelState = ChannelState.Open("channel"))
-        val preview = ChannelPreview(operation, amount, AssetAmount(ada, 200_000), AssetAmount(ada, 300_000), null,
+        val preview = ChannelPreview(operation, amount, AssetAmount(ada, 200_000), AssetAmount(ada, 300_000), emptyList(),
             AssetAmount(ada, 2_000_000), AssetAmount(ada, 2_000_000), amount, CardanoNetwork.MAINNET, AssetAmount(ada, 5_000_000))
         fun result(status: OperationState) = ChannelRemoteResult(operation.operationId, operation.intentHash, keytag, ada,
             state = ChannelState.Open("channel"), status = status)

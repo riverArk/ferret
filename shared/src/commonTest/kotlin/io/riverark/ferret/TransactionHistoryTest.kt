@@ -7,10 +7,17 @@ import io.riverark.ferret.core.model.ChannelAsset
 import io.riverark.ferret.core.model.Realm
 import io.riverark.ferret.core.model.TransactionRecord
 import io.riverark.ferret.core.model.TransactionState
+import io.riverark.ferret.core.network.ConnectorAssetDto
+import io.riverark.ferret.core.network.ConnectorInputDto
+import io.riverark.ferret.core.network.ConnectorOutputDto
 import io.riverark.ferret.core.network.ConnectorTransactionDto
+import io.riverark.ferret.core.network.ConnectorUtxoDto
+import io.riverark.ferret.core.network.decodeBoundedJson
+import io.riverark.ferret.core.network.requireValid
 import io.riverark.ferret.core.network.transactionRecords
 import io.riverark.ferret.core.network.validatedFor
 import io.riverark.ferret.feature.wallet.mergeTransactionRecords
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -117,6 +124,82 @@ class TransactionHistoryTest {
             record.amounts,
         )
         assertEquals(ada(200_000), record.fee)
+    }
+
+    @Test fun tokenHeavyMultiChangeHistoryRoundTripsBackToWalletUtxos() {
+        val unknown = List(202) { index ->
+            ConnectorAssetDto("4".repeat(56) + index.toString(16).padStart(2, '0'), "1")
+        }
+        val usdm = catalog.asset("usdm")!!
+        val transaction = Json.decodeFromString<List<ConnectorTransactionDto>>(response).single().copy(
+            inputs = listOf(
+                ConnectorInputDto(
+                    "b".repeat(64), 0, wallet,
+                    listOf(ConnectorAssetDto("lovelace", "10000000"), ConnectorAssetDto(usdm.connectorUnit, "2000000")) + unknown,
+                ),
+            ),
+            outputs = listOf(
+                ConnectorOutputDto(
+                    "addr_test1channel",
+                    listOf(ConnectorAssetDto("lovelace", "2000000"), ConnectorAssetDto(usdm.connectorUnit, "1000000")),
+                ),
+                ConnectorOutputDto(wallet, listOf(ConnectorAssetDto("lovelace", "4000000")) + unknown.take(101)),
+                ConnectorOutputDto(
+                    wallet,
+                    listOf(ConnectorAssetDto("lovelace", "3800000"), ConnectorAssetDto(usdm.connectorUnit, "1000000")) + unknown.drop(101),
+                ),
+            ),
+        )
+        val decoded = decodeBoundedJson<List<ConnectorTransactionDto>>(
+            Json.encodeToString(listOf(transaction)).encodeToByteArray(),
+        ).single()
+        decoded.requireValid()
+        val record = listOf(decoded).transactionRecords(wallet, catalog).single()
+
+        assertEquals(transaction, decoded)
+        assertEquals(transaction.id, record.id)
+        assertEquals(listOf(ada(2_000_000), AssetAmount(usdm, 1_000_000)), record.amounts)
+        assertEquals(ada(200_000), record.fee)
+
+        val walletOutputs = decoded.outputs.withIndex().filter { it.value.address == wallet }
+        val utxos = walletOutputs.map { (index, output) ->
+            val dto = ConnectorUtxoDto(decoded.id, index, output.address, output.value)
+            decodeBoundedJson<ConnectorUtxoDto>(Json.encodeToString(dto).encodeToByteArray()).ledger()
+        }
+        assertEquals(listOf(1, 2), utxos.map { it.index })
+        assertEquals(7_800_000L, utxos.sumOf { it.lovelace.value })
+        val expectedAssets = unknown.associate { it.unit to 1L } + (usdm.connectorUnit to 1_000_000L)
+        val reloadedAssets = utxos.flatMap { it.assets.entries }.groupBy { it.key }
+            .mapValues { (_, entries) -> entries.sumOf { it.value } }
+        assertEquals(expectedAssets, reloadedAssets)
+
+        walletOutputs.forEach { (index, output) ->
+            listOf(emptyList(), output.value + output.value.last(), output.value + output.value.last().copy(quantity = "2"))
+                .forEach { invalidValue ->
+                    val invalid = decoded.copy(outputs = decoded.outputs.mapIndexed { position, item ->
+                        if (position == index) item.copy(value = invalidValue) else item
+                    })
+                    assertFails { invalid.requireValid() }
+                    assertFails { listOf(invalid).transactionRecords(wallet, catalog) }
+                }
+        }
+    }
+
+    @Test fun connectorHistoryKeepsBoundedResponseLimit() {
+        val bounded = response.padEnd(1_048_576, ' ').encodeToByteArray()
+        val transactions = decodeBoundedJson<List<ConnectorTransactionDto>>(bounded)
+        assertEquals(ada(200_000), transactions.transactionRecords(wallet, catalog).single().fee)
+        assertFails { decodeBoundedJson<List<ConnectorTransactionDto>>(bounded + byteArrayOf(32)) }
+    }
+
+    @Test fun malformedConnectorHistoryQuantitiesFailClosed() {
+        listOf("", "-1", "01", "1.0", "9223372036854775808").forEach { quantity ->
+            val malformed = response.replace("\"quantity\":\"7000000\"", "\"quantity\":\"$quantity\"")
+            assertFails {
+                decodeBoundedJson<List<ConnectorTransactionDto>>(malformed.encodeToByteArray())
+                    .transactionRecords(wallet, catalog)
+            }
+        }
     }
 
     @Test fun mergingHistoryIsDescendingAndDoesNotMutateSources() {

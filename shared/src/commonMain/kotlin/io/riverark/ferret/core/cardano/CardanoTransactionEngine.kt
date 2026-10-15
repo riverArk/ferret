@@ -398,7 +398,7 @@ fun TransactionSummary.requireChannelFunding(intent: CardanoIntent, ledger: Ledg
                 utxo.isSpendableBy(
                     intent.sourceAddress,
                     allowNativeAssets = when (intent) {
-                        is CardanoIntent.OpenChannel -> intent.amount.asset.policyId != null
+                        is CardanoIntent.OpenChannel -> true
                         is CardanoIntent.AddChannelFunds -> intent.amount.asset.policyId != null
                         is CardanoIntent.CloseChannel -> intent.currentDatum.constants.asset.policyId != null
                     },
